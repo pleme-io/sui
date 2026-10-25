@@ -547,6 +547,11 @@ pub fn generate_sbpl_profile(config: &SandboxConfig) -> String {
         profile.push_str(&sbpl_quote(&config.build_dir));
         profile.push_str(")\n)\n");
     }
+    for output in &config.output_paths {
+        profile.push_str("(allow file-write*\n    (subpath ");
+        profile.push_str(&sbpl_quote(output));
+        profile.push_str(")\n)\n");
+    }
 
     // Network operations.
     if config.allow_network {
@@ -1636,6 +1641,16 @@ mod tests {
     }
 
     #[cfg(target_os = "macos")]
+    #[test]
+    fn darwin_generate_sbpl_profile_lets_the_builder_write_its_outputs() {
+        let mut config = SandboxConfig::default().with_build_dir("/tmp/x");
+        config.output_paths = vec!["/nix/store/z9x4ijxjgbx1z7fh3nhagbskqra0mg09-out".to_string()];
+        let profile = generate_sbpl_profile(&config);
+        assert!(profile.contains(
+            "(allow file-write*\n    (subpath \"/nix/store/z9x4ijxjgbx1z7fh3nhagbskqra0mg09-out\")\n)"
+        ));
+    }
+
     #[test]
     fn darwin_generate_sbpl_profile_includes_build_dir_write() {
         let config = SandboxConfig::default()

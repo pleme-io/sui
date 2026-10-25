@@ -151,6 +151,15 @@ where
                 socket_path.display()
             ))
         })?;
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o666)).map_err(|e| {
+                DaemonError::Bind(format!(
+                    "failed to open {} to every user: {e}",
+                    socket_path.display()
+                ))
+            })?;
+        }
 
         tracing::info!(socket = %socket_path.display(), "daemon listening");
 

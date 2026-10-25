@@ -43,6 +43,7 @@ pub mod lazy;
 /// Import-from-derivation: realize a derivation output mid-eval via a
 /// binary-installed hook (the pure evaluator owns no build pipeline).
 pub mod realize;
+pub mod git_tree;
 
 /// The normalized differential render (deep-forcing, error-propagating) the
 /// sui↔sui differential + the `SUI_IR` shadow-eval latch byte-compare against

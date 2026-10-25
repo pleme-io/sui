@@ -7575,7 +7575,10 @@ async fn main() -> Result<(), CliError> {
 
         Commands::Daemon { socket } => {
             tracing::info!("starting sui daemon on {socket}");
-            let store = open_store().await?;
+            let store = LocalStore::open_rw(NIX_DB_PATH).await.map_err(|e| CliError::StoreOpen {
+                path: NIX_DB_PATH,
+                source: e,
+            })?;
             let config = sui_daemon::DaemonConfig::with_socket_path(&socket);
             let server = sui_daemon::DaemonServer::new(config, store);
             server.run().await.map_err(|e| CliError::Orchestrate {
@@ -8808,7 +8811,12 @@ fn store_root(path: &str) -> Option<&str> {
 
 fn realized_program(result: &sui_eval::Value, system: &str, attr: &str) -> Result<String, CliError> {
     let fail = |message: String| CliError::Orchestrate { operation: "run", message };
-    if let Ok(value) = sui_eval::builtins::navigate_attrs(result, &["apps", system, attr, "program"]) {
+    let has_app = sui_eval::builtins::navigate_attrs(result, &["apps", system])
+        .and_then(|apps| apps.to_attrs().map(|a| a.contains_key(attr)))
+        .unwrap_or(false);
+    if has_app {
+        let value = sui_eval::builtins::navigate_attrs(result, &["apps", system, attr, "program"])
+            .map_err(|e| fail(format!("apps.{system}.{attr}.program: {e}")))?;
         let value = sui_eval::eval::force_value(&value).map_err(|e| fail(format!("apps.{system}.{attr}.program: {e}")))?;
         let sui_eval::Value::String(ns) = &value else {
             return Err(fail(format!("apps.{system}.{attr}.program is not a string")));

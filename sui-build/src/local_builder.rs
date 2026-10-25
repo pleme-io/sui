@@ -310,6 +310,40 @@ impl LocalBuilder {
     /// 3. Fall back to local build if substitution is not available
     ///
     /// Stops on the first build failure.
+    async fn plan_closure(
+        &self,
+        closure: &BuildClosure,
+        substitutor: Option<&Substitutor>,
+    ) -> Result<ClosurePlan, BuildError> {
+        let index: std::collections::HashMap<&str, &sui_compat::derivation::Derivation> =
+            closure.derivations.iter().map(|(p, d)| (p.as_str(), d)).collect();
+        let (target, _) = closure.try_target()?;
+        let mut plan = ClosurePlan::default();
+        let mut seen = std::collections::HashSet::new();
+        let mut stack = vec![target.clone()];
+        while let Some(drv_path) = stack.pop() {
+            if !seen.insert(drv_path.clone()) {
+                continue;
+            }
+            let Some(drv) = index.get(drv_path.as_str()) else {
+                continue;
+            };
+            if self.all_outputs_exist(drv).await? {
+                plan.present += 1;
+                continue;
+            }
+            if let Some(sub) = substitutor
+                && self.try_substitute_outputs(sub, drv).await
+            {
+                plan.substituted += 1;
+                continue;
+            }
+            stack.extend(drv.input_derivations.keys().cloned());
+            plan.to_build.insert(drv_path);
+        }
+        Ok(plan)
+    }
+
     pub async fn build_closure(
         &self,
         closure: &BuildClosure,
@@ -321,22 +355,12 @@ impl LocalBuilder {
         let mut built: u32 = 0;
         let mut skipped: u32 = 0;
 
+        let plan = self.plan_closure(closure, substitutor).await?;
+        skipped += plan.present;
+        substituted += plan.substituted;
         for (drv_path, drv) in &closure.derivations {
-            // 1. Check if all outputs already exist
-            if self.all_outputs_exist(drv).await? {
-                skipped += 1;
-                tracing::debug!(drv_path, "all outputs present, skipping");
+            if !plan.to_build.contains(drv_path) {
                 continue;
-            }
-
-            // 2. Try substitution for each output
-            if let Some(sub) = substitutor {
-                let sub_result = self.try_substitute_outputs(sub, drv).await;
-                if sub_result {
-                    substituted += 1;
-                    tracing::debug!(drv_path, "all outputs substituted");
-                    continue;
-                }
             }
 
             // 3. Build locally
@@ -395,17 +419,11 @@ impl LocalBuilder {
         let mut skipped: u32 = 0;
         let mut completed: usize = 0;
 
+        let plan = self.plan_closure(closure, substitutor).await?;
+        skipped += plan.present;
+        substituted += plan.substituted;
         for (drv_path, drv) in &closure.derivations {
-            progress(BuildProgress {
-                total,
-                completed,
-                current_drv: drv_path.clone(),
-                action: BuildAction::Checking,
-            });
-
-            // 1. Check if all outputs already exist
-            if self.all_outputs_exist(drv).await? {
-                skipped += 1;
+            if !plan.to_build.contains(drv_path) {
                 completed += 1;
                 progress(BuildProgress {
                     total,
@@ -414,21 +432,6 @@ impl LocalBuilder {
                     action: BuildAction::Skipped,
                 });
                 continue;
-            }
-
-            // 2. Try substitution
-            if let Some(sub) = substitutor {
-                progress(BuildProgress {
-                    total,
-                    completed,
-                    current_drv: drv_path.clone(),
-                    action: BuildAction::Substituting,
-                });
-                if self.try_substitute_outputs(sub, drv).await {
-                    substituted += 1;
-                    completed += 1;
-                    continue;
-                }
             }
 
             // 3. Build locally
@@ -1267,6 +1270,11 @@ mod tests {
     // ── build_closure tests ──────────────────────────────────────
 
     /// Make a BuildClosure from a list of (drv_path, derivation) pairs.
+    fn depends_on(mut drv: Derivation, input: &str) -> Derivation {
+        drv.input_derivations.insert(input.to_string(), vec!["out".to_string()]);
+        drv
+    }
+
     fn make_closure(drvs: Vec<(&str, Derivation)>) -> BuildClosure {
         BuildClosure {
             derivations: drvs
@@ -1344,23 +1352,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn build_closure_all_outputs_exist_skips_all() {
+    async fn build_closure_present_target_never_builds_its_inputs() {
         let out1 = "/nix/store/sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6-dep-1.0";
         let out2 = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1-target-1.0";
 
-        let store = Arc::new(MockStore::new()
-            .with_path(PathInfo::new(out1, "sha256:a"))
-            .with_path(PathInfo::new(out2, "sha256:b")));
+        let store = Arc::new(MockStore::new().with_path(PathInfo::new(out2, "sha256:b")));
         let builder = LocalBuilder::new(store, Box::new(NoSandbox));
 
         let closure = make_closure(vec![
-            ("dep.drv", make_drv("/bin/sh", &["-c", "true"], out1)),
-            ("target.drv", make_drv("/bin/sh", &["-c", "true"], out2)),
+            ("dep.drv", make_drv("/bin/sh", &["-c", "exit 1"], out1)),
+            ("target.drv", depends_on(make_drv("/bin/sh", &["-c", "true"], out2), "dep.drv")),
         ]);
 
         let result = builder.build_closure(&closure, None).await.unwrap();
         assert!(result.is_success());
-        assert!(result.log.contains("2 skipped"));
+        assert!(result.log.contains("1 skipped"));
         assert!(result.log.contains("0 substituted"));
         assert!(result.log.contains("0 built"));
     }
@@ -1388,10 +1394,13 @@ mod tests {
             ),
             (
                 "target.drv",
-                make_drv(
-                    "/bin/sh",
-                    &["-c", &format!("echo target > {}", out2.display())],
-                    &out2_str,
+                depends_on(
+                    make_drv(
+                        "/bin/sh",
+                        &["-c", &format!("echo target > {}", out2.display())],
+                        &out2_str,
+                    ),
+                    "dep.drv",
                 ),
             ),
         ]);
@@ -1420,10 +1429,13 @@ mod tests {
             ),
             (
                 "target.drv",
-                make_drv(
-                    "/bin/sh",
-                    &["-c", &format!("echo ok > {}", out2.display())],
-                    out2.to_str().unwrap(),
+                depends_on(
+                    make_drv(
+                        "/bin/sh",
+                        &["-c", &format!("echo ok > {}", out2.display())],
+                        out2.to_str().unwrap(),
+                    ),
+                    "fail.drv",
                 ),
             ),
         ]);
@@ -1451,10 +1463,13 @@ mod tests {
             ("existing.drv", make_drv("/bin/sh", &["-c", "true"], out1)),
             (
                 "new.drv",
-                make_drv(
-                    "/bin/sh",
-                    &["-c", &format!("echo new > {}", out2.display())],
-                    &out2_str,
+                depends_on(
+                    make_drv(
+                        "/bin/sh",
+                        &["-c", &format!("echo new > {}", out2.display())],
+                        &out2_str,
+                    ),
+                    "existing.drv",
                 ),
             ),
         ]);
@@ -1658,4 +1673,11 @@ mod tests {
         assert!(result.is_success());
         assert!(result.log.contains("1 skipped"));
     }
+}
+
+#[derive(Default)]
+struct ClosurePlan {
+    to_build: std::collections::HashSet<String>,
+    present: u32,
+    substituted: u32,
 }

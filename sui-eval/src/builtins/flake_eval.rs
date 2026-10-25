@@ -41,7 +41,8 @@ struct FlakeContext {
 /// authoritative closure and evaluates from its root node.  Transitive inputs
 /// are resolved against THIS lock (see [`FlakeContext`]), never their own.
 pub fn evaluate_flake(flake_dir: &std::path::Path) -> Result<Value, EvalError> {
-    evaluate_flake_ctx(flake_dir, None)
+    let tree = crate::git_tree::tracked_tree(flake_dir)?;
+    evaluate_flake_ctx(&tree, None)
 }
 
 /// Depth-guarded flake evaluation with an optional inherited lock context.

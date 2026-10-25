@@ -6604,6 +6604,7 @@ dependencies = [
  "sui-daemon-frame",
  "sui-eval",
  "sui-graph-store",
+ "sui-orchestrate",
  "sui-protocol",
  "sui-store",
  "tempfile",

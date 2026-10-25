@@ -844,11 +844,8 @@ mod tests {
     async fn unimplemented_opcode_returns_stderr_error_then_last() {
         let store = Arc::new(MockStore::new());
 
-        // Send a known but still-unimplemented opcode (BuildPaths = 9).
-        // (AddToStore/AddToStoreNar are now implemented, so they no
-        // longer fall to the unimplemented arm.)
         let mut input = Vec::new();
-        wire::write_u64(&mut input, WorkerOp::BuildPaths as u64).unwrap();
+        wire::write_u64(&mut input, WorkerOp::EnsurePath as u64).unwrap();
 
         let reader = Cursor::new(input);
         let writer: Vec<u8> = Vec::new();
@@ -861,11 +858,8 @@ mod tests {
         // STDERR_ERROR
         let msg_type = wire::read_u64(&mut cursor).unwrap();
         assert_eq!(msg_type, StderrMsg::Error as u64);
-        let error_type = wire::read_string(&mut cursor).unwrap();
-        assert_eq!(error_type, "Error");
-        let error_msg = wire::read_string(&mut cursor).unwrap();
+        let error_msg = read_error_body(&mut cursor);
         assert!(error_msg.contains("not yet implemented"));
-        let _error_num = wire::read_u64(&mut cursor).unwrap();
         // STDERR_LAST
         let last = wire::read_u64(&mut cursor).unwrap();
         assert_eq!(last, StderrMsg::Last as u64);
@@ -888,8 +882,7 @@ mod tests {
         let mut cursor = Cursor::new(conn.writer.as_slice());
         let msg_type = wire::read_u64(&mut cursor).unwrap();
         assert_eq!(msg_type, StderrMsg::Error as u64);
-        let _error_type = wire::read_string(&mut cursor).unwrap();
-        let error_msg = wire::read_string(&mut cursor).unwrap();
+        let error_msg = read_error_body(&mut cursor);
         assert!(error_msg.contains("12345"), "error should include the opcode number");
     }
 
@@ -1228,15 +1221,11 @@ mod tests {
             StderrMsg::Error as u64,
             "op {op:?} should produce STDERR_ERROR"
         );
-        let error_type = wire::read_string(&mut cursor).unwrap();
-        assert_eq!(error_type, "Error");
-        let msg = wire::read_string(&mut cursor).unwrap();
+        let msg = read_error_body(&mut cursor);
         assert!(
             msg.contains("not yet implemented"),
             "op {op:?} message should mention not implemented, got {msg:?}"
         );
-        let err_num = wire::read_u64(&mut cursor).unwrap();
-        assert_eq!(err_num, 0);
         let last = wire::read_u64(&mut cursor).unwrap();
         assert_eq!(last, StderrMsg::Last as u64);
     }
@@ -1335,13 +1324,11 @@ mod tests {
 
         let mut cursor = Cursor::new(conn.writer.as_slice());
         assert_eq!(wire::read_u64(&mut cursor).unwrap(), StderrMsg::Error as u64);
-        let _ = wire::read_string(&mut cursor).unwrap(); // "Error"
-        let msg = wire::read_string(&mut cursor).unwrap();
+        let msg = read_error_body(&mut cursor);
         assert!(
             msg.contains("not supported") && msg.contains("flat:sha256"),
             "should name the unsupported method: {msg:?}"
         );
-        let _ = wire::read_u64(&mut cursor).unwrap(); // err num
         assert_eq!(wire::read_u64(&mut cursor).unwrap(), StderrMsg::Last as u64);
     }
 
@@ -1365,21 +1352,68 @@ mod tests {
 
         let mut cursor = Cursor::new(conn.writer.as_slice());
         assert_eq!(wire::read_u64(&mut cursor).unwrap(), StderrMsg::Error as u64);
-        let _ = wire::read_string(&mut cursor).unwrap();
-        let msg = wire::read_string(&mut cursor).unwrap();
+        let msg = read_error_body(&mut cursor);
         assert!(msg.contains("store write failed"), "got {msg:?}");
-        let _ = wire::read_u64(&mut cursor).unwrap();
         assert_eq!(wire::read_u64(&mut cursor).unwrap(), StderrMsg::Last as u64);
     }
 
-    #[tokio::test]
-    async fn unimpl_add_text_to_store() {
-        assert_op_unimplemented(WorkerOp::AddTextToStore).await;
+    fn read_error_body(cursor: &mut Cursor<&[u8]>) -> String {
+        assert_eq!(wire::read_string(cursor).unwrap(), "Error");
+        assert_eq!(wire::read_u64(cursor).unwrap(), 0);
+        assert_eq!(wire::read_string(cursor).unwrap(), "Error");
+        let msg = wire::read_string(cursor).unwrap();
+        assert_eq!(wire::read_u64(cursor).unwrap(), 0);
+        assert_eq!(wire::read_u64(cursor).unwrap(), 0);
+        msg
+    }
+
+    async fn run_with(store: MockStore, input: Vec<u8>) -> Vec<u8> {
+        let mut conn = Connection::new(Arc::new(store), Cursor::new(input), Vec::<u8>::new(), TrustLevel::Trusted);
+        conn.client_version = PROTOCOL_VERSION;
+        conn.run().await.unwrap();
+        conn.writer
     }
 
     #[tokio::test]
-    async fn unimpl_build_paths() {
-        assert_op_unimplemented(WorkerOp::BuildPaths).await;
+    async fn add_text_to_store_answers_the_text_content_address_path() {
+        let text = b"hello".to_vec();
+        let expected = sui_compat::content_address::compute_text_store_path("t.txt", &text, &[])
+            .unwrap()
+            .to_absolute_path();
+        let mut input = Vec::new();
+        wire::write_u64(&mut input, WorkerOp::AddTextToStore as u64).unwrap();
+        wire::write_string(&mut input, "t.txt").unwrap();
+        wire::write_bytes(&mut input, &text).unwrap();
+        wire::write_u64(&mut input, 0).unwrap();
+        let out = run_with(MockStore::new().with_path(&expected, "sha256:00"), input).await;
+        let mut cursor = Cursor::new(out.as_slice());
+        assert_eq!(wire::read_u64(&mut cursor).unwrap(), StderrMsg::Last as u64);
+        assert_eq!(wire::read_string(&mut cursor).unwrap(), expected);
+    }
+
+    #[tokio::test]
+    async fn build_paths_of_a_valid_output_acks() {
+        let path = "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-x";
+        let mut input = Vec::new();
+        wire::write_u64(&mut input, WorkerOp::BuildPaths as u64).unwrap();
+        wire::write_string_list(&mut input, &[path.to_string()]).unwrap();
+        wire::write_u64(&mut input, 0).unwrap();
+        let out = run_with(MockStore::new().with_path(path, "sha256:00"), input).await;
+        let mut cursor = Cursor::new(out.as_slice());
+        assert_eq!(wire::read_u64(&mut cursor).unwrap(), StderrMsg::Last as u64);
+        assert_eq!(wire::read_u64(&mut cursor).unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn build_paths_refuses_an_absent_output() {
+        let mut input = Vec::new();
+        wire::write_u64(&mut input, WorkerOp::BuildPaths as u64).unwrap();
+        wire::write_string_list(&mut input, &["/nix/store/0123456789abcdfghijklmnpqrsvwxyz-x".to_string()]).unwrap();
+        wire::write_u64(&mut input, 0).unwrap();
+        let out = run_with(MockStore::new(), input).await;
+        let mut cursor = Cursor::new(out.as_slice());
+        assert_eq!(wire::read_u64(&mut cursor).unwrap(), StderrMsg::Error as u64);
+        assert!(read_error_body(&mut cursor).contains("not valid in the store"));
     }
 
     #[tokio::test]
@@ -1407,8 +1441,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unimpl_add_indirect_root() {
-        assert_op_unimplemented(WorkerOp::AddIndirectRoot).await;
+    async fn add_indirect_root_failure_is_an_error_frame() {
+        let mut input = Vec::new();
+        wire::write_u64(&mut input, WorkerOp::AddIndirectRoot as u64).unwrap();
+        wire::write_string(&mut input, "/tmp/result\0").unwrap();
+        let out = run_with(MockStore::new(), input).await;
+        let mut cursor = Cursor::new(out.as_slice());
+        assert_eq!(wire::read_u64(&mut cursor).unwrap(), StderrMsg::Error as u64);
+        assert!(read_error_body(&mut cursor).contains("AddIndirectRoot /tmp/result"));
     }
 
     #[tokio::test]
@@ -1586,10 +1626,8 @@ mod tests {
 
         let mut cursor = Cursor::new(conn.writer.as_slice());
         assert_eq!(wire::read_u64(&mut cursor).unwrap(), StderrMsg::Error as u64);
-        let _ = wire::read_string(&mut cursor).unwrap();
-        let msg = wire::read_string(&mut cursor).unwrap();
+        let msg = read_error_body(&mut cursor);
         assert!(msg.contains("AddToStoreNar"), "got {msg:?}");
-        let _ = wire::read_u64(&mut cursor).unwrap();
         assert_eq!(wire::read_u64(&mut cursor).unwrap(), StderrMsg::Last as u64);
     }
 
@@ -2000,10 +2038,7 @@ mod tests {
         while let Ok(v) = wire::read_u64(&mut cursor) {
             if v == StderrMsg::Error as u64 {
                 error_count += 1;
-                // skip type, message, error_num
-                let _ = wire::read_string(&mut cursor).unwrap();
-                let _ = wire::read_string(&mut cursor).unwrap();
-                let _ = wire::read_u64(&mut cursor).unwrap();
+                let _ = read_error_body(&mut cursor);
             }
         }
         assert_eq!(error_count, 3, "should have produced 3 STDERR_ERROR frames");

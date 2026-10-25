@@ -139,6 +139,21 @@ pub(crate) async fn write_stderr_error(
     Ok(())
 }
 
+pub(crate) async fn write_stderr_error_struct(
+    w: &mut (impl AsyncWrite + Unpin),
+    msg: &str,
+) -> std::io::Result<()> {
+    use sui_compat::wire::StderrMsg;
+    write_u64(w, StderrMsg::Error as u64).await?;
+    write_string(w, "Error").await?;
+    write_u64(w, 0).await?;
+    write_string(w, "Error").await?;
+    write_string(w, msg).await?;
+    write_u64(w, 0).await?;
+    write_u64(w, 0).await?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

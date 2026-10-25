@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "7ac2bf1461128bf1df585e6d44d619bcdb5ae16a5c55a36dda8f5f78598bacca",
+  "cargo_lock_sha256": "faeb63a2f273841477c1ea41f172ec6034c3e66bb5c3cf884a17d256a8053531",
   "manifest_sha256": {
     "Cargo.toml": "d6c5764f68b0a4d5cb60d57dea41e87ac201f0b2b670794bfd4992913f91b16c",
     "canteiro-types/Cargo.toml": "140edf011d225b89a3a8b8cc15d5212e84c056493e7c8a5b488d1c7e88847388",
@@ -14,7 +14,7 @@
     "sui-daemon-client/Cargo.toml": "d8acc61441eadccaf9bb426aa83dfdb71bc628ac13eb23bd2e73ac5fdfb0e477",
     "sui-daemon-frame/Cargo.toml": "391a8e59253c00d6886605ef104794d330d935cab6f7f13d335804258d4144e6",
     "sui-daemon-graph/Cargo.toml": "206356f44f08a819630a8057714643b7f13dfa63b8270759aec804cbcf28e6b6",
-    "sui-daemon/Cargo.toml": "07df4ddf10275f3729f8db682224bd13e4f7d12f72166a80560775bbe93d30b1",
+    "sui-daemon/Cargo.toml": "5c4c1da53c32356e7774ab6396f82ecd83e0c00bd957c41cda5920c53374ba94",
     "sui-dockerfile-node-cache-daemon/Cargo.toml": "450da5660aa69749a8b4eeddac5a7bfaaa38ae36adcde0e969d356e970c1d9ea",
     "sui-dockerfile-prewarmer/Cargo.toml": "d5a84d137aadbc380818f25d4d59f728939cc523837eb1c232104e1dec315b5e",
     "sui-dockerfile-verify/Cargo.toml": "1b4114c0abb7761a054f8c20cc59885ef75bbbad021df12341177bf87f2f55f0",
@@ -24991,6 +24991,16 @@
             "tree": "target"
           },
           {
+            "name": "sha2",
+            "package_key": "sha2-0.10.9",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
             "name": "shikumi",
             "package_key": "shikumi-0.1.1083",
             "kind": "normal",
@@ -25043,6 +25053,16 @@
           {
             "name": "sui_graph_store",
             "package_key": "sui-graph-store-0.1.219",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "sui_orchestrate",
+            "package_key": "sui-orchestrate-0.1.219",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,

@@ -13,8 +13,8 @@ use sui_compat::wire::WorkerOp;
 use sui_store::traits::Store;
 
 use super::wire::{
-    read_framed_source, read_string, read_u64, write_bool, write_stderr_error, write_stderr_last,
-    write_string, write_string_list, write_u64,
+    read_bytes, read_framed_source, read_string, read_u64, write_bool, write_stderr_error,
+    write_stderr_error_struct, write_stderr_last, write_string, write_string_list, write_u64,
 };
 use super::{
     Connection, ConnectionError, PROTOCOL_MINOR_BUILD_CORES, PROTOCOL_MINOR_OBSOLETE_LOG_FIELDS,
@@ -59,11 +59,12 @@ where
                 Some(WorkerOp::AddTempRoot) => self.handle_add_temp_root().await?,
                 Some(WorkerOp::AddToStore) => self.handle_add_to_store().await?,
                 Some(WorkerOp::AddToStoreNar) => self.handle_add_to_store_nar().await?,
+                Some(WorkerOp::AddTextToStore) => self.handle_add_text_to_store().await?,
+                Some(WorkerOp::BuildPaths) => self.handle_build_paths().await?,
+                Some(WorkerOp::AddIndirectRoot) => self.handle_add_indirect_root().await?,
                 Some(other) => {
                     tracing::warn!(?other, "unimplemented opcode");
-                    write_stderr_error(
-                        &mut self.writer,
-                        &format!("operation {other:?} is not yet implemented"),
+                    self.write_error(&format!("operation {other:?} is not yet implemented"),
                     )
                     .await?;
                     write_stderr_last(&mut self.writer).await?;
@@ -71,7 +72,7 @@ where
                 }
                 None => {
                     tracing::warn!(op_raw, "unknown opcode");
-                    write_stderr_error(&mut self.writer, &format!("unknown opcode {op_raw}"))
+                    self.write_error(&format!("unknown opcode {op_raw}"))
                         .await?;
                     write_stderr_last(&mut self.writer).await?;
                     self.writer.flush().await?;
@@ -81,6 +82,123 @@ where
     }
 
     // ── Operation handlers ───────────────────────────────────────
+
+    async fn write_error(&mut self, message: &str) -> Result<(), ConnectionError> {
+        if self.client_version & 0xff >= 26 {
+            write_stderr_error_struct(&mut self.writer, message).await?;
+        } else {
+            write_stderr_error(&mut self.writer, message).await?;
+        }
+        Ok(())
+    }
+
+    async fn refuse(&mut self, message: &str) -> Result<(), ConnectionError> {
+        self.write_error(message).await?;
+        write_stderr_last(&mut self.writer).await?;
+        self.writer.flush().await?;
+        Ok(())
+    }
+
+    async fn handle_add_text_to_store(&mut self) -> Result<(), ConnectionError> {
+        let name = read_string(&mut self.reader).await?;
+        let text = read_bytes(&mut self.reader).await?;
+        let count = read_u64(&mut self.reader).await?;
+        let mut references: Vec<String> = Vec::with_capacity(count as usize);
+        for _ in 0..count {
+            references.push(read_string(&mut self.reader).await?);
+        }
+        let sp = match sui_compat::content_address::compute_text_store_path(&name, &text, &references) {
+            Ok(sp) => sp,
+            Err(e) => return self.refuse(&format!("AddTextToStore {name}: {e}")).await,
+        };
+        let path = sp.to_absolute_path();
+        if !self.store.is_valid_path(&sp).await? {
+            let mut nar = Vec::new();
+            let node = sui_compat::nar::NarNode::Regular { executable: false, contents: text.clone() };
+            if let Err(e) = sui_compat::nar::NarWriter::write(&mut nar, &node) {
+                return self.refuse(&format!("AddTextToStore {path}: {e}")).await;
+            }
+            if !std::path::Path::new(&path).exists()
+                && let Err(e) = sui_compat::nar::unpack_nar(&nar, std::path::Path::new(&path))
+            {
+                return self.refuse(&format!("AddTextToStore {path}: {e}")).await;
+            }
+            use sha2::Digest;
+            let content_hash = sha2::Sha256::digest(&text);
+            let info = sui_store::traits::PathInfo {
+                path: path.clone(),
+                nar_hash: format!(
+                    "sha256:{}",
+                    sha2::Sha256::digest(&nar).iter().map(|b| format!("{b:02x}")).collect::<String>()
+                ),
+                nar_size: i64::try_from(nar.len()).unwrap_or(i64::MAX),
+                references,
+                deriver: None,
+                signatures: vec![],
+                registration_time: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0)),
+                content_address: Some(format!(
+                    "text:sha256:{}",
+                    sui_compat::store_path::nix_base32_encode(&content_hash)
+                )),
+            };
+            self.store.register_path(&info).await?;
+        }
+        write_stderr_last(&mut self.writer).await?;
+        write_string(&mut self.writer, &path).await?;
+        self.writer.flush().await?;
+        Ok(())
+    }
+
+    async fn handle_build_paths(&mut self) -> Result<(), ConnectionError> {
+        let count = read_u64(&mut self.reader).await?;
+        let mut targets: Vec<String> = Vec::with_capacity(count as usize);
+        for _ in 0..count {
+            targets.push(read_string(&mut self.reader).await?);
+        }
+        let _mode = read_u64(&mut self.reader).await?;
+        for target in &targets {
+            let store_path = target.split_once('!').map_or(target.as_str(), |(p, _)| p);
+            if std::path::Path::new(store_path)
+                .extension()
+                .is_some_and(|e| e == "drv")
+            {
+                if let Err(e) = sui_orchestrate::realize_drv(store_path).await {
+                    return self.refuse(&format!("BuildPaths {target}: {e}")).await;
+                }
+            } else {
+                let valid = match StorePath::from_absolute_path(store_path) {
+                    Ok(sp) => self.store.is_valid_path(&sp).await?,
+                    Err(_) => false,
+                };
+                if !valid {
+                    return self
+                        .refuse(&format!("BuildPaths {target}: not a derivation and not valid in the store"))
+                        .await;
+                }
+            }
+        }
+        write_stderr_last(&mut self.writer).await?;
+        write_u64(&mut self.writer, 1).await?;
+        self.writer.flush().await?;
+        Ok(())
+    }
+
+    async fn handle_add_indirect_root(&mut self) -> Result<(), ConnectionError> {
+        let link = read_string(&mut self.reader).await?;
+        use sha2::Digest;
+        let digest = sui_compat::store_path::nix_base32_encode(&sha2::Sha256::digest(link.as_bytes()));
+        let root = std::path::Path::new("/nix/var/nix/gcroots/auto").join(digest);
+        let _ = std::fs::remove_file(&root);
+        if let Err(e) = std::os::unix::fs::symlink(&link, &root) {
+            return self.refuse(&format!("AddIndirectRoot {link}: {e}")).await;
+        }
+        write_stderr_last(&mut self.writer).await?;
+        write_u64(&mut self.writer, 1).await?;
+        self.writer.flush().await?;
+        Ok(())
+    }
 
     /// `IsValidPath` (op 1): Read a store path, return whether it exists.
     async fn handle_is_valid_path(&mut self) -> Result<(), ConnectionError> {
@@ -419,9 +537,7 @@ where
 
         // Only recursive NAR sha256 maps onto the realizer.
         if ca_method != "fixed:r:sha256" {
-            write_stderr_error(
-                &mut self.writer,
-                &format!(
+            self.write_error(&format!(
                     "AddToStore: ingestion method {ca_method:?} is not supported by sui \
                      (only recursive NAR sha256, `fixed:r:sha256`, is implemented)"
                 ),
@@ -439,9 +555,7 @@ where
                 self.writer.flush().await?;
             }
             Err(e) => {
-                write_stderr_error(
-                    &mut self.writer,
-                    &format!("AddToStore: store write failed: {e}"),
+                self.write_error(&format!("AddToStore: store write failed: {e}"),
                 )
                 .await?;
                 write_stderr_last(&mut self.writer).await?;
@@ -530,9 +644,7 @@ where
                 self.writer.flush().await?;
             }
             Err(e) => {
-                write_stderr_error(
-                    &mut self.writer,
-                    &format!("AddToStoreNar: store write failed: {e}"),
+                self.write_error(&format!("AddToStoreNar: store write failed: {e}"),
                 )
                 .await?;
                 write_stderr_last(&mut self.writer).await?;
