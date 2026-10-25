@@ -37,6 +37,30 @@ pub enum FlakeSource {
         /// The exact commit. Required — see [`FlakeRefError::UnpinnedRemote`].
         rev: String,
     },
+    /// A registry name (`nixpkgs`, `nixpkgs/<ref>`), resolved through the flake
+    /// registries before anything is fetched or read.
+    Indirect {
+        /// The flake id, cppnix's `[a-zA-Z][a-zA-Z0-9_-]*`.
+        id: String,
+        /// The `/<ref-or-rev>` after the id, if any.
+        reference: Option<String>,
+    },
+}
+
+/// Whether `s` is a cppnix ref or rev (`refRegexS`, libutil/url-parts.hh):
+/// `[a-zA-Z0-9@][a-zA-Z0-9_./@+-]*`.
+fn is_ref_or_rev(s: &str) -> bool {
+    let mut chars = s.chars();
+    chars.next().is_some_and(|c| c.is_ascii_alphanumeric() || c == '@')
+        && chars.all(|c| c.is_ascii_alphanumeric() || "_./@+-".contains(c))
+}
+
+/// Whether `s` is a cppnix flake id (`flakeIdRegexS`, libflake/flakeref.hh).
+#[must_use]
+pub fn is_flake_id(s: &str) -> bool {
+    let mut chars = s.chars();
+    chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
 /// A parsed flake reference like `.#cid` or
@@ -59,7 +83,7 @@ impl FlakeSource {
     #[must_use]
     pub fn locked_input(&self) -> Option<crate::flake::LockedInput> {
         match self {
-            Self::Path(_) => None,
+            Self::Path(_) | Self::Indirect { .. } => None,
             Self::GitHub { owner, repo, rev } => Some(crate::flake::LockedInput {
                 source_type: "github".to_owned(),
                 owner: Some(owner.clone()),
@@ -82,7 +106,7 @@ impl FlakeRef {
     pub fn local_dir(&self) -> Option<&std::path::Path> {
         match &self.source {
             FlakeSource::Path(p) => Some(p.as_path()),
-            FlakeSource::GitHub { .. } => None,
+            FlakeSource::GitHub { .. } | FlakeSource::Indirect { .. } => None,
         }
     }
 
@@ -133,6 +157,16 @@ impl FlakeRef {
                     _ => Err(FlakeRefError::UnsupportedRemote(path_part.to_owned())),
                 };
             }
+            let (head, reference) = match path_part.split_once('/') {
+                Some((id, r)) => (id, Some(r)),
+                None => (path_part, None),
+            };
+            if is_flake_id(head) && reference.is_none_or(is_ref_or_rev) {
+                return Ok(Self {
+                    source: FlakeSource::Indirect { id: head.to_owned(), reference: reference.map(str::to_owned) },
+                    attribute: attr.to_owned(),
+                });
+            }
             let dir = if path_part == "." || path_part.is_empty() {
                 std::env::current_dir()
                     .map_err(|e| FlakeRefError::InvalidPath(e.to_string()))?
@@ -178,6 +212,21 @@ pub enum FlakeRefError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_bare_flake_id_is_a_registry_name_as_in_cppnix() {
+        let r = FlakeRef::parse("nixpkgs#hello").unwrap();
+        assert_eq!(r.source, FlakeSource::Indirect { id: "nixpkgs".into(), reference: None });
+        let r = FlakeRef::parse("nixpkgs/nixos-25.11#hello").unwrap();
+        assert_eq!(r.source, FlakeSource::Indirect { id: "nixpkgs".into(), reference: Some("nixos-25.11".into()) });
+        assert!(matches!(FlakeRef::parse(".#cid").unwrap().source, FlakeSource::Path(_)));
+        assert!(matches!(FlakeRef::parse("./sub#x").unwrap().source, FlakeSource::Path(_)));
+        assert!(matches!(FlakeRef::parse("/abs/dir#x").unwrap().source, FlakeSource::Path(_)));
+        assert_eq!(
+            FlakeRef::parse("a/b/c#x").unwrap().source,
+            FlakeSource::Indirect { id: "a".into(), reference: Some("b/c".into()) }
+        );
+    }
 
 
     #[test]
@@ -265,8 +314,8 @@ mod tests {
 
     #[test]
     fn parse_relative_path() {
-        let fr = FlakeRef::parse("relative/path#attr").unwrap();
-        assert_eq!(fr.local_dir().unwrap().to_path_buf(), PathBuf::from("relative/path"));
+        let fr = FlakeRef::parse("./relative/path#attr").unwrap();
+        assert_eq!(fr.local_dir().unwrap().to_path_buf(), PathBuf::from("./relative/path"));
         assert_eq!(fr.attribute, "attr");
     }
 

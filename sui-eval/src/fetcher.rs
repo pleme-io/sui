@@ -1064,6 +1064,27 @@ fn url_to_safe_name(url: &str) -> String {
 /// Platform-aware cache directory discovery.
 /// `<cache>/sui/<name>`: a fetch or tree cache the OS temp cleaner never prunes.
 #[must_use]
+/// The flake ref a registry name stands for, from the user then the system
+/// registry (cppnix's precedence). A `/<ref>` override, and the global registry
+/// (a network fetch), are refused by name rather than guessed.
+pub fn resolve_indirect(
+    registries: &sui_spec::registry::Registries,
+    id: &str,
+    reference: Option<&str>,
+) -> Result<String, FetchError> {
+    if let Some(r) = reference {
+        return Err(FetchError::UnsupportedType(format!(
+            "`{id}/{r}`: a ref override on a registry name is not resolved yet"
+        )));
+    }
+    let entry = sui_spec::registry::resolve(registries, id).map_err(|_| {
+        FetchError::UnsupportedType(format!(
+            "`{id}` is in neither the user nor the system flake registry; the global registry is not consulted yet"
+        ))
+    })?;
+    Ok(entry.to.strip_prefix("path:").map_or(entry.to.clone(), |p| p.to_string()))
+}
+
 pub fn cached_input_dir(nar_hash: &str) -> Option<PathBuf> {
     let dir = InputFetcher::new().cache_dir.join(sanitize_hash(nar_hash));
     dir.is_dir().then_some(dir)
@@ -1372,6 +1393,19 @@ mod status_classification_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_registry_name_resolves_user_before_system_and_refuses_what_it_cannot() {
+        use sui_spec::registry::{RegistryEntry, RegistryScope};
+        let entry = |from: &str, to: &str| RegistryEntry { from: from.into(), to: to.into(), exact: true };
+        let registries = vec![
+            (RegistryScope::System, vec![entry("nixpkgs", "path:/nix/store/system-source")]),
+            (RegistryScope::User, vec![entry("nixpkgs", "path:/nix/store/user-source")]),
+        ];
+        assert_eq!(resolve_indirect(&registries, "nixpkgs", None).unwrap(), "/nix/store/user-source");
+        assert!(resolve_indirect(&registries, "absent", None).is_err());
+        assert!(resolve_indirect(&registries, "nixpkgs", Some("nixos-25.11")).is_err());
+    }
     use std::collections::BTreeMap;
 
     /// A private input's token lives where the fleet puts it: the SYSTEM
@@ -2004,6 +2038,17 @@ mod tests {
 /// Returns [`FetchError`] when a remote source cannot be fetched or
 /// extracted.
 pub fn resolve_flake_dir(flake_ref: &FlakeRef) -> Result<std::path::PathBuf, FetchError> {
+    if let sui_compat::flake_ref::FlakeSource::Indirect { id, reference } = &flake_ref.source {
+        let registries = sui_spec::registry::discover_disk_registries()
+            .map_err(|e| FetchError::UnsupportedType(format!("flake registry: {e:?}")))?;
+        let target = resolve_indirect(&registries, id, reference.as_deref())?;
+        let resolved = FlakeRef::parse(&[target.as_str(), "#", &flake_ref.attribute].concat())
+            .map_err(|e| FetchError::UnsupportedType(format!("registry target `{target}` for `{id}`: {e}")))?;
+        if matches!(resolved.source, sui_compat::flake_ref::FlakeSource::Indirect { .. }) {
+            return Err(FetchError::UnsupportedType(format!("registry entry for `{id}` points at another registry name `{target}`")));
+        }
+        return resolve_flake_dir(&resolved);
+    }
     match flake_ref.local_dir() {
         Some(p) => Ok(p.to_path_buf()),
         None => {

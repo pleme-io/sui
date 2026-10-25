@@ -8986,20 +8986,70 @@ fn realized_program(result: &sui_eval::Value, system: &str, attr: &str) -> Resul
         }
         return Ok(program);
     }
-    try_navigate_drv_path(result, system, attr).ok_or_else(|| fail(format!("could not find apps.{system}.{attr}.program or packages.{system}.{attr}")))
+    package_program(result, system, attr)?.ok_or_else(|| {
+        fail(format!("could not find apps.{system}.{attr}, packages.{system}.{attr} or legacyPackages.{system}.{attr}"))
+    })
+}
+
+fn package_program(result: &sui_eval::Value, system: &str, attr: &str) -> Result<Option<String>, CliError> {
+    let fail = |message: String| CliError::Orchestrate { operation: "run", message };
+    let force = |v: &sui_eval::Value| sui_eval::eval::force_value(v).map_err(|e| fail(format!("{attr}: {e}")));
+    for prefix in ["packages", "legacyPackages"] {
+        let mut path = vec![prefix, system];
+        path.extend(attr.split('.'));
+        let Ok(found) = sui_eval::builtins::navigate_attrs(result, &path) else { continue };
+        let sui_eval::Value::Attrs(pkg) = force(&found)? else { continue };
+        let text = |key: &str| -> Result<Option<String>, CliError> {
+            match pkg.get(key) {
+                Some(v) => Ok(force(&v)?.as_string().ok().map(str::to_string)),
+                None => Ok(None),
+            }
+        };
+        let main_program = match pkg.get("meta") {
+            Some(meta) => match force(&meta)? {
+                sui_eval::Value::Attrs(m) => match m.get("mainProgram") {
+                    Some(v) => force(&v)?.as_string().ok().map(str::to_string),
+                    None => None,
+                },
+                _ => None,
+            },
+            None => None,
+        };
+        let name = text("name")?.unwrap_or_default();
+        let program = main_program.or(text("pname")?).unwrap_or_else(|| drv_name_without_version(&name));
+        let out = text("outPath")?.ok_or_else(|| fail(format!("{prefix}.{system}.{attr} has no outPath")))?;
+        if !std::path::Path::new(&out).exists() {
+            let drv = text("drvPath")?.ok_or_else(|| fail(format!("{prefix}.{system}.{attr} has no drvPath")))?;
+            sui_eval::realize::realize_output(&drv, &out).map_err(|e| fail(format!("realize {drv}: {e}")))?;
+        }
+        return Ok(Some(format!("{out}/bin/{program}")));
+    }
+    Ok(None)
+}
+
+#[cfg(test)]
+mod drv_name_tests {
+    #[test]
+    fn a_derivation_name_loses_its_version_as_cppnix_drvname_parses_it() {
+        assert_eq!(super::drv_name_without_version("apache-httpd-2.0.48"), "apache-httpd");
+        assert_eq!(super::drv_name_without_version("cargo-mutants-25.3.1"), "cargo-mutants");
+        assert_eq!(super::drv_name_without_version("hello"), "hello");
+        assert_eq!(super::drv_name_without_version("foo-"), "foo-");
+    }
+}
+
+/// cppnix's `DrvName`: the name up to the first `-` that starts a version.
+fn drv_name_without_version(name: &str) -> String {
+    let bytes = name.as_bytes();
+    (0..bytes.len())
+        .find(|&i| bytes[i] == b'-' && bytes.get(i + 1).is_some_and(|c| !c.is_ascii_alphabetic()))
+        .map_or_else(|| name.to_string(), |i| name[..i].to_string())
 }
 
 fn try_navigate_program(result: &sui_eval::Value, system: &str, attr: &str) -> Option<String> {
     sui_eval::builtins::navigate_attrs(result, &["apps", system, attr, "program"]).ok().and_then(|v| v.as_string().ok().map(|s| s.to_string()))
 }
 
-fn try_navigate_drv_path(result: &sui_eval::Value, system: &str, attr: &str) -> Option<String> {
-    let pkg = sui_eval::builtins::navigate_attrs(result, &["packages", system, attr]).ok()?;
-    if let sui_eval::Value::Attrs(attrs) = &pkg {
-        if let Some(out) = attrs.get("outPath") { if let Ok(s) = out.as_string() { return Some(format!("{}/bin/{attr}", s)); } }
-    }
-    None
-}
 
 async fn open_store() -> Result<LocalStore, CliError> {
     LocalStore::open(NIX_DB_PATH)
