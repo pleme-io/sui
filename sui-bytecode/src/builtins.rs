@@ -889,7 +889,7 @@ impl BuiltinRegistry {
         // pathExists: check if a path exists on the filesystem
         self.register("pathExists", 1, |args| {
             let path = match &args[0] {
-                VMValue::Path(p) => p.clone(),
+                VMValue::Path(p) => p.to_string(),
                 VMValue::String(s) => s.clone(),
                 other => {
                     return Err(VMError::TypeError {
@@ -910,7 +910,7 @@ impl BuiltinRegistry {
         // readFile: read contents of a file
         self.register("readFile", 1, |args| {
             let path = match &args[0] {
-                VMValue::Path(p) => p.clone(),
+                VMValue::Path(p) => p.to_string(),
                 VMValue::String(s) => s.clone(),
                 other => {
                     return Err(VMError::TypeError {
@@ -932,7 +932,7 @@ impl BuiltinRegistry {
         // readDir: list directory entries
         self.register("readDir", 1, |args| {
             let path = match &args[0] {
-                VMValue::Path(p) => p.clone(),
+                VMValue::Path(p) => p.to_string(),
                 VMValue::String(s) => s.clone(),
                 other => {
                     return Err(VMError::TypeError {
@@ -956,7 +956,7 @@ impl BuiltinRegistry {
         // baseNameOf: extract filename from a path
         self.register("baseNameOf", 1, |args| {
             let path = match &args[0] {
-                VMValue::Path(p) => p.clone(),
+                VMValue::Path(p) => p.to_string(),
                 VMValue::String(s) => s.clone(),
                 other => {
                     return Err(VMError::TypeError {
@@ -976,7 +976,7 @@ impl BuiltinRegistry {
         // dirOf: extract directory from a path
         self.register("dirOf", 1, |args| {
             let path = match &args[0] {
-                VMValue::Path(p) => p.clone(),
+                VMValue::Path(p) => p.to_string(),
                 VMValue::String(s) => s.clone(),
                 other => {
                     return Err(VMError::TypeError {
@@ -1072,7 +1072,7 @@ impl BuiltinRegistry {
         // toPath: convert string to path (deprecated in Nix, but used)
         self.register("toPath", 1, |args| {
             let s = as_string(&args[0])?;
-            Ok(VMValue::Path(s.to_string()))
+            Ok(VMValue::Path(s.into()))
         });
 
         // import: as a builtin value (not a special form)
@@ -1250,7 +1250,7 @@ impl BuiltinRegistry {
         // readFileType: return file type as string
         self.register("readFileType", 1, |args| {
             let path = match &args[0] {
-                VMValue::Path(p) => p.clone(),
+                VMValue::Path(p) => p.to_string(),
                 VMValue::String(s) => s.clone(),
                 other => {
                     return Err(VMError::TypeError {
@@ -1459,7 +1459,7 @@ pub fn string_keyed_to_vmvalue(
         StringKeyedValue::Int(n) => VMValue::Int(*n),
         StringKeyedValue::Float(f) => VMValue::Float(*f),
         StringKeyedValue::String(s) => VMValue::String(s.clone()),
-        StringKeyedValue::Path(p) => VMValue::Path(p.clone()),
+        StringKeyedValue::Path(p) => VMValue::Path(p.as_str().into()),
         StringKeyedValue::List(items) => VMValue::List(
             items
                 .iter()
@@ -1622,7 +1622,7 @@ fn sk_to_vmvalue(sk: &crate::value::StringKeyedValue) -> VMValue {
         StringKeyedValue::Int(n) => VMValue::Int(*n),
         StringKeyedValue::Float(f) => VMValue::Float(*f),
         StringKeyedValue::String(s) => VMValue::String(s.clone()),
-        StringKeyedValue::Path(p) => VMValue::Path(p.clone()),
+        StringKeyedValue::Path(p) => VMValue::Path(p.as_str().into()),
         StringKeyedValue::List(items) => {
             VMValue::List(items.iter().map(|i| sk_to_vmvalue(i)).collect())
         }
@@ -1757,7 +1757,7 @@ fn vm_coerce_to_string(v: &VMValue) -> Result<VMValue, VMError> {
         VMValue::Bool(true) => Ok(VMValue::String("1".to_string())),
         VMValue::Bool(false) => Ok(VMValue::String(String::new())),
         VMValue::Null => Ok(VMValue::String(String::new())),
-        VMValue::Path(p) => Ok(VMValue::String(p.clone())),
+        VMValue::Path(p) => Ok(VMValue::String(p.to_string())),
         VMValue::Attrs(attrs) => {
             // Check __toString first (requires calling a function — if present,
             // we fall back to the VM bridge for now)
@@ -1814,7 +1814,7 @@ fn vm_value_to_json(v: &VMValue) -> Result<serde_json::Value, VMError> {
             .map(serde_json::Value::Number)
             .ok_or_else(|| VMError::Throw("toJSON: invalid float".to_string())),
         VMValue::String(s) => Ok(serde_json::Value::String(s.clone())),
-        VMValue::Path(p) => Ok(serde_json::Value::String(p.clone())),
+        VMValue::Path(p) => Ok(serde_json::Value::String(p.to_string())),
         VMValue::List(items) => {
             let arr: Result<Vec<_>, _> = items.iter().map(vm_value_to_json).collect();
             Ok(serde_json::Value::Array(arr?))

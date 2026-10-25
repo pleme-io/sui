@@ -3,6 +3,7 @@
 //! All types implemented from scratch based on public Nix documentation.
 //! No vendored code from any GPL-licensed project.
 
+pub mod canon_path;
 pub mod content_address;
 pub mod cppnix;
 pub mod derivation;

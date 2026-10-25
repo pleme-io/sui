@@ -42,7 +42,7 @@ pub enum VMValue {
     /// Nix string (context tracking deferred to Phase 2).
     String(String),
     /// Nix path literal.
-    Path(String),
+    Path(sui_compat::canon_path::CanonPath),
     /// Nix list.
     List(Vec<VMValue>),
     /// Nix attribute set with interned keys.
@@ -303,7 +303,7 @@ impl VMValue {
             VMValue::Int(n) => StringKeyedValue::Int(*n),
             VMValue::Float(f) => StringKeyedValue::Float(*f),
             VMValue::String(s) => StringKeyedValue::String(s.clone()),
-            VMValue::Path(p) => StringKeyedValue::Path(p.clone()),
+            VMValue::Path(p) => StringKeyedValue::Path(p.to_string()),
             VMValue::List(items) => {
                 StringKeyedValue::List(items.iter().map(|v| v.to_string_keyed(interner)).collect())
             }
@@ -640,7 +640,7 @@ mod tests {
         assert_eq!(VMValue::Int(0).type_name(), "int");
         assert_eq!(VMValue::Float(0.0).type_name(), "float");
         assert_eq!(VMValue::String("".to_string()).type_name(), "string");
-        assert_eq!(VMValue::Path("/tmp".to_string()).type_name(), "path");
+        assert_eq!(VMValue::Path("/tmp".into()).type_name(), "path");
         assert_eq!(VMValue::List(vec![]).type_name(), "list");
         assert_eq!(VMValue::Attrs(BTreeMap::new()).type_name(), "set");
     }

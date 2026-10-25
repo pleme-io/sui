@@ -441,18 +441,18 @@ impl Compiler {
             }
             ast::Expr::PathAbs(p) => {
                 let text = p.syntax().text().to_string();
-                self.emit_constant(VMValue::Path(text))
+                self.emit_constant(VMValue::Path(text.into()))
             }
             ast::Expr::PathRel(p) => {
                 let text = p.syntax().text().to_string();
                 // Resolve relative paths against base_dir when available,
                 // or propagate from enclosing compiler.
                 let resolved = self.resolve_relative_path(&text);
-                self.emit_constant(VMValue::Path(resolved))
+                self.emit_constant(VMValue::Path(resolved.into()))
             }
             ast::Expr::PathHome(p) => {
                 let text = p.syntax().text().to_string();
-                self.emit_constant(VMValue::Path(text))
+                self.emit_constant(VMValue::Path(text.into()))
             }
             ast::Expr::PathSearch(p) => {
                 let text = p.syntax().text().to_string();
@@ -461,7 +461,7 @@ impl Compiler {
                     .and_then(|s| s.strip_suffix('>'))
                     .unwrap_or(&text);
                 if let Some(resolved) = resolve_search_path(inner) {
-                    self.emit_constant(VMValue::Path(resolved))
+                    self.emit_constant(VMValue::Path(resolved.into()))
                 } else {
                     // Wrap the throw in a THUNK so it only fires when forced.
                     // This matches CppNix: unresolvable search paths are deferred

@@ -2222,7 +2222,7 @@ impl<'a> VM<'a> {
                     func: Rc::new(move |args2| {
                         let path = match &args2[0] {
                             VMValue::String(s) => s.clone(),
-                            VMValue::Path(p) => p.clone(),
+                            VMValue::Path(p) => p.to_string(),
                             other => {
                                 return Err(VMError::TypeError {
                                     expected: "path or string",
@@ -2247,7 +2247,7 @@ impl<'a> VM<'a> {
                 let forced = self.force_value(arg.clone())?;
                 let path = match forced.to_vmvalue() {
                     VMValue::String(s) => s,
-                    VMValue::Path(p) => p,
+                    VMValue::Path(p) => p.to_string(),
                     other => {
                         return Err(VMError::TypeError {
                             expected: "path or string",
@@ -2428,7 +2428,7 @@ impl<'a> VM<'a> {
     fn coerce_drv_env_value(&mut self, v: &VMValue) -> Option<String> {
         match v {
             VMValue::String(s) => Some(s.clone()),
-            VMValue::Path(p) => Some(p.clone()),
+            VMValue::Path(p) => Some(p.to_string()),
             VMValue::Int(n) => Some(n.to_string()),
             // CppNix uses C printf "%f" → always 6 decimals (`1.5` → "1.500000").
             // Rust's `{}` strips trailing zeros; match the tree-walker's `{f:.6}`.
@@ -2547,7 +2547,7 @@ impl<'a> VM<'a> {
                             VMValue::Bool(true) => out.push("1".to_string()),
                             VMValue::Bool(false) => out.push(String::new()),
                             VMValue::Null => out.push(String::new()),
-                            VMValue::Path(p) => out.push(p.clone()),
+                            VMValue::Path(p) => out.push(p.to_string()),
                             _ => out.push(String::new()),
                         }
                     }
@@ -2923,7 +2923,7 @@ impl<'a> VM<'a> {
             crate::value::StringKeyedValue::Int(n) => NanBox::int(*n),
             crate::value::StringKeyedValue::Float(f) => NanBox::float(*f),
             crate::value::StringKeyedValue::String(s) => NanBox::string(s.clone()),
-            crate::value::StringKeyedValue::Path(p) => NanBox::from_vmvalue(&VMValue::Path(p.clone())),
+            crate::value::StringKeyedValue::Path(p) => NanBox::from_vmvalue(&VMValue::Path(p.as_str().into())),
             crate::value::StringKeyedValue::List(items) => {
                 let nb_items: Vec<NanBox> = items.iter().map(|v| self.string_keyed_to_nanbox(v)).collect();
                 NanBox::list(nb_items)
@@ -4347,7 +4347,7 @@ mod tests {
     // -- Path literals --------------------------------------------------
     #[test]
     fn eval_absolute_path() {
-        assert_eq!(eval("/tmp/x"), VMValue::Path("/tmp/x".to_string()));
+        assert_eq!(eval("/tmp/x"), VMValue::Path("/tmp/x".into()));
     }
     // -- Complex expressions --------------------------------------------
     #[test]

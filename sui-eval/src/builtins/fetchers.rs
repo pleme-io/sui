@@ -46,7 +46,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
         let path = dir.join(&hash);
         std::fs::write(&path, &bytes)
             .map_err(|e| EvalError::TypeError(format!("fetchurl: {e}")))?;
-        Ok(Value::Path(Box::new(SmolStr::from(path.to_string_lossy().as_ref()))))
+        Ok(Value::path(path.to_string_lossy().as_ref()))
     });
 
     // fetchTarball
@@ -93,7 +93,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
         }
         // `builtins.fetchTarball` copied-to-store is named `-source` by CppNix.
         crate::path::register_fetched_source(&extract_dir, "source");
-        Ok(Value::Path(Box::new(SmolStr::from(extract_dir.to_string_lossy().as_ref()))))
+        Ok(Value::path(extract_dir.to_string_lossy().as_ref()))
     });
 }
 
@@ -250,7 +250,7 @@ pub(crate) fn git_result_attrs(target: &std::path::Path, submodules: bool) -> Re
     let narhash_hex = format!("{:x}", Sha256::digest(rev.as_bytes()));
 
     let mut result = NixAttrs::new();
-    result.insert("outPath".into(), Value::Path(Box::new(SmolStr::from(target_str.as_str()))));
+    result.insert("outPath".into(), Value::path(target_str.as_str()));
     result.insert("rev".into(), Value::string(rev));
     result.insert("shortRev".into(), Value::string(short_rev));
     result.insert("revCount".into(), Value::Int(rev_count));
@@ -324,7 +324,7 @@ pub(crate) fn fetch_mercurial(arg: &Value) -> Result<Value, EvalError> {
     let mut result = NixAttrs::new();
     result.insert(
         "outPath".into(),
-        Value::Path(Box::new(SmolStr::from(target.to_string_lossy().as_ref()))),
+        Value::path(target.to_string_lossy().as_ref()),
     );
     let rev = rev_opt.unwrap_or_else(|| "tip".into());
     result.insert("rev".into(), Value::string(rev.clone()));
@@ -421,7 +421,7 @@ pub(crate) fn fetch_tree(arg: &Value) -> Result<Value, EvalError> {
             let mut result = NixAttrs::new();
             result.insert(
                 "outPath".into(),
-                Value::Path(Box::new(SmolStr::from(extract_dir.to_string_lossy().as_ref()))),
+                Value::path(extract_dir.to_string_lossy().as_ref()),
             );
             result.insert(
                 "narHash".into(),
@@ -435,7 +435,7 @@ pub(crate) fn fetch_tree(arg: &Value) -> Result<Value, EvalError> {
                 .ok_or_else(|| EvalError::AttrNotFound("path".into()))?
                 .to_str()?;
             let mut result = NixAttrs::new();
-            result.insert("outPath".into(), Value::Path(Box::new(SmolStr::from(p.as_str()))));
+            result.insert("outPath".into(), Value::path(p.as_str()));
             Ok(Value::Attrs(Rc::new(result)))
         }
         other => Err(EvalError::NotImplemented(format!(

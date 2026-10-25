@@ -22,7 +22,7 @@ pub fn string_keyed_to_eval(sk: &StringKeyedValue) -> Value {
         StringKeyedValue::Int(n) => Value::Int(*n),
         StringKeyedValue::Float(f) => Value::Float(*f),
         StringKeyedValue::String(s) => Value::string(s.clone()),
-        StringKeyedValue::Path(p) => Value::Path(Box::new(SmolStr::from(p.as_str()))),
+        StringKeyedValue::Path(p) => Value::path(p.as_str()),
         StringKeyedValue::List(items) => {
             Value::list(items.iter().map(string_keyed_to_eval).collect())
         }
@@ -83,7 +83,7 @@ pub fn eval_to_vm(val: &Value, interner: &mut Interner) -> VMValue {
         Value::Int(n) => VMValue::Int(*n),
         Value::Float(f) => VMValue::Float(*f),
         Value::String(s) => VMValue::String(s.chars.to_string()),
-        Value::Path(p) => VMValue::Path(p.to_string()),
+        Value::Path(p) => VMValue::Path((**p).clone()),
         Value::List(items) => {
             VMValue::List(items.iter().map(|v| eval_to_vm(v, interner)).collect())
         }
@@ -164,7 +164,7 @@ mod tests {
     fn roundtrip_path() {
         let sk = StringKeyedValue::Path("/tmp/x".to_string());
         let val = string_keyed_to_eval(&sk);
-        assert_eq!(val, Value::Path(Box::new(SmolStr::from("/tmp/x"))));
+        assert_eq!(val, Value::path("/tmp/x"));
     }
 
     #[test]

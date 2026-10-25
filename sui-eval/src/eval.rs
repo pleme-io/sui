@@ -989,11 +989,11 @@ fn maybe_thunk(
             // the marquee cid root threw in `lib.path.hasStorePathPrefix`
             // precisely because sui kept the raw `/.` text.
             let text = crate::path::canon_abs(&p.syntax().text().to_string());
-            Value::Path(Box::new(SmolStr::from(text.as_str())))
+            Value::path(text.as_str())
         }
         ast::Expr::PathHome(p) if !parts_have_interpolation(&p.parts()) => {
             let text = p.syntax().text().to_string();
-            Value::Path(Box::new(SmolStr::from(text.as_str())))
+            Value::path(text.as_str())
         }
         // Non-interpolated string literal: a constant value with no
         // interpolation, so `eval_str` runs no `${…}` force/coerce — it is
@@ -1347,7 +1347,7 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
             // Canonicalize like CppNix (`/.` → `/`, `.`/`..` collapse,
             // `..` clamps at root) — see the WHNF fast-path above.
             let text = crate::path::canon_abs(&p.syntax().text().to_string());
-            return Ok(Value::Path(Box::new(SmolStr::from(text.as_str()))));
+            return Ok(Value::path(text.as_str()));
         }
         ast::Expr::PathRel(p) => {
             // Real Nix resolves `./foo.nix` against the directory
@@ -1386,7 +1386,7 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
             } else {
                 text.clone()
             };
-            return Ok(Value::Path(Box::new(SmolStr::from(resolved.as_str()))));
+            return Ok(Value::path(resolved.as_str()));
         }
         ast::Expr::PathHome(p) => {
             let parts = p.parts();
@@ -1394,7 +1394,7 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
                 return eval_interpol_path_parts(&parts, PathKind::Home, env);
             }
             let text = p.syntax().text().to_string();
-            return Ok(Value::Path(Box::new(SmolStr::from(text.as_str()))));
+            return Ok(Value::path(text.as_str()));
         }
         ast::Expr::PathSearch(p) => {
             // `<name>` or `<name/sub/path>` — resolve via NIX_PATH
@@ -1407,7 +1407,7 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
                 .and_then(|s| s.strip_suffix('>'))
                 .unwrap_or(&text);
             if let Some(resolved) = crate::builtins::resolve_search_path(inner) {
-                return Ok(Value::Path(Box::new(SmolStr::from(resolved.as_str()))));
+                return Ok(Value::path(resolved.as_str()));
             }
             // CppNix: search path resolution failure is a throw
             // (catchable by tryEval). Used by nixpkgs impure-overlays.nix
@@ -2313,11 +2313,11 @@ fn eval_pure_constant_arg(arg_expr: &ast::Expr) -> Option<Value> {
         }
         ast::Expr::PathAbs(p) if !parts_have_interpolation(&p.parts()) => {
             let text = crate::path::canon_abs(&p.syntax().text().to_string());
-            Some(Value::Path(Box::new(SmolStr::from(text.as_str()))))
+            Some(Value::path(text.as_str()))
         }
         ast::Expr::PathHome(p) if !parts_have_interpolation(&p.parts()) => {
             let text = p.syntax().text().to_string();
-            Some(Value::Path(Box::new(SmolStr::from(text.as_str()))))
+            Some(Value::path(text.as_str()))
         }
         _ => None,
     }
@@ -2437,7 +2437,7 @@ fn eval_interpol_path_parts(
             .to_string_lossy()
             .into_owned(),
     };
-    Ok(Value::Path(Box::new(SmolStr::from(resolved.as_str()))))
+    Ok(Value::path(resolved.as_str()))
 }
 
 /// Which kind of interpolatable path literal — governs how the
@@ -3523,8 +3523,8 @@ fn eval_binop(
                 s.push_str(&b.chars);
                 Ok(Value::String(Rc::new(NixString::with_context(s, ctx))))
             }
-            (Value::Path(a), Value::String(b)) => Ok(Value::Path(Box::new(SmolStr::from(format!("{a}{}", b.chars).as_str())))),
-            (Value::Path(a), Value::Path(b)) => Ok(Value::Path(Box::new(SmolStr::from(format!("{a}/{b}").as_str())))),
+            (Value::Path(a), Value::String(b)) => Ok(Value::path(format!("{a}{}", b.chars).as_str())),
+            (Value::Path(a), Value::Path(b)) => Ok(Value::path(format!("{a}/{b}").as_str())),
             // CppNix coerces attrsets with outPath when used with +
             (Value::Attrs(_), _) | (_, Value::Attrs(_)) => {
                 let (ls, lctx) = l.coerce_to_string()?;
@@ -4760,11 +4760,11 @@ mod tests {
     #[test]
     fn literal_paths() {
         // Relative path
-        assert_eq!(ev("./foo"), Value::Path(Box::new(SmolStr::from("./foo"))));
+        assert_eq!(ev("./foo"), Value::path("./foo"));
         // Absolute path
-        assert_eq!(ev("/nix/store/abc"), Value::Path(Box::new(SmolStr::from("/nix/store/abc"))));
+        assert_eq!(ev("/nix/store/abc"), Value::path("/nix/store/abc"));
         // Home path
-        assert_eq!(ev("~/myfile"), Value::Path(Box::new(SmolStr::from("~/myfile"))));
+        assert_eq!(ev("~/myfile"), Value::path("~/myfile"));
     }
 
     // ── Interpolated path literals (cid-marquee root, 2026-07-12) ──
@@ -4780,7 +4780,7 @@ mod tests {
     fn interp_path_abs_splices_and_types_path() {
         // /a/${x}/b with x="foo" → /a/foo/b, type path (nix oracle).
         let v = ev(r#"let x = "foo"; in /a/${x}/b"#);
-        assert_eq!(v, Value::Path(Box::new(SmolStr::from("/a/foo/b"))));
+        assert_eq!(v, Value::path("/a/foo/b"));
     }
 
     #[test]
@@ -4788,7 +4788,7 @@ mod tests {
         // Multiple interpolations + a slash inside the spliced value.
         assert_eq!(
             ev(r#"let a = "x"; b = "y/z"; in /p/${a}/${b}.nix"#),
-            Value::Path(Box::new(SmolStr::from("/p/x/y/z.nix"))),
+            Value::path("/p/x/y/z.nix"),
         );
     }
 
@@ -4798,7 +4798,7 @@ mod tests {
         // and the `/` seam is normalized: `/bar/` + `/tmp/foo` → /bar/tmp/foo.
         assert_eq!(
             ev(r#"/bar/${/tmp/foo}"#),
-            Value::Path(Box::new(SmolStr::from("/bar/tmp/foo"))),
+            Value::path("/bar/tmp/foo"),
         );
     }
 
@@ -4810,7 +4810,7 @@ mod tests {
         let _g = push_eval_file(std::path::PathBuf::from("/tmp/example/default.nix"));
         assert_eq!(
             ev(r#"let x = "foo"; in ./${x}.nix"#),
-            Value::Path(Box::new(SmolStr::from("/tmp/example/foo.nix"))),
+            Value::path("/tmp/example/foo.nix"),
         );
     }
 
@@ -4820,7 +4820,7 @@ mod tests {
         // text; the interpolated branch splices then does the same.
         assert_eq!(
             ev(r#"let x = "foo"; in ./${x}.nix"#),
-            Value::Path(Box::new(SmolStr::from("./foo.nix"))),
+            Value::path("./foo.nix"),
         );
     }
 
@@ -4831,7 +4831,7 @@ mod tests {
         // separate, pre-existing concern, not introduced here).
         assert_eq!(
             ev(r#"let x = "foo"; in ~/${x}/bar"#),
-            Value::Path(Box::new(SmolStr::from("~/foo/bar"))),
+            Value::path("~/foo/bar"),
         );
     }
 
@@ -4839,8 +4839,8 @@ mod tests {
     fn interp_path_non_interpolated_still_raw() {
         // A path with no `${…}` must keep the trivial raw-text shortcut
         // (byte-for-byte identical to the plain branch).
-        assert_eq!(ev("/a/b/c"), Value::Path(Box::new(SmolStr::from("/a/b/c"))));
-        assert_eq!(ev("~/plain"), Value::Path(Box::new(SmolStr::from("~/plain"))));
+        assert_eq!(ev("/a/b/c"), Value::path("/a/b/c"));
+        assert_eq!(ev("~/plain"), Value::path("~/plain"));
     }
 
     #[test]
@@ -4891,9 +4891,9 @@ mod tests {
     #[test]
     fn op_path_concat() {
         // path + string
-        assert_eq!(ev(r#"./foo + "/bar""#), Value::Path(Box::new(SmolStr::from("./foo/bar"))));
+        assert_eq!(ev(r#"./foo + "/bar""#), Value::path("./foo/bar"));
         // path + path (should join with /)
-        assert_eq!(ev("./a + ./b"), Value::Path(Box::new(SmolStr::from("./a/./b"))));
+        assert_eq!(ev("./a + ./b"), Value::path("./a/./b"));
     }
 
     #[test]
@@ -7309,7 +7309,7 @@ mod tests {
     fn path_concat_with_string() {
         assert_eq!(
             ev(r#"/foo + "bar""#),
-            Value::Path(Box::new(SmolStr::from("/foobar"))),
+            Value::path("/foobar"),
         );
     }
 
@@ -7317,7 +7317,7 @@ mod tests {
     fn path_concat_with_path() {
         assert_eq!(
             ev("/foo + /bar"),
-            Value::Path(Box::new(SmolStr::from("/foo//bar"))),
+            Value::path("/foo//bar"),
         );
     }
 

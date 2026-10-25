@@ -491,7 +491,7 @@ impl NanBox {
             VMValue::Int(n) => Self::int(*n),
             VMValue::Float(f) => Self::float(*f),
             VMValue::String(s) => Self::string(s.clone()),
-            VMValue::Path(p) => Self::path(p.clone()),
+            VMValue::Path(p) => Self::path(p.to_string()),
             VMValue::List(items) => {
                 let boxed: Vec<NanBox> = items.iter().map(|v| Self::from_vmvalue(v)).collect();
                 Self::list(boxed)
@@ -523,7 +523,7 @@ impl NanBox {
         } else if let Some(obj) = self.as_heap() {
             match obj {
                 HeapObject::String(s) => VMValue::String(s.clone()),
-                HeapObject::Path(p) => VMValue::Path(p.clone()),
+                HeapObject::Path(p) => VMValue::Path(p.as_str().into()),
                 HeapObject::List(items) => {
                     VMValue::List(items.iter().map(NanBox::to_vmvalue).collect())
                 }

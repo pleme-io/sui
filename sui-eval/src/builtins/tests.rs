@@ -558,7 +558,7 @@ fn builtins_dir_of_string() {
 fn builtins_dir_of_path() {
     assert_eq!(
         ev("builtins.dirOf /nix/store/abc"),
-        Value::Path(Box::new(SmolStr::from("/nix/store"))),
+        Value::path("/nix/store"),
     );
 }
 
@@ -2139,7 +2139,7 @@ fn pure_mode_toggle() {
 #[test]
 fn builtins_to_path() {
     let v = ev(r#"builtins.toPath "/foo/bar""#);
-    assert_eq!(v, Value::Path(Box::new(SmolStr::from("/foo/bar"))));
+    assert_eq!(v, Value::path("/foo/bar"));
 }
 
 #[test]
@@ -2151,7 +2151,7 @@ fn builtins_to_path_rejects_relative() {
 #[test]
 fn builtins_store_path() {
     let v = ev(r#"builtins.storePath "/nix/store/abc-hello""#);
-    assert_eq!(v, Value::Path(Box::new(SmolStr::from("/nix/store/abc-hello"))));
+    assert_eq!(v, Value::path("/nix/store/abc-hello"));
 }
 
 #[test]

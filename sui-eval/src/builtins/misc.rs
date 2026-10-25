@@ -229,7 +229,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                 };
                 let full_path = format!("{path}{suffix}");
                 if std::path::Path::new(&full_path).exists() {
-                    return Ok(Value::Path(Box::new(SmolStr::from(full_path.as_str()))));
+                    return Ok(Value::path(full_path.as_str()));
                 }
             }
         }

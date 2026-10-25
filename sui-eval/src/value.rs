@@ -638,13 +638,21 @@ pub enum Value {
     Int(i64),
     Float(f64),
     String(Rc<NixString>),
-    Path(Box<SmolStr>),
+    Path(Box<sui_compat::canon_path::CanonPath>),
     List(Rc<NixList>),
     Attrs(Rc<NixAttrs>),
     Lambda(Rc<Closure>),
     Builtin(Box<BuiltinFn>),
     /// A lazy value (thunk) with memoization and blackhole detection.
     Thunk(Thunk),
+}
+
+impl Value {
+    /// A path value, canonicalized as cppnix's `CanonPath` (the only way to build one).
+    #[must_use]
+    pub fn path(raw: &str) -> Self {
+        Value::Path(Box::new(sui_compat::canon_path::CanonPath::new(raw)))
+    }
 }
 
 // ── Concrete: construction-guaranteed non-thunk ──────────────
@@ -669,7 +677,7 @@ pub enum Concrete {
     Int(i64),
     Float(f64),
     String(Rc<NixString>),
-    Path(Box<SmolStr>),
+    Path(Box<sui_compat::canon_path::CanonPath>),
     List(Rc<NixList>),      // elements may be lazy (correct for Nix)
     Attrs(Rc<NixAttrs>),       // values may be lazy (correct for Nix)
     Lambda(Rc<Closure>),
@@ -3899,7 +3907,13 @@ impl Value {
             // cppnix decides to realize. If the coerced store path is absent and
             // the context names the producing `.drv`, realize it.
             Value::String(ns) => {
-                let out_path = ns.chars.to_string();
+                if !ns.chars.starts_with('/') {
+                    return Err(EvalError::TypeError(format!(
+                        "{context}: string '{}' doesn't represent an absolute path",
+                        ns.chars
+                    )));
+                }
+                let out_path = sui_compat::canon_path::CanonPath::new(&ns.chars).to_string();
                 if let Some(drv_path) = out_path_needs_realize(&out_path, &ns.context) {
                     self.realize_if_absent(&drv_path, &out_path, context)?;
                 }
@@ -4411,7 +4425,7 @@ mod tests {
     #[test]
     fn to_json_path() {
         assert_eq!(
-            Value::Path(Box::new(SmolStr::from("/nix/store"))).to_json(),
+            Value::path("/nix/store").to_json(),
             serde_json::Value::String("/nix/store".to_string()),
         );
     }
@@ -4621,7 +4635,7 @@ mod tests {
     fn type_name_string() { assert_eq!(Value::string("").type_name(), "string"); }
 
     #[test]
-    fn type_name_path() { assert_eq!(Value::Path(Box::new(SmolStr::from(""))).type_name(), "path"); }
+    fn type_name_path() { assert_eq!(Value::path("").type_name(), "path"); }
 
     #[test]
     fn type_name_list() { assert_eq!(Value::list(vec![]).type_name(), "list"); }
@@ -4808,7 +4822,7 @@ mod tests {
 
     #[test]
     fn display_path() {
-        assert_eq!(format!("{}", Value::Path(Box::new(SmolStr::from("/foo")))), "/foo");
+        assert_eq!(format!("{}", Value::path("/foo")), "/foo");
     }
 
     #[test]

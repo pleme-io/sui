@@ -101,7 +101,7 @@ fn render_at(v: &VMValue, interner: &Interner, depth: usize) -> Result<String, S
             out.push('"');
             out
         }
-        VMValue::Path(p) => p.clone(),
+        VMValue::Path(p) => p.to_string(),
         VMValue::List(items) => {
             let mut out = String::from("[ ");
             for item in items {

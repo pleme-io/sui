@@ -42,7 +42,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                     Some(i) => s[..i].to_string(),
                     None => ".".to_string(),
                 };
-                return Ok(Value::Path(Box::new(SmolStr::from(dir.as_str()))));
+                return Ok(Value::path(dir.as_str()));
             }
             _ => return Err(EvalError::TypeError("dirOf: expected string or path".to_string())),
         };
@@ -73,7 +73,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
     });
 
     register_builtin(builtins, "readFileType", |args| {
-        let given = args[0].as_string()?;
+        let given = args[0].coerce_to_realized_path("readFileType")?;
         let path = crate::path::materialize_str(&given);
         match std::fs::symlink_metadata(&path) {
             Ok(meta) => {
@@ -119,7 +119,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
         if !s.starts_with('/') {
             return Err(EvalError::TypeError(format!("toPath: path must be absolute: {s}")));
         }
-        Ok(Value::Path(Box::new(SmolStr::from(s))))
+        Ok(Value::path(s))
     });
 
     register_builtin(builtins, "storePath", |args| {
@@ -127,7 +127,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
         if !s.starts_with("/nix/store/") {
             return Err(EvalError::TypeError(format!("storePath: not a store path: {s}")));
         }
-        Ok(Value::Path(Box::new(SmolStr::from(s))))
+        Ok(Value::path(s))
     });
 
     // pathExists — cppnix REALIZES a derivation argument (verified: `nix eval
@@ -336,7 +336,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
             }
         })?;
         crate::path::ensure_in_store(&s.store_path, &hash_root)?;
-        Ok(Value::Path(Box::new(SmolStr::from(s.store_path.as_str()))))
+        Ok(Value::path(s.store_path.as_str()))
     });
 }
 
