@@ -111,7 +111,11 @@ impl LocalBuilder {
                 .as_nanos()
         );
         let build_dir = format!("{}/{}", self.build_dir_base, build_id);
+        self.clear_invalid_outputs(drv).await?;
         std::fs::create_dir_all(&build_dir)?;
+        for (path, value) in SandboxConfig::attr_files(drv, &build_dir) {
+            std::fs::write(path, value)?;
+        }
 
         // 3. Create sandbox config from derivation
         let mut config = SandboxConfig::from_derivation(drv, &build_dir);
@@ -137,6 +141,7 @@ impl LocalBuilder {
                 log.push(&stderr);
             }
             let _ = std::fs::remove_dir_all(&build_dir);
+            let _ = self.clear_invalid_outputs(drv).await;
             return Ok(BuildResult::failure(
                 log.finish(),
                 stderr,
@@ -310,6 +315,53 @@ impl LocalBuilder {
     /// 3. Fall back to local build if substitution is not available
     ///
     /// Stops on the first build failure.
+    async fn clear_invalid_outputs(&self, drv: &Derivation) -> Result<(), BuildError> {
+        for output in drv.outputs.values() {
+            let path = Path::new(&output.path);
+            if std::fs::symlink_metadata(path).is_err() {
+                continue;
+            }
+            let valid = match StorePath::from_absolute_path(&output.path) {
+                Ok(sp) => self.store.is_valid_path(&sp).await.unwrap_or(false),
+                Err(_) => false,
+            };
+            if valid {
+                continue;
+            }
+            if path.is_dir() {
+                std::fs::remove_dir_all(path)?;
+            } else {
+                std::fs::remove_file(path)?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn output_paths_present(&self, paths: &[String]) -> bool {
+        for path in paths {
+            let Ok(sp) = StorePath::from_absolute_path(path) else {
+                return false;
+            };
+            if !self.store.is_valid_path(&sp).await.unwrap_or(false) {
+                return false;
+            }
+        }
+        true
+    }
+
+    async fn substitute_paths(&self, substitutor: &Substitutor, paths: &[String]) -> bool {
+        for path in paths {
+            let Ok(sp) = StorePath::from_absolute_path(path) else {
+                return false;
+            };
+            match substitutor.substitute(&sp).await {
+                Ok(SubstituteResult::Substituted { .. } | SubstituteResult::AlreadyPresent) => {}
+                _ => return false,
+            }
+        }
+        true
+    }
+
     async fn plan_closure(
         &self,
         closure: &BuildClosure,
@@ -317,29 +369,40 @@ impl LocalBuilder {
     ) -> Result<ClosurePlan, BuildError> {
         let index: std::collections::HashMap<&str, &sui_compat::derivation::Derivation> =
             closure.derivations.iter().map(|(p, d)| (p.as_str(), d)).collect();
-        let (target, _) = closure.try_target()?;
+        let (target, target_drv) = closure.try_target()?;
         let mut plan = ClosurePlan::default();
-        let mut seen = std::collections::HashSet::new();
-        let mut stack = vec![target.clone()];
-        while let Some(drv_path) = stack.pop() {
-            if !seen.insert(drv_path.clone()) {
-                continue;
-            }
+        let mut handled: std::collections::HashMap<String, std::collections::BTreeSet<String>> =
+            std::collections::HashMap::new();
+        let mut stack: Vec<(String, Vec<String>)> =
+            vec![(target.clone(), target_drv.outputs.keys().cloned().collect())];
+        while let Some((drv_path, wanted)) = stack.pop() {
             let Some(drv) = index.get(drv_path.as_str()) else {
                 continue;
             };
-            if self.all_outputs_exist(drv).await? {
+            let seen = handled.entry(drv_path.clone()).or_default();
+            let fresh: Vec<String> = wanted.into_iter().filter(|o| seen.insert(o.clone())).collect();
+            if fresh.is_empty() {
+                continue;
+            }
+            let paths: Vec<String> = fresh
+                .iter()
+                .filter_map(|o| drv.outputs.get(o).map(|out| out.path.clone()))
+                .collect();
+            if self.output_paths_present(&paths).await {
                 plan.present += 1;
                 continue;
             }
             if let Some(sub) = substitutor
-                && self.try_substitute_outputs(sub, drv).await
+                && self.substitute_paths(sub, &paths).await
             {
                 plan.substituted += 1;
                 continue;
             }
-            stack.extend(drv.input_derivations.keys().cloned());
-            plan.to_build.insert(drv_path);
+            if plan.to_build.insert(drv_path.clone()) {
+                for (input, outputs) in &drv.input_derivations {
+                    stack.push((input.clone(), outputs.clone()));
+                }
+            }
         }
         Ok(plan)
     }
@@ -994,7 +1057,7 @@ mod tests {
             &[
                 "-c",
                 &format!(
-                    "mkdir -p {} && echo data > {}/file.txt",
+                    "/bin/mkdir -p {} && echo data > {}/file.txt",
                     output_path.display(),
                     output_path.display(),
                 ),
@@ -1332,6 +1395,14 @@ mod tests {
             Ok(())
         }
 
+        async fn add_nar_at(
+            &self,
+            info: &PathInfo,
+            _nar_data: &[u8],
+        ) -> sui_store::traits::StoreResult<()> {
+            self.register_path(info).await
+        }
+
         async fn add_to_store(
             &self,
             name: &str,
@@ -1349,6 +1420,72 @@ mod tests {
             self.paths.lock().unwrap().insert(path, info.clone());
             Ok(info)
         }
+    }
+
+    #[tokio::test]
+    async fn a_stale_unregistered_output_is_cleared_before_building() {
+        let tmp = tempfile::tempdir().unwrap();
+        let out = tmp.path().join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        std::fs::write(out.join("debris"), "left by an interrupted build").unwrap();
+
+        let store = Arc::new(MockStore::new());
+        let builder = LocalBuilder::new(store, Box::new(NoSandbox))
+            .with_build_dir(tmp.path().join("build").to_str().unwrap().to_string());
+        let drv = make_drv(
+            "/bin/sh",
+            &["-c", &format!("/bin/mkdir {} && echo ok > {}/file", out.display(), out.display())],
+            out.to_str().unwrap(),
+        );
+
+        let result = builder.build(&drv).await.unwrap();
+        assert!(result.is_success(), "{}", result.log);
+        assert!(!out.join("debris").exists());
+    }
+
+    #[tokio::test]
+    async fn a_failed_build_leaves_no_partial_output() {
+        let tmp = tempfile::tempdir().unwrap();
+        let out = tmp.path().join("out");
+        let store = Arc::new(MockStore::new());
+        let builder = LocalBuilder::new(store, Box::new(NoSandbox))
+            .with_build_dir(tmp.path().join("build").to_str().unwrap().to_string());
+        let drv = make_drv(
+            "/bin/sh",
+            &["-c", &format!("/bin/mkdir {} && exit 1", out.display())],
+            out.to_str().unwrap(),
+        );
+
+        let result = builder.build(&drv).await.unwrap();
+        assert!(!result.is_success());
+        assert!(!out.exists());
+    }
+
+    #[tokio::test]
+    async fn an_input_wanted_for_out_ignores_its_absent_dev_output() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dep_out = "/nix/store/sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6-dep-1.0";
+        let dep_dev = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa2-dep-1.0-dev";
+        let target_out = tmp.path().join("target");
+
+        let store = Arc::new(MockStore::new().with_path(PathInfo::new(dep_out, "sha256:a")));
+        let builder = LocalBuilder::new(store, Box::new(NoSandbox))
+            .with_build_dir(tmp.path().join("build").to_str().unwrap().to_string());
+
+        let mut dep = make_drv("/bin/sh", &["-c", "exit 1"], dep_out);
+        dep.outputs.insert(
+            "dev".to_string(),
+            DerivationOutput { path: dep_dev.to_string(), hash_algo: String::new(), hash: String::new() },
+        );
+        let target = depends_on(
+            make_drv("/bin/sh", &["-c", &format!("echo t > {}", target_out.display())], target_out.to_str().unwrap()),
+            "dep.drv",
+        );
+        let closure = make_closure(vec![("dep.drv", dep), ("target.drv", target)]);
+
+        let result = builder.build_closure(&closure, None).await.unwrap();
+        assert!(result.is_success(), "{}", result.log);
+        assert!(result.log.contains("1 built"));
     }
 
     #[tokio::test]

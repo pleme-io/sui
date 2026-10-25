@@ -65,12 +65,64 @@ impl SandboxConfig {
                 .is_some_and(|v| v == "1"),
             builder: drv.builder.clone(),
             args: drv.args.clone(),
-            env: drv
-                .env
-                .iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect(),
+            env: Self::builder_env(drv, build_dir.as_ref()),
         }
+    }
+
+    fn pass_as_file_names(drv: &sui_compat::derivation::Derivation) -> Vec<String> {
+        drv.env
+            .get("passAsFile")
+            .map(|v| v.split_whitespace().map(str::to_owned).collect())
+            .unwrap_or_default()
+    }
+
+    fn attr_file_name(name: &str) -> String {
+        use sha2::Digest;
+        format!(
+            ".attr-{}",
+            sui_compat::store_path::nix_base32_encode(&sha2::Sha256::digest(name.as_bytes()))
+        )
+    }
+
+    #[must_use]
+    pub fn attr_files(drv: &sui_compat::derivation::Derivation, build_dir: &str) -> Vec<(String, String)> {
+        Self::pass_as_file_names(drv)
+            .into_iter()
+            .map(|name| {
+                let value = drv.env.get(&name).cloned().unwrap_or_default();
+                (format!("{build_dir}/{}", Self::attr_file_name(&name)), value)
+            })
+            .collect()
+    }
+
+    fn builder_env(drv: &sui_compat::derivation::Derivation, build_dir: &str) -> Vec<(String, String)> {
+        let cores = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
+        let mut env: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+        env.insert("PATH".into(), "/path-not-set".into());
+        env.insert("HOME".into(), "/homeless-shelter".into());
+        env.insert("NIX_STORE".into(), "/nix/store".into());
+        env.insert("NIX_BUILD_CORES".into(), cores.to_string());
+        let pass_as_file = Self::pass_as_file_names(drv);
+        for (k, v) in &drv.env {
+            if pass_as_file.contains(k) {
+                env.insert(format!("{k}Path"), format!("{build_dir}/{}", Self::attr_file_name(k)));
+            } else {
+                env.insert(k.clone(), v.clone());
+            }
+        }
+        for key in ["NIX_BUILD_TOP", "TMPDIR", "TEMPDIR", "TMP", "TEMP", "PWD"] {
+            env.insert(key.into(), build_dir.to_owned());
+        }
+        env.insert("NIX_LOG_FD".into(), "2".into());
+        env.insert("TERM".into(), "xterm-256color".into());
+        if drv.outputs.values().any(|o| !o.hash.is_empty()) {
+            for name in drv.env.get("impureEnvVars").map_or("", String::as_str).split_whitespace() {
+                if let Ok(value) = std::env::var(name) {
+                    env.insert(name.to_owned(), value);
+                }
+            }
+        }
+        env.into_iter().collect()
     }
 
     /// Set the builder executable path.
@@ -1483,10 +1535,42 @@ mod tests {
             env,
         };
         let config = SandboxConfig::from_derivation(&drv, "/tmp");
-        assert_eq!(config.env.len(), 3);
-        // BTreeMap iteration is sorted: CC, HOME, PATH
-        let keys: Vec<&str> = config.env.iter().map(|(k, _)| k.as_str()).collect();
-        assert_eq!(keys, vec!["CC", "HOME", "PATH"]);
+        let env: BTreeMap<&str, &str> = config.env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        assert_eq!(env["CC"], "gcc");
+        assert_eq!(env["HOME"], "/homeless-shelter");
+        assert_eq!(env["PATH"], "/usr/bin");
+        for key in ["NIX_BUILD_TOP", "TMPDIR", "TEMPDIR", "TMP", "TEMP", "PWD"] {
+            assert_eq!(env[key], "/tmp", "{key}");
+        }
+        assert_eq!(env["NIX_STORE"], "/nix/store");
+        assert_eq!(env["NIX_LOG_FD"], "2");
+    }
+
+    #[test]
+    fn pass_as_file_values_reach_the_builder_as_files() {
+        use sui_compat::derivation::Derivation;
+        use std::collections::BTreeMap;
+
+        let mut env = BTreeMap::new();
+        env.insert("passAsFile".into(), "text".into());
+        env.insert("text".into(), "#!/bin/sh".into());
+        let drv = Derivation {
+            outputs: BTreeMap::new(),
+            input_derivations: BTreeMap::new(),
+            input_sources: vec![],
+            system: "aarch64-darwin".to_string(),
+            builder: "/bin/sh".to_string(),
+            args: vec![],
+            env,
+        };
+        let config = SandboxConfig::from_derivation(&drv, "/b");
+        let env: BTreeMap<&str, &str> = config.env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        assert!(!env.contains_key("text"));
+        let files = SandboxConfig::attr_files(&drv, "/b");
+        assert_eq!(files.len(), 1);
+        assert_eq!(env["textPath"], files[0].0);
+        assert_eq!(files[0].1, "#!/bin/sh");
+        assert!(files[0].0.starts_with("/b/.attr-"));
     }
 
     #[test]

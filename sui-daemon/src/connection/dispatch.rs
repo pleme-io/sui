@@ -158,14 +158,19 @@ where
             targets.push(read_string(&mut self.reader).await?);
         }
         let _mode = read_u64(&mut self.reader).await?;
+        tracing::info!(?targets, "BuildPaths");
         for target in &targets {
             let store_path = target.split_once('!').map_or(target.as_str(), |(p, _)| p);
             if std::path::Path::new(store_path)
                 .extension()
                 .is_some_and(|e| e == "drv")
             {
-                if let Err(e) = sui_orchestrate::realize_drv(store_path).await {
-                    return self.refuse(&format!("BuildPaths {target}: {e}")).await;
+                match sui_orchestrate::realize_drv(store_path).await {
+                    Ok(outputs) => tracing::info!(%target, ?outputs, "BuildPaths realized"),
+                    Err(e) => {
+                        tracing::warn!(%target, error = %e, "BuildPaths failed");
+                        return self.refuse(&format!("BuildPaths {target}: {e}")).await;
+                    }
                 }
             } else {
                 let valid = match StorePath::from_absolute_path(store_path) {

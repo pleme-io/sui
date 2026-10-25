@@ -349,6 +349,22 @@ impl Store for LocalStore {
         Ok(())
     }
 
+    async fn add_nar_at(&self, info: &PathInfo, nar_data: &[u8]) -> StoreResult<()> {
+        let basename = info.path.rsplit('/').next().unwrap_or_default();
+        let dest = Path::new(&self.store_dir).join(basename);
+        if std::fs::symlink_metadata(&dest).is_ok() {
+            let cleared = if dest.is_dir() {
+                std::fs::remove_dir_all(&dest)
+            } else {
+                std::fs::remove_file(&dest)
+            };
+            cleared.map_err(StoreError::Io)?;
+        }
+        sui_compat::nar::unpack_nar(nar_data, &dest)
+            .map_err(|e| StoreError::Io(std::io::Error::other(e.to_string())))?;
+        self.register_path(info).await
+    }
+
     async fn add_to_store(
         &self,
         name: &str,
@@ -1838,6 +1854,24 @@ mod tests {
         let basename = info.path.strip_prefix(&format!("{store_dir}/")).unwrap();
         let unpacked_path = tmp_dir.path().join(basename);
         assert!(unpacked_path.exists());
+    }
+
+    #[tokio::test]
+    async fn add_nar_at_lands_at_the_input_addressed_path_it_was_given() {
+        use sui_compat::nar::{NarNode, NarWriter};
+
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let store_dir = tmp_dir.path().to_str().unwrap();
+        let store = LocalStore::open_in_memory_with_dir(store_dir).await.unwrap();
+        let mut nar_data = Vec::new();
+        NarWriter::write(&mut nar_data, &NarNode::Regular { executable: false, contents: b"dev".to_vec() }).unwrap();
+        let wanted = format!("{store_dir}/6ri3h0vsjx535glqdjiskjbb1kvmnbrw-bash-5.3p3-dev");
+        std::fs::write(&wanted, b"stale").unwrap();
+
+        let info = PathInfo::new(&wanted, "sha256:00");
+        store.add_nar_at(&info, &nar_data).await.unwrap();
+
+        assert_eq!(std::fs::read(&wanted).unwrap(), b"dev");
     }
 
     // ── hex_encode helper ──────────────────────────────────────

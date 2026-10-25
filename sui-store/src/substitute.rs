@@ -175,10 +175,34 @@ impl Substitutor {
             })
             .collect();
 
-        let _ = self
-            .local_store
-            .add_to_store(name, verified.bytes(), &refs)
-            .await?;
+        let _ = name;
+        use sha2::Digest;
+        let nar_hash = format!(
+            "sha256:{}",
+            sha2::Sha256::digest(verified.bytes())
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
+        );
+        let info = crate::traits::PathInfo {
+            path: path.to_absolute_path(),
+            nar_hash,
+            nar_size: i64::try_from(narinfo.nar_size).unwrap_or(i64::MAX),
+            references: refs,
+            deriver: narinfo.deriver.as_ref().map(|d| {
+                if d.starts_with('/') {
+                    d.clone()
+                } else {
+                    format!("{store_dir}/{d}")
+                }
+            }),
+            signatures: narinfo.signatures.clone(),
+            registration_time: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0)),
+            content_address: narinfo.ca.clone(),
+        };
+        self.local_store.add_nar_at(&info, verified.bytes()).await?;
 
         tracing::info!(
             path = %path.to_absolute_path(),
@@ -362,6 +386,14 @@ mod tests {
 
         async fn query_all_valid_paths(&self) -> StoreResult<Vec<StorePath>> {
             Ok(Vec::new())
+        }
+
+        async fn add_nar_at(&self, info: &PathInfo, nar_data: &[u8]) -> StoreResult<()> {
+            let name = info.path.rsplit('/').next().unwrap_or_default();
+            let name = name.split_once('-').map_or(name, |(_, n)| n);
+            self.add_to_store(name, nar_data, &info.references).await?;
+            self.valid_paths.lock().unwrap().push(info.path.clone());
+            Ok(())
         }
 
         async fn add_to_store(

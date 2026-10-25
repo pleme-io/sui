@@ -339,6 +339,12 @@ pub trait Store: Send + Sync {
         ))
     }
 
+    async fn add_nar_at(&self, _info: &PathInfo, _nar_data: &[u8]) -> StoreResult<()> {
+        Err(StoreError::NotSupported(
+            "add_nar_at not implemented for this backend".to_string(),
+        ))
+    }
+
     /// Register a pre-built path in the store database.
     async fn register_path(
         &self,
