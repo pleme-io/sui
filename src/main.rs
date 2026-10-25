@@ -102,13 +102,17 @@ enum Commands {
         /// `--read-only`): no `.drv` is written, so none can be built from.
         #[arg(long)]
         read_only: bool,
-        /// [REFUSED] Apply a function to the evaluated value.
+        /// Apply this function to the evaluated value.
         #[arg(long)] apply: Option<String>,
-        /// [REFUSED] Evaluate this file instead of the positional expression.
+        /// Evaluate this Nix file; the positional argument is then an attribute path in it.
         #[arg(long = "file", short = 'f')] file_flag: Option<String>,
     },
     Build {
         installable: Option<String>,
+        /// Build from this Nix file; the positional argument is then an attribute path in it.
+        #[arg(long = "file", short = 'f')] file: Option<String>,
+        /// Build from this expression; the positional argument is then an attribute path in it.
+        #[arg(long = "expr")] expr: Option<String>,
         /// Do not create the `result` symlink.
         #[arg(long)] no_link: bool,
         /// [REFUSED] Print the output paths to stdout.
@@ -120,6 +124,29 @@ enum Commands {
         #[arg(short = 'o', long)] out_link: Option<String>,
         /// [REFUSED] Force a rebuild to check reproducibility.
         #[arg(long)] rebuild: bool,
+    },
+    /// Instantiate Nix files or expressions: print each selection's `.drv`
+    /// path, its value (`--eval`), or build it (`--realise`). The engine behind
+    /// `nix-instantiate` and `nix-build`.
+    Instantiate {
+        /// Nix files (default `./default.nix`), or expressions with `-E`.
+        files: Vec<String>,
+        /// Read the positional arguments as expressions.
+        #[arg(short = 'E', long = "expr")] expr: bool,
+        /// Select this attribute path; repeatable.
+        #[arg(short = 'A', long = "attr")] attrs: Vec<String>,
+        /// Print each selection's value instead of its `.drv` path.
+        #[arg(long)] eval: bool,
+        /// Force the whole value (sui always does).
+        #[arg(long)] strict: bool,
+        /// Print values as JSON.
+        #[arg(long)] json: bool,
+        /// Build each selection, as `nix-build`.
+        #[arg(long)] realise: bool,
+        /// Do not create the `result` link.
+        #[arg(long)] no_link: bool,
+        /// Base name of the result links.
+        #[arg(short = 'o', long)] out_link: Option<String>,
     },
     /// Flake operations
     Flake {
@@ -7025,7 +7052,17 @@ async fn main() -> Result<(), CliError> {
             }
         }
 
-        Commands::Eval { expression, json, raw, expr_flag, max_force_depth, no_eval_cache, read_only, apply: _, file_flag: _ } => {
+        Commands::Eval { expression, json, raw, expr_flag, max_force_depth, no_eval_cache, read_only, apply, file_flag } => {
+            let (expression, expr_flag) = match file_flag {
+                Some(file) => {
+                    let selection = sui::installable::Selection {
+                        source: sui::installable::Source::File(sui::installable::resolve_file(&file, &std::env::current_dir()?)),
+                        attr: expression.unwrap_or_default(),
+                    };
+                    (None, Some(selection.expression()))
+                }
+                None => (expression, expr_flag),
+            };
             if read_only {
                 sui_store::drv_write::set_process_mode(sui_store::drv_write::DrvWriteMode::ReadOnly);
             }
@@ -7057,6 +7094,13 @@ async fn main() -> Result<(), CliError> {
                 },
                 (None, None) =>
                     return Err(CliError::MissingArgument("no expression provided".into())),
+            };
+            let expr = match apply {
+                Some(f) => {
+                    installable_flake_ref = None;
+                    ["(", &f, ") (", &expr, ")"].concat()
+                }
+                None => expr,
             };
             // ── Dark-side lever `eval-ir` (byte-RISKY) — SHADOW mode ──────────
             // OFF unless `SUI_IR` is set. Runs the flat-IR engine ALONGSIDE the
@@ -7370,8 +7414,20 @@ async fn main() -> Result<(), CliError> {
             }
         }
 
-        Commands::Build { installable: installable_opt, no_link, print_out_paths, json, dry_run, out_link, rebuild: _ } => {
+        Commands::Build { installable: installable_opt, file, expr, no_link, print_out_paths, json, dry_run, out_link, rebuild: _ } => {
             let request = BuildRequest { no_link, print_out_paths, json, dry_run, out_link };
+            let source = match (file, expr) {
+                (Some(f), _) => Some(sui::installable::Source::File(sui::installable::resolve_file(&f, &std::env::current_dir()?))),
+                (None, Some(e)) => Some(sui::installable::Source::Expr(e)),
+                (None, None) => None,
+            };
+            if let Some(source) = source {
+                let selection = sui::installable::Selection { source, attr: installable_opt.unwrap_or_default() };
+                for drv in selection_drv_paths(&selection)? {
+                    build_drv(&drv, &request).await?;
+                }
+                return Ok(());
+            }
             let installable = installable_opt.unwrap_or_else(|| ".#default".to_string());
 
             // The realize path is daemon-aware: `sui_orchestrate::realize_drv`
@@ -7443,6 +7499,30 @@ async fn main() -> Result<(), CliError> {
                 } else if let Err(shown) = drv_path {
                     // Not a derivation — just display the evaluated value.
                     println!("{shown}");
+                }
+            }
+        }
+
+        Commands::Instantiate { files, expr, attrs, eval, strict: _, json, realise, no_link, out_link } => {
+            let cwd = std::env::current_dir()?;
+            let no_files = files.is_empty();
+            let (drvs, rest): (Vec<String>, Vec<String>) = files
+                .into_iter()
+                .partition(|f| !expr && f.starts_with("/nix/store/") && f.ends_with(".drv"));
+            let request = BuildRequest { no_link, print_out_paths: false, json: false, dry_run: false, out_link };
+            for drv in drvs {
+                if realise { build_drv(&drv, &request).await? } else { println!("{drv}") }
+            }
+            if !rest.is_empty() || no_files {
+                for selection in sui::installable::legacy_selections(&rest, expr, &attrs, &cwd) {
+                    if eval {
+                        let output = eval_render_threaded(&selection.expression(), json, false)?;
+                        emit_eval_output(&output, false);
+                    } else {
+                        for drv in selection_drv_paths(&selection)? {
+                            if realise { build_drv(&drv, &request).await? } else { println!("{drv}") }
+                        }
+                    }
                 }
             }
         }
@@ -9461,6 +9541,16 @@ fn on_eval_stack<T: Send + 'static>(name: &str, f: impl FnOnce() -> T + Send + '
         .map_err(|e| fail(format!("spawn eval thread: {e}")))?
         .join()
         .map_err(|_| fail("eval thread panicked".into()))
+}
+
+fn selection_drv_paths(selection: &sui::installable::Selection) -> Result<Vec<String>, CliError> {
+    let rendered = eval_render_threaded(&selection.drv_paths_expression(), true, false)?;
+    let paths: Vec<String> = serde_json::from_str(&rendered).map_err(|e| CliError::Orchestrate {
+        operation: "instantiate",
+        message: format!("derivation list: {e}"),
+    })?;
+    let mut seen = std::collections::HashSet::new();
+    Ok(paths.into_iter().filter(|p| seen.insert(p.clone())).collect())
 }
 
 fn eval_render_threaded(expr: &str, json_flag: bool, raw_flag: bool) -> Result<String, CliError> {

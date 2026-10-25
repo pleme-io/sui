@@ -158,35 +158,21 @@ fn translate_rebuild(args: &[String]) -> Vec<String> {
 
 /// `nix-build [-A attr] [path] [flags]` → `sui build <path>#<attr> [flags]`.
 fn translate_build(args: &[String]) -> Vec<String> {
-    let mut attr: Option<String> = None;
-    let mut path: Option<String> = None;
-    let mut passthrough: Vec<String> = Vec::new();
+    let mut out = vec!["instantiate".to_string(), "--realise".to_string()];
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
-            "-A" | "--attr" if i + 1 < args.len() => {
-                attr = Some(args[i + 1].clone());
+            "--no-out-link" => out.push("--no-link".into()),
+            "-A" | "--attr" | "-o" | "--out-link" if i + 1 < args.len() => {
+                out.push(args[i].clone());
+                out.push(args[i + 1].clone());
                 i += 1;
             }
-            "--no-out-link" => passthrough.push("--no-link".into()),
-            s if !s.starts_with('-') && path.is_none() => path = Some(s.to_string()),
-            other => passthrough.push(other.to_string()),
+            other => out.push(other.to_string()),
         }
         i += 1;
     }
-    let installable = build_installable(path.as_deref(), attr.as_deref());
-    let mut out = vec!["build".to_string(), installable];
-    out.extend(passthrough);
     out
-}
-
-fn build_installable(path: Option<&str>, attr: Option<&str>) -> String {
-    match (path, attr) {
-        (Some(p), Some(a)) => format!("{p}#{a}"),
-        (Some(p), None)    => p.to_string(),
-        (None,    Some(a)) => format!(".#{a}"),
-        (None,    None)    => ".".to_string(),
-    }
 }
 
 /// `nix-store` → `sui store <op>` (op derived from flag).
@@ -269,21 +255,12 @@ fn translate_shell(args: &[String]) -> Vec<String> {
 /// Pure-instantiate (without `--eval`) currently has no sui equivalent
 /// and is passed through so sui's clap reports a clear NotImplemented.
 fn translate_instantiate(args: &[String]) -> Vec<String> {
-    let mut out = vec!["eval".to_string()];
-    let mut i = 0;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--eval" | "--strict" | "--read-write-mode" => {} // sui eval is always eval+strict
-            "-E" | "--expr" if i + 1 < args.len() => {
-                out.push("--expr".into());
-                out.push(args[i + 1].clone());
-                i += 1;
-            }
-            "--json" => out.push("--json".into()),
-            "--raw"  => out.push("--raw".into()),
+    let mut out = vec!["instantiate".to_string()];
+    for arg in args {
+        match arg.as_str() {
+            "--read-write-mode" => {}
             other => out.push(other.to_string()),
         }
-        i += 1;
     }
     out
 }
@@ -397,25 +374,25 @@ mod tests {
     #[test]
     fn translate_nix_build_with_attr() {
         let got = translate_legacy_argv(LegacyCmd::Build, &s(&["-A", "hello", "default.nix"]));
-        assert_eq!(got, s(&["build", "default.nix#hello"]));
+        assert_eq!(got, s(&["instantiate", "--realise", "-A", "hello", "default.nix"]));
     }
 
     #[test]
     fn translate_nix_build_default_path_and_attr() {
         let got = translate_legacy_argv(LegacyCmd::Build, &s(&["-A", "hello"]));
-        assert_eq!(got, s(&["build", ".#hello"]));
+        assert_eq!(got, s(&["instantiate", "--realise", "-A", "hello"]));
     }
 
     #[test]
     fn translate_nix_build_path_only() {
         let got = translate_legacy_argv(LegacyCmd::Build, &s(&["default.nix"]));
-        assert_eq!(got, s(&["build", "default.nix"]));
+        assert_eq!(got, s(&["instantiate", "--realise", "default.nix"]));
     }
 
     #[test]
     fn translate_nix_build_passthrough_no_out_link() {
         let got = translate_legacy_argv(LegacyCmd::Build, &s(&["--no-out-link", "default.nix"]));
-        assert_eq!(got, s(&["build", "default.nix", "--no-link"]));
+        assert_eq!(got, s(&["instantiate", "--realise", "--no-link", "default.nix"]));
     }
 
     #[test]
@@ -463,7 +440,7 @@ mod tests {
     #[test]
     fn translate_nix_instantiate_eval_expr() {
         let got = translate_legacy_argv(LegacyCmd::Instantiate, &s(&["--eval", "-E", "1+2", "--json"]));
-        assert_eq!(got, s(&["eval", "--expr", "1+2", "--json"]));
+        assert_eq!(got, s(&["instantiate", "--eval", "-E", "1+2", "--json"]));
     }
 
     #[test]

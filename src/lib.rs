@@ -7,6 +7,7 @@
 
 pub mod api;
 pub mod build_face;
+pub mod installable;
 pub mod child_usage;
 pub mod flip_probe;
 

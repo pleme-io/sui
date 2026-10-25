@@ -289,28 +289,23 @@ pub const CONTRACT: &[(&[&str], &str, Honour)] = &[
     (&["eval"], "no_eval_cache", H),
     // Selects `sui_store::drv_write::DrvWriteMode::ReadOnly`.
     (&["eval"], "read_only", H),
-    (
-        &["eval"],
-        "apply",
-        Honour::Refused {
-            since: NOW,
-            reason: "`--apply <f>` names a function to apply to the evaluated value; sui \
-                     discards it and prints the UNAPPLIED value, which is a different value \
-                     wearing the right exit code",
-        },
-    ),
-    (
-        &["eval"],
-        "file_flag",
-        Honour::Refused {
-            since: NOW,
-            reason: "`-f/--file <path>` selects the file to evaluate; sui discards it and \
-                     evaluates the positional expression instead, so the operator reads a \
-                     result from the wrong source",
-        },
-    ),
+    (&["eval"], "apply", H),
+    (&["eval"], "file_flag", H),
+    // ── instantiate ─────────────────────────────────────────────────────
+    (&["instantiate"], "files", H),
+    (&["instantiate"], "expr", H),
+    (&["instantiate"], "attrs", H),
+    (&["instantiate"], "eval", H),
+    // Vacuous: sui forces the whole value on every eval.
+    (&["instantiate"], "strict", H),
+    (&["instantiate"], "json", H),
+    (&["instantiate"], "realise", H),
+    (&["instantiate"], "no_link", H),
+    (&["instantiate"], "out_link", H),
     // ── build ───────────────────────────────────────────────────────────
     (&["build"], "installable", H),
+    (&["build"], "file", H),
+    (&["build"], "expr", H),
     // Suppresses the `result` links `link_build_outputs` otherwise creates.
     (&["build"], "no_link", H),
     (&["build"], "print_out_paths", H),
