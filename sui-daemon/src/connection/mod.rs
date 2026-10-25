@@ -16,6 +16,7 @@ mod dispatch;
 mod gc;
 mod handshake;
 mod query;
+mod realize;
 pub(crate) mod wire;
 
 #[cfg(test)]
@@ -26,6 +27,8 @@ use std::sync::Arc;
 use sui_store::traits::Store;
 
 use crate::trust::TrustLevel;
+
+pub use realize::{DrvRealizer, OrchestrateRealizer};
 
 // ── Protocol version thresholds ─────────────────────────────────
 //
@@ -127,6 +130,8 @@ pub struct Connection<S, R, W> {
     signatures: SignaturePolicy,
     store_dir: std::path::PathBuf,
     state_dir: std::path::PathBuf,
+    verbosity: sui_compat::activity::Verbosity,
+    drvs: Arc<dyn DrvRealizer>,
 }
 
 impl<S, R, W> Connection<S, R, W>
@@ -149,7 +154,16 @@ where
             signatures: SignaturePolicy::default(),
             store_dir: std::path::PathBuf::from(sui_compat::store_path::DEFAULT_STORE_DIR),
             state_dir: std::path::PathBuf::from("/nix/var/nix"),
+            verbosity: sui_compat::activity::Verbosity::Info,
+            drvs: Arc::new(OrchestrateRealizer),
         }
+    }
+
+    /// Build derivations through `drvs` instead of the local pipeline.
+    #[must_use]
+    pub fn with_realizer(mut self, drvs: Arc<dyn DrvRealizer>) -> Self {
+        self.drvs = drvs;
+        self
     }
 
     #[must_use]

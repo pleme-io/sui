@@ -11,6 +11,9 @@ use sui_store::traits::{PathInfo, Store, StoreError, StoreResult, VerifyResult};
 
 use super::{Connection, ConnectionError};
 use crate::trust::TrustLevel;
+use sui_compat::activity::{
+    Activity, ActivityEvent, ActivitySink, ActivityType, BuilderLog, ResultType, SharedSink, Verbosity, Worker,
+};
 
 const A_DRV: &str = "/nix/store/iyb4kvbj4ldvky1ia33wv05fsk49xcil-a.drv";
 const A_OUT: &str = "/nix/store/19k94y693b5mi3rbb0f3y9c4zq1jc3z0-a";
@@ -33,12 +36,16 @@ struct TestStore {
 
 impl TestStore {
     fn with(self, path: &str) -> Self {
+        self.add(path);
+        self
+    }
+
+    fn add(&self, path: &str) {
         self.paths.lock().unwrap().insert(path.to_string(), PathInfo {
             nar_hash: format!("sha256:{}", NixHash::of(HashAlgorithm::Sha256, path.as_bytes()).to_hex()),
             nar_size: 8,
             ..PathInfo::new(path, "")
         });
-        self
     }
 
     fn with_drvs(mut self) -> Self {
@@ -1060,4 +1067,163 @@ async fn a_store_error_is_an_error_frame_not_a_dropped_connection() {
     assert_eq!(r.error(), "database error: down");
     r.end();
     assert!(matches!(ConnectionError::Op("x".into()), ConnectionError::Op(_)));
+}
+
+struct FakeBuild {
+    store: Arc<TestStore>,
+    emitted: Arc<Mutex<Vec<ActivityEvent>>>,
+}
+
+struct Tee(SharedSink, Arc<Mutex<Vec<ActivityEvent>>>);
+
+impl ActivitySink for Tee {
+    fn emit(&self, event: ActivityEvent) {
+        self.1.lock().unwrap().push(event.clone());
+        self.0.emit(event);
+    }
+}
+
+impl super::DrvRealizer for FakeBuild {
+    fn realize<'a>(
+        &'a self,
+        drv_path: &'a str,
+        sink: SharedSink,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<String>, String>> + Send + 'a>> {
+        Box::pin(async move {
+            let sink: SharedSink = Arc::new(Tee(sink, self.emitted.clone()));
+            let worker = Worker::start(&sink);
+            worker.expect_builds(1);
+            let build = Activity::start(
+                &sink,
+                Verbosity::Info,
+                ActivityType::Build,
+                format!("building '{drv_path}'"),
+                vec![drv_path.into(), "".into(), 1.into(), 1.into()],
+                0,
+            );
+            worker.build_started();
+            let mut log = BuilderLog::new(&build, false);
+            log.feed(b"unpacking sources\n@nix {\"action\":\"setPhase\",\"phase\":\"buildPhase\"}\n50%\r100%\n");
+            log.finish();
+            drop(log);
+            sink.emit(ActivityEvent::Log { level: Verbosity::Error, text: "a daemon message".into() });
+            self.store.add(A_OUT);
+            worker.build_finished(true);
+            drop(build);
+            drop(worker);
+            Ok(vec![A_OUT.to_string()])
+        })
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_build_streams_its_activities_to_the_client_as_the_same_typed_events() {
+    let dir = drv_dir();
+    let store = Arc::new(TestStore::default().with_drvs());
+    let emitted = Arc::new(Mutex::new(Vec::new()));
+    let (client, server) = std::os::unix::net::UnixStream::pair().unwrap();
+    server.set_nonblocking(true).unwrap();
+    let (reader, writer) = tokio::net::UnixStream::from_std(server).unwrap().into_split();
+    let realizer = Arc::new(FakeBuild { store: store.clone(), emitted: emitted.clone() });
+    let daemon = tokio::spawn(async move {
+        let mut conn = Connection::new(store, reader, writer, TrustLevel::Trusted)
+            .with_dirs(dir.path(), dir.path())
+            .with_realizer(realizer);
+        conn.handshake().await.unwrap();
+        conn.run().await.unwrap();
+    });
+    let received = Arc::new(Mutex::new(Vec::new()));
+    let sink: SharedSink = received.clone();
+    tokio::task::spawn_blocking(move || {
+        let options = sui_store::worker_client::ClientOptions { max_jobs: 1, max_silent_time: 0, build_cores: 0 };
+        let mut conn = sui_store::worker_client::WorkerConn::over(client, options).unwrap().with_sink(sink);
+        conn.build_paths(&[A_DRV]).unwrap();
+        assert!(conn.is_valid_path(A_OUT).unwrap());
+    })
+    .await
+    .unwrap();
+    daemon.await.unwrap();
+    let emitted = emitted.lock().unwrap().clone();
+    let received = received.lock().unwrap().clone();
+    assert!(emitted.len() > 10, "{emitted:?}");
+    assert_eq!(received, emitted);
+    let build = emitted
+        .iter()
+        .find_map(|e| match e {
+            ActivityEvent::Start { id, activity: ActivityType::Build, .. } => Some(*id),
+            _ => None,
+        })
+        .unwrap();
+    let on_build: Vec<&ActivityEvent> =
+        received.iter().filter(|e| matches!(e, ActivityEvent::Result { id, .. } if *id == build)).collect();
+    assert_eq!(
+        on_build,
+        vec![
+            &ActivityEvent::Result { id: build, result: ResultType::BuildLogLine, fields: vec!["unpacking sources".into()] },
+            &ActivityEvent::Result { id: build, result: ResultType::SetPhase, fields: vec!["buildPhase".into()] },
+            &ActivityEvent::Result { id: build, result: ResultType::BuildLogLine, fields: vec!["100%".into()] },
+        ]
+    );
+}
+
+struct WaitsForTheClient {
+    store: Arc<TestStore>,
+    seen: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl super::DrvRealizer for WaitsForTheClient {
+    fn realize<'a>(
+        &'a self,
+        _drv_path: &'a str,
+        sink: SharedSink,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<String>, String>> + Send + 'a>> {
+        Box::pin(async move {
+            sink.emit(ActivityEvent::Log { level: Verbosity::Error, text: "ping".into() });
+            for _ in 0..200 {
+                if self.seen.load(std::sync::atomic::Ordering::SeqCst) {
+                    self.store.add(A_OUT);
+                    return Ok(vec![A_OUT.to_string()]);
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            Err("the client never saw the event while the build ran".to_string())
+        })
+    }
+}
+
+struct SetsFlag(Arc<std::sync::atomic::AtomicBool>);
+
+impl ActivitySink for SetsFlag {
+    fn emit(&self, _event: ActivityEvent) {
+        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_client_receives_a_build_event_while_the_build_still_runs() {
+    let dir = drv_dir();
+    let store = Arc::new(TestStore::default().with_drvs());
+    let seen = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (client, server) = std::os::unix::net::UnixStream::pair().unwrap();
+    server.set_nonblocking(true).unwrap();
+    let (reader, writer) = tokio::net::UnixStream::from_std(server).unwrap().into_split();
+    let realizer = Arc::new(WaitsForTheClient { store: store.clone(), seen: seen.clone() });
+    let daemon = tokio::spawn(async move {
+        let mut conn = Connection::new(store, reader, writer, TrustLevel::Trusted)
+            .with_dirs(dir.path(), dir.path())
+            .with_realizer(realizer);
+        conn.handshake().await.unwrap();
+        conn.run().await.unwrap();
+    });
+    let built = tokio::task::spawn_blocking(move || {
+        let options = sui_store::worker_client::ClientOptions { max_jobs: 1, max_silent_time: 0, build_cores: 0 };
+        let mut conn = sui_store::worker_client::WorkerConn::over(client, options)
+            .unwrap()
+            .with_sink(Arc::new(SetsFlag(seen)));
+        conn.build_paths(&[A_DRV])
+    })
+    .await
+    .unwrap();
+    daemon.await.unwrap();
+    built.unwrap();
 }

@@ -223,10 +223,27 @@ impl BinaryCacheStore {
 
     /// Download a NAR file from the cache.
     pub async fn fetch_nar(&self, url_path: &str) -> StoreResult<Vec<u8>> {
-        let url = format!("{}/{url_path}", self.base_url);
-
         self.client
-            .get_bytes(&url)
+            .get_bytes(&self.nar_url(url_path))
+            .await
+            .map_err(BinaryCacheError::from)
+            .map_err(StoreError::from)
+    }
+
+    /// The absolute URL of a narinfo's `URL:` field.
+    #[must_use]
+    pub fn nar_url(&self, url_path: &str) -> String {
+        format!("{}/{url_path}", self.base_url)
+    }
+
+    /// [`Self::fetch_nar`], reporting `(received, expected)` bytes.
+    pub async fn fetch_nar_observed(
+        &self,
+        url_path: &str,
+        progress: &(dyn Fn(u64, u64) + Send + Sync),
+    ) -> StoreResult<Vec<u8>> {
+        self.client
+            .get_bytes_observed(&self.nar_url(url_path), progress)
             .await
             .map_err(BinaryCacheError::from)
             .map_err(StoreError::from)

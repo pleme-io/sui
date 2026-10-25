@@ -309,7 +309,7 @@ pub async fn realize_via_daemon(
     drv_path: &str,
     out_path: &str,
 ) -> Result<Realized, DaemonRealizeError> {
-    realize_on_blocking_pool(store, drv_path, out_path, None).await
+    realize_on_blocking_pool(store, drv_path, out_path, None, sui_compat::activity::noop_sink()).await
 }
 
 async fn realize_on_blocking_pool(
@@ -317,10 +317,11 @@ async fn realize_on_blocking_pool(
     drv_path: &str,
     out_path: &str,
     io_timeout: Option<std::time::Duration>,
+    sink: sui_compat::activity::SharedSink,
 ) -> Result<Realized, DaemonRealizeError> {
     let socket = store.socket().to_path_buf();
     let (drv, out) = (drv_path.to_string(), out_path.to_string());
-    tokio::task::spawn_blocking(move || realize_blocking(&socket, &drv, &out, io_timeout))
+    tokio::task::spawn_blocking(move || realize_blocking(&socket, &drv, &out, io_timeout, sink))
         .await
         .map_err(|e| DaemonRealizeError::Protocol(format!("realize task: {e}")))?
 }
@@ -330,6 +331,7 @@ fn realize_blocking(
     drv_path: &str,
     out_path: &str,
     io_timeout: Option<std::time::Duration>,
+    sink: sui_compat::activity::SharedSink,
 ) -> Result<Realized, DaemonRealizeError> {
     // The demanded read path may carry a subpath (`readFile "${drv}/data.txt"`).
     // The daemon speaks in store-path ROOTS — `IsValidPath`/`QueryPathInfo`
@@ -350,7 +352,7 @@ fn realize_blocking(
     crate::daemon_session::add_temp_root(socket, drv_path).map_err(proto)?;
     crate::daemon_session::add_temp_root(socket, out_root).map_err(proto)?;
 
-    let mut conn = WorkerConn::connect(socket, io_timeout).map_err(proto)?;
+    let mut conn = WorkerConn::connect(socket, io_timeout).map_err(proto)?.with_sink(sink);
 
     // Fast path: already realized (a prior build, or substituted out-of-band).
     if conn.is_valid_path(out_root).map_err(proto)? {
@@ -432,8 +434,23 @@ pub async fn realize_via_daemon_bounded(
     out_path: &str,
     bound: std::time::Duration,
 ) -> Result<Realized, DaemonRealizeError> {
+    realize_via_daemon_bounded_observed(store, drv_path, out_path, bound, sui_compat::activity::noop_sink()).await
+}
+
+/// [`realize_via_daemon_bounded`], delivering the daemon's log and activity
+/// frames to `sink`.
+///
+/// # Errors
+/// As [`realize_via_daemon_bounded`].
+pub async fn realize_via_daemon_bounded_observed(
+    store: &DaemonStore,
+    drv_path: &str,
+    out_path: &str,
+    bound: std::time::Duration,
+    sink: sui_compat::activity::SharedSink,
+) -> Result<Realized, DaemonRealizeError> {
     let io_timeout = bound + std::time::Duration::from_secs(1);
-    let realize = realize_on_blocking_pool(store, drv_path, out_path, Some(io_timeout));
+    let realize = realize_on_blocking_pool(store, drv_path, out_path, Some(io_timeout), sink);
     match tokio::time::timeout(bound, realize).await {
         Ok(result) => result,
         Err(_elapsed) => Err(DaemonRealizeError::Timeout {

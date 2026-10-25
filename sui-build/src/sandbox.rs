@@ -169,6 +169,20 @@ pub trait Sandbox: Send + Sync {
     /// Execute the build inside the sandbox.
     fn execute(&self, config: &SandboxConfig) -> Result<SandboxResult, SandboxError>;
 
+    /// [`Self::execute`], handing each chunk of the builder's stdout and
+    /// stderr to `output` as it arrives. The default hands both over once the
+    /// builder has exited.
+    fn execute_observed(
+        &self,
+        config: &SandboxConfig,
+        output: &(dyn Fn(&[u8]) + Sync),
+    ) -> Result<SandboxResult, SandboxError> {
+        let result = self.execute(config)?;
+        output(&result.stdout);
+        output(&result.stderr);
+        Ok(result)
+    }
+
     /// Clean up the sandbox.
     fn cleanup(&self, config: &SandboxConfig) -> Result<(), SandboxError>;
 }
@@ -246,6 +260,46 @@ pub enum SandboxError {
     ChrootFailed(String),
 }
 
+fn drain_pipe(pipe: Option<impl std::io::Read>, output: &(dyn Fn(&[u8]) + Sync)) -> std::io::Result<Vec<u8>> {
+    let mut all = Vec::new();
+    let Some(mut pipe) = pipe else {
+        return Ok(all);
+    };
+    let mut buf = [0u8; 8192];
+    loop {
+        match pipe.read(&mut buf) {
+            Ok(0) => return Ok(all),
+            Ok(n) => {
+                output(&buf[..n]);
+                all.extend_from_slice(&buf[..n]);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+/// `Command::output`, handing each chunk of stdout and stderr to `output` as
+/// the child writes it.
+///
+/// # Errors
+/// A spawn, read or wait failure.
+pub fn run_observed(
+    cmd: &mut std::process::Command,
+    output: &(dyn Fn(&[u8]) + Sync),
+) -> std::io::Result<std::process::Output> {
+    use std::process::Stdio;
+    let mut child = cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+    let (stdout, stderr) = (child.stdout.take(), child.stderr.take());
+    let (stdout, stderr) = std::thread::scope(|scope| {
+        let stdout = scope.spawn(|| drain_pipe(stdout, output));
+        let stderr = drain_pipe(stderr, output);
+        (stdout.join().unwrap_or_else(|_| Err(std::io::Error::other("stdout reader panicked"))), stderr)
+    });
+    let status = child.wait()?;
+    Ok(std::process::Output { status, stdout: stdout?, stderr: stderr? })
+}
+
 /// No-op sandbox for unsandboxed builds (development/testing).
 pub struct NoSandbox;
 
@@ -255,6 +309,14 @@ impl Sandbox for NoSandbox {
     }
 
     fn execute(&self, config: &SandboxConfig) -> Result<SandboxResult, SandboxError> {
+        self.execute_observed(config, &|_| {})
+    }
+
+    fn execute_observed(
+        &self,
+        config: &SandboxConfig,
+        output: &(dyn Fn(&[u8]) + Sync),
+    ) -> Result<SandboxResult, SandboxError> {
         use std::process::Command;
 
         let mut cmd = Command::new(&config.builder);
@@ -263,7 +325,7 @@ impl Sandbox for NoSandbox {
             cmd.env(k, v);
         }
 
-        let output = cmd.output()?;
+        let output = run_observed(&mut cmd, output)?;
 
         Ok(SandboxResult {
             exit_code: output.status.code().unwrap_or(-1),
@@ -368,11 +430,15 @@ impl LinuxSandbox {
 
     /// Run the builder unsandboxed (used as a fallback when `unshare` is
     /// missing or kernel rejects the namespaces). Documented loudly.
-    fn execute_unsandboxed(&self, config: &SandboxConfig) -> Result<SandboxResult, SandboxError> {
+    fn execute_unsandboxed(
+        &self,
+        config: &SandboxConfig,
+        output: &(dyn Fn(&[u8]) + Sync),
+    ) -> Result<SandboxResult, SandboxError> {
         eprintln!(
             "warning: LinuxSandbox running unsandboxed — unshare(1) not available or namespaces rejected"
         );
-        NoSandbox.execute(config)
+        NoSandbox.execute_observed(config, output)
     }
 }
 
@@ -419,11 +485,19 @@ impl Sandbox for LinuxSandbox {
     }
 
     fn execute(&self, config: &SandboxConfig) -> Result<SandboxResult, SandboxError> {
+        self.execute_observed(config, &|_| {})
+    }
+
+    fn execute_observed(
+        &self,
+        config: &SandboxConfig,
+        observer: &(dyn Fn(&[u8]) + Sync),
+    ) -> Result<SandboxResult, SandboxError> {
         let Some(unshare) = self.unshare_path.as_ref() else {
-            return self.execute_unsandboxed(config);
+            return self.execute_unsandboxed(config, observer);
         };
         if !unshare.exists() {
-            return self.execute_unsandboxed(config);
+            return self.execute_unsandboxed(config, observer);
         }
 
         let args = self.build_unshare_args(config);
@@ -438,7 +512,7 @@ impl Sandbox for LinuxSandbox {
             cmd.current_dir(&config.build_dir);
         }
 
-        let output = match cmd.output() {
+        let output = match run_observed(&mut cmd, observer) {
             Ok(o) => o,
             Err(e) => {
                 return Err(SandboxError::SpawnFailed(format!(
@@ -459,7 +533,7 @@ impl Sandbox for LinuxSandbox {
                 "warning: unshare(1) rejected requested namespaces ({}), running unsandboxed",
                 String::from_utf8_lossy(&output.stderr).trim()
             );
-            return self.execute_unsandboxed(config);
+            return self.execute_unsandboxed(config, observer);
         }
 
         Ok(SandboxResult {
@@ -531,12 +605,16 @@ impl DarwinSandbox {
 
     /// Run the builder unsandboxed (used as a fallback when `sandbox-exec` is
     /// missing — never reached on real macOS hosts).
-    fn execute_unsandboxed(&self, config: &SandboxConfig) -> Result<SandboxResult, SandboxError> {
+    fn execute_unsandboxed(
+        &self,
+        config: &SandboxConfig,
+        output: &(dyn Fn(&[u8]) + Sync),
+    ) -> Result<SandboxResult, SandboxError> {
         eprintln!(
             "warning: DarwinSandbox running unsandboxed — sandbox-exec not found at {}",
             self.sandbox_exec_path.display()
         );
-        NoSandbox.execute(config)
+        NoSandbox.execute_observed(config, output)
     }
 }
 
@@ -676,8 +754,16 @@ impl Sandbox for DarwinSandbox {
     }
 
     fn execute(&self, config: &SandboxConfig) -> Result<SandboxResult, SandboxError> {
+        self.execute_observed(config, &|_| {})
+    }
+
+    fn execute_observed(
+        &self,
+        config: &SandboxConfig,
+        observer: &(dyn Fn(&[u8]) + Sync),
+    ) -> Result<SandboxResult, SandboxError> {
         if !self.is_available() {
-            return self.execute_unsandboxed(config);
+            return self.execute_unsandboxed(config, observer);
         }
 
         let profile = generate_sbpl_profile(config);
@@ -699,8 +785,7 @@ impl Sandbox for DarwinSandbox {
             cmd.current_dir(&config.build_dir);
         }
 
-        let output = cmd
-            .output()
+        let output = run_observed(&mut cmd, observer)
             .map_err(|e| SandboxError::SpawnFailed(format!("sandbox-exec spawn: {e}")))?;
 
         Ok(SandboxResult {
@@ -736,6 +821,38 @@ mod tests {
         let result = sandbox.execute(&config).unwrap();
         assert_eq!(result.exit_code, 0);
         assert_eq!(String::from_utf8_lossy(&result.stdout).trim(), "hello");
+    }
+
+    #[test]
+    fn observed_output_arrives_while_the_builder_still_runs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let flag = tmp.path().join("seen");
+        let script = format!(
+            "echo ready >&2; i=0; while [ $i -lt 100 ]; do [ -e {f} ] && echo done && exit 0; sleep 0.05; i=$((i+1)); done; exit 7",
+            f = flag.display()
+        );
+        let config = SandboxConfig {
+            input_paths: vec![],
+            build_dir: String::new(),
+            output_paths: vec![],
+            allow_network: false,
+            builder: "/bin/sh".to_string(),
+            args: vec!["-c".to_string(), script],
+            env: vec![],
+        };
+        let seen = std::sync::Mutex::new(Vec::new());
+        let result = NoSandbox
+            .execute_observed(&config, &|chunk| {
+                if chunk.starts_with(b"ready") {
+                    std::fs::write(&flag, b"").unwrap();
+                }
+                seen.lock().unwrap().extend_from_slice(chunk);
+            })
+            .unwrap();
+        assert_eq!(result.exit_code, 0, "the builder never saw its output observed live");
+        assert_eq!(result.stderr, b"ready\n");
+        assert_eq!(result.stdout, b"done\n");
+        assert_eq!(seen.into_inner().unwrap().len(), b"ready\ndone\n".len());
     }
 
     #[test]

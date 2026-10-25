@@ -14,6 +14,7 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use sui_compat::activity::{self, SharedSink};
 use sui_compat::wire::{
     self, PROTOCOL_VERSION, StderrMsg, WORKER_MAGIC_1, WORKER_MAGIC_2, WorkerOp,
 };
@@ -145,6 +146,7 @@ impl From<wire::WireError> for WorkerError {
 pub struct WorkerConn {
     reader: BufReader<UnixStream>,
     writer: BufWriter<UnixStream>,
+    sink: SharedSink,
 }
 
 impl std::fmt::Debug for WorkerConn {
@@ -169,12 +171,35 @@ impl WorkerConn {
         })?;
         stream.set_read_timeout(io_timeout)?;
         stream.set_write_timeout(io_timeout)?;
+        let mut conn = Self::unopened(stream)?;
+        conn.handshake()?;
+        conn.set_options(ClientOptions::from_nix_config()?)?;
+        Ok(conn)
+    }
+
+    /// Handshake over an already-connected `stream` and send `options`.
+    ///
+    /// # Errors
+    /// Any handshake failure.
+    pub fn over(stream: UnixStream, options: ClientOptions) -> Result<Self, WorkerError> {
+        let mut conn = Self::unopened(stream)?;
+        conn.handshake()?;
+        conn.set_options(options)?;
+        Ok(conn)
+    }
+
+    fn unopened(stream: UnixStream) -> Result<Self, WorkerError> {
         let reader = BufReader::new(stream.try_clone()?);
         let writer = BufWriter::new(stream);
-        let mut conn = Self { reader, writer };
-        conn.handshake()?;
-        conn.set_options()?;
-        Ok(conn)
+        Ok(Self { reader, writer, sink: activity::noop_sink() })
+    }
+
+    /// Deliver the daemon's log and activity frames to `sink` instead of
+    /// dropping them.
+    #[must_use]
+    pub fn with_sink(mut self, sink: SharedSink) -> Self {
+        self.sink = sink;
+        self
     }
 
     fn u64(&mut self, v: u64) -> Result<(), WorkerError> {
@@ -226,8 +251,7 @@ impl WorkerConn {
     /// The daemon applies these to the connection, so sending `maxBuildJobs = 0`
     /// and `useBuildHook = 0` (as sui once did) forbids every local and remote
     /// build: only substitutable paths could be realized.
-    fn set_options(&mut self) -> Result<(), WorkerError> {
-        let opts = ClientOptions::from_nix_config()?;
+    fn set_options(&mut self, opts: ClientOptions) -> Result<(), WorkerError> {
         self.call(WorkerOp::SetOptions, |c| {
             for field in opts.fields() {
                 c.u64(field)?;
@@ -237,7 +261,7 @@ impl WorkerConn {
     }
 
     /// Drain stderr frames until `STDERR_LAST`. An error frame becomes
-    /// [`WorkerError::Daemon`]; log and activity frames are consumed.
+    /// [`WorkerError::Daemon`]; log and activity frames go to the sink.
     fn drain_stderr(&mut self) -> Result<(), WorkerError> {
         loop {
             let msg = self.read_u64()?;
@@ -246,50 +270,16 @@ impl WorkerConn {
                 m if m == StderrMsg::Error as u64 => {
                     return Err(WorkerError::Daemon(self.read_error_frame()?));
                 }
-                m if m == StderrMsg::Write as u64 => {
-                    let _ = self.read_str()?;
-                }
-                m if m == StderrMsg::StartActivity as u64 => {
-                    let _act = self.read_u64()?;
-                    let _lvl = self.read_u64()?;
-                    let _typ = self.read_u64()?;
-                    let _s = self.read_str()?;
-                    self.read_fields()?;
-                    let _parent = self.read_u64()?;
-                }
-                m if m == StderrMsg::StopActivity as u64 => {
-                    let _act = self.read_u64()?;
-                }
-                m if m == StderrMsg::Result as u64 => {
-                    let _act = self.read_u64()?;
-                    let _typ = self.read_u64()?;
-                    self.read_fields()?;
-                }
-                other => {
-                    return Err(WorkerError::Protocol(format!(
-                        "unexpected stderr frame {other:#x}"
-                    )));
-                }
+                other => match activity::read_frame(&mut self.reader, other)? {
+                    Some(event) => self.sink.emit(event),
+                    None => {
+                        return Err(WorkerError::Protocol(format!(
+                            "unexpected stderr frame {other:#x}"
+                        )));
+                    }
+                },
             }
         }
-    }
-
-    fn read_fields(&mut self) -> Result<(), WorkerError> {
-        let n = self.read_u64()?;
-        for _ in 0..n {
-            match self.read_u64()? {
-                0 => {
-                    let _ = self.read_u64()?;
-                }
-                1 => {
-                    let _ = self.read_str()?;
-                }
-                other => {
-                    return Err(WorkerError::Protocol(format!("unknown log field type {other}")));
-                }
-            }
-        }
-        Ok(())
     }
 
     /// The body of an error frame (proto >= 26 struct form) → its message.

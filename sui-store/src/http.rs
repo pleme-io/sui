@@ -32,6 +32,15 @@ pub trait HttpClient: Send + Sync {
     async fn get(&self, url: &str, headers: &[(&str, &str)]) -> Result<HttpResponse, HttpError>;
     /// Send a GET request and return the raw response bytes.
     async fn get_bytes(&self, url: &str) -> Result<Vec<u8>, HttpError>;
+
+    /// [`Self::get_bytes`], reporting `(received, expected)` bytes as they
+    /// arrive (`expected` is 0 when the server sends no length) and
+    /// `(total, total)` at the end, as CppNix's file transfer does.
+    async fn get_bytes_observed(&self, url: &str, progress: &(dyn Fn(u64, u64) + Send + Sync)) -> Result<Vec<u8>, HttpError> {
+        let bytes = self.get_bytes(url).await?;
+        progress(bytes.len() as u64, bytes.len() as u64);
+        Ok(bytes)
+    }
 }
 
 impl HttpResponse {

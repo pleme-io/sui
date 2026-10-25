@@ -22,3 +22,4 @@ pub mod store_path;
 pub mod scope;
 pub mod versions;
 pub mod wire;
+pub mod activity;

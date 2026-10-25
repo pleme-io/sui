@@ -9,6 +9,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use sha2::{Digest, Sha256};
+use sui_compat::activity::{self, Activity, ActivityType, BuilderLog, SharedSink, Verbosity, Worker};
 use sui_compat::derivation::{Derivation, DerivationOutput};
 use sui_compat::nar::{NarWriter, NarNode, NarEntry};
 use sui_compat::store_path::{StorePath, STORE_PATH_HASH_LEN};
@@ -52,6 +53,34 @@ pub struct LocalBuilder {
     store: Arc<dyn Store>,
     sandbox: Box<dyn Sandbox>,
     build_dir_base: String,
+    sink: SharedSink,
+}
+
+struct RunningBuild<'a> {
+    worker: &'a Worker,
+    activity: Activity,
+    succeeded: bool,
+}
+
+impl<'a> RunningBuild<'a> {
+    fn start(worker: &'a Worker, drv_path: &str) -> Self {
+        let activity = Activity::start(
+            worker.sink(),
+            Verbosity::Info,
+            ActivityType::Build,
+            format!("building '{drv_path}'"),
+            vec![drv_path.into(), "".into(), 1.into(), 1.into()],
+            0,
+        );
+        worker.build_started();
+        Self { worker, activity, succeeded: false }
+    }
+}
+
+impl Drop for RunningBuild<'_> {
+    fn drop(&mut self) {
+        self.worker.build_finished(self.succeeded);
+    }
 }
 
 impl LocalBuilder {
@@ -69,7 +98,15 @@ impl LocalBuilder {
                 .join("sui-build")
                 .to_string_lossy()
                 .into_owned(),
+            sink: activity::noop_sink(),
         }
+    }
+
+    /// Report builds and substitutions to `sink` as CppNix activities.
+    #[must_use]
+    pub fn with_sink(mut self, sink: SharedSink) -> Self {
+        self.sink = sink;
+        self
     }
 
     /// Override the base directory for build sandboxes.
@@ -88,7 +125,8 @@ impl LocalBuilder {
     /// 4. On success: scan references, compute NAR hashes, register outputs
     /// 5. Clean up the build directory
     async fn build_single(&self, drv: &Derivation) -> Result<BuildResult, BuildError> {
-        self.build_one(drv, None, None).await
+        let worker = Worker::start(&self.sink);
+        self.build_one(drv, None, None, &worker).await
     }
 
     async fn build_one(
@@ -96,6 +134,7 @@ impl LocalBuilder {
         drv: &Derivation,
         index: Option<&std::collections::HashMap<&str, &Derivation>>,
         deriver: Option<&str>,
+        worker: &Worker,
     ) -> Result<BuildResult, BuildError> {
         let start = std::time::Instant::now();
         let mut log = BuildLog::new();
@@ -110,6 +149,8 @@ impl LocalBuilder {
                 start.elapsed().as_secs_f64(),
             ));
         }
+
+        let mut running = RunningBuild::start(worker, deriver.unwrap_or_default());
 
         // 2. Create build directory
         let build_id = format!(
@@ -146,7 +187,11 @@ impl LocalBuilder {
         // 5. Execute in sandbox
         log.push(&format!("executing builder: {}", config.builder));
         self.sandbox.prepare(&config)?;
-        let result = self.sandbox.execute(&config);
+        let builder_log = std::sync::Mutex::new(BuilderLog::new(&running.activity, false));
+        let result = self.sandbox.execute_observed(&config, &|chunk| {
+            builder_log.lock().unwrap_or_else(std::sync::PoisonError::into_inner).feed(chunk);
+        });
+        builder_log.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner).finish();
         let _ = self.sandbox.cleanup(&config);
 
         let result = result?;
@@ -257,6 +302,7 @@ impl LocalBuilder {
 
         // 8. Clean up build directory
         let _ = std::fs::remove_dir_all(&build_dir);
+        running.succeeded = true;
 
         Ok(BuildResult::success(
             output_paths,
@@ -494,8 +540,9 @@ impl LocalBuilder {
         &self,
         closure: &BuildClosure,
         substitutor: Option<&Substitutor>,
+        worker: &Worker,
     ) -> Result<ClosurePlan, BuildError> {
-        walk_plan(self.store.as_ref(), closure, substitutor, PlanMode::Realize).await
+        walk_plan(self.store.as_ref(), closure, substitutor, PlanMode::Realize, Some(worker)).await
     }
 
     pub async fn build_closure(
@@ -509,7 +556,9 @@ impl LocalBuilder {
         let mut built: u32 = 0;
         let mut skipped: u32 = 0;
 
-        let plan = self.plan_closure(closure, substitutor).await?;
+        let worker = Worker::start(&self.sink);
+        let plan = self.plan_closure(closure, substitutor, &worker).await?;
+        worker.expect_builds(plan.to_build.len() as u64);
         let index: std::collections::HashMap<&str, &Derivation> =
             closure.derivations.iter().map(|(p, d)| (p.as_str(), d)).collect();
         skipped += plan.present;
@@ -522,7 +571,7 @@ impl LocalBuilder {
             // 3. Build locally
             log.push(&format!("building {drv_path}"));
             tracing::info!(drv_path, "building locally");
-            let result = self.build_one(drv, Some(&index), Some(drv_path.as_str())).await?;
+            let result = self.build_one(drv, Some(&index), Some(drv_path.as_str()), &worker).await?;
 
             if !result.success {
                 log.push(&format!("FAILED: {drv_path}"));
@@ -575,7 +624,9 @@ impl LocalBuilder {
         let mut skipped: u32 = 0;
         let mut completed: usize = 0;
 
-        let plan = self.plan_closure(closure, substitutor).await?;
+        let worker = Worker::start(&self.sink);
+        let plan = self.plan_closure(closure, substitutor, &worker).await?;
+        worker.expect_builds(plan.to_build.len() as u64);
         let index: std::collections::HashMap<&str, &Derivation> =
             closure.derivations.iter().map(|(p, d)| (p.as_str(), d)).collect();
         skipped += plan.present;
@@ -600,7 +651,7 @@ impl LocalBuilder {
                 action: BuildAction::Building,
             });
             log.push(&format!("building {drv_path}"));
-            let result = self.build_one(drv, Some(&index), Some(drv_path.as_str())).await?;
+            let result = self.build_one(drv, Some(&index), Some(drv_path.as_str()), &worker).await?;
 
             if !result.success {
                 log.push(&format!("FAILED: {drv_path}"));
@@ -1672,6 +1723,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_closure_build_reports_cppnix_build_activities_log_lines_and_phases() {
+        use sui_compat::activity::{ActivityEvent, Field, ResultType};
+        let tmp = tempfile::tempdir().unwrap();
+        let out = tmp.path().join("out");
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink: SharedSink = events.clone();
+        let builder = LocalBuilder::new(Arc::new(MockStore::new()), Box::new(NoSandbox))
+            .with_build_dir(tmp.path().join("build").to_str().unwrap().to_string())
+            .with_sink(sink);
+        let script = format!(
+            "exec 1>&2; echo one; echo '@nix {{ \"action\": \"setPhase\", \"phase\": \"buildPhase\" }}'; printf 'two'; echo hi > {}",
+            out.display()
+        );
+        let drv_path = "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-t.drv";
+        let closure = make_closure(vec![(drv_path, make_drv("/bin/sh", &["-c", &script], out.to_str().unwrap()))]);
+        let result = builder.build_closure(&closure, None).await.unwrap();
+        assert!(result.success, "{}", result.log);
+        let events = events.lock().unwrap().clone();
+        let start = |kind: ActivityType| {
+            events
+                .iter()
+                .find_map(|e| match e {
+                    ActivityEvent::Start { id, activity, text, fields, parent, level } if *activity == kind => {
+                        Some((*id, text.clone(), fields.clone(), *parent, *level))
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("no {kind:?} in {events:?}"))
+        };
+        let builds = start(ActivityType::Builds).0;
+        let (build, text, fields, parent, level) = start(ActivityType::Build);
+        assert_eq!(text, format!("building '{drv_path}'"));
+        assert_eq!(fields, vec![Field::from(drv_path), Field::from(""), Field::Int(1), Field::Int(1)]);
+        assert_eq!((parent, level), (0, Verbosity::Info));
+        let on_build: Vec<(ResultType, Vec<Field>)> = events
+            .iter()
+            .filter_map(|e| match e {
+                ActivityEvent::Result { id, result, fields } if *id == build => Some((*result, fields.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            on_build,
+            vec![
+                (ResultType::BuildLogLine, vec![Field::from("one")]),
+                (ResultType::SetPhase, vec![Field::from("buildPhase")]),
+                (ResultType::BuildLogLine, vec![Field::from("two")]),
+            ]
+        );
+        let at = |e: &ActivityEvent| events.iter().position(|x| x == e).unwrap();
+        let progress = |v: [u64; 4]| ActivityEvent::Result {
+            id: builds,
+            result: ResultType::Progress,
+            fields: v.iter().map(|n| Field::Int(*n)).collect(),
+        };
+        assert!(at(&progress([0, 1, 1, 0])) < at(&progress([1, 1, 0, 0])));
+        assert!(at(&progress([1, 1, 0, 0])) < at(&ActivityEvent::Stop { id: build }));
+        assert_eq!(events.last(), Some(&ActivityEvent::Stop { id: start(ActivityType::Realise).0 }));
+    }
+
+    #[tokio::test]
     async fn a_failed_build_leaves_no_partial_output() {
         let tmp = tempfile::tempdir().unwrap();
         let out = tmp.path().join("out");
@@ -2128,7 +2240,7 @@ pub async fn dry_plan(
     closure: &BuildClosure,
     substitutor: Option<&Substitutor>,
 ) -> Result<DryPlan, BuildError> {
-    let plan = walk_plan(store, closure, substitutor, PlanMode::Query).await?;
+    let plan = walk_plan(store, closure, substitutor, PlanMode::Query, None).await?;
     let mut to_build: Vec<String> = plan.to_build.into_iter().collect();
     to_build.sort();
     let (download_size, nar_size) =
@@ -2187,12 +2299,16 @@ async fn output_paths_present(store: &dyn Store, paths: &[String]) -> bool {
     true
 }
 
-async fn substitute_paths(substitutor: &Substitutor, paths: &[String]) -> bool {
+async fn substitute_paths(substitutor: &Substitutor, paths: &[String], worker: Option<&Worker>) -> bool {
     for path in paths {
         let Ok(sp) = StorePath::from_absolute_path(path) else {
             return false;
         };
-        match substitutor.substitute(&sp).await {
+        let substituted = match worker {
+            Some(worker) => substitutor.substitute_observed(&sp, worker).await,
+            None => substitutor.substitute(&sp).await,
+        };
+        match substituted {
             Ok(SubstituteResult::Substituted { .. } | SubstituteResult::AlreadyPresent) => {}
             _ => return false,
         }
@@ -2266,6 +2382,7 @@ async fn decide(
     substitutor: Option<&Substitutor>,
     mode: PlanMode,
     paths: &[String],
+    worker: Option<&Worker>,
 ) -> Decision {
     if output_paths_present(store, paths).await {
         return Decision::Present;
@@ -2273,7 +2390,7 @@ async fn decide(
     if let Some(sub) = substitutor {
         let mut fetched = std::collections::BTreeMap::new();
         let ok = match mode {
-            PlanMode::Realize => substitute_paths(sub, paths).await,
+            PlanMode::Realize => substitute_paths(sub, paths, worker).await,
             PlanMode::Query => query_fetches(sub, paths, &mut fetched).await,
         };
         if ok {
@@ -2288,6 +2405,7 @@ async fn walk_plan(
     closure: &BuildClosure,
     substitutor: Option<&Substitutor>,
     mode: PlanMode,
+    worker: Option<&Worker>,
 ) -> Result<ClosurePlan, BuildError> {
     use futures::stream::{self, StreamExt};
     let index: std::collections::HashMap<&str, &Derivation> =
@@ -2321,7 +2439,7 @@ async fn walk_plan(
         }
         let decided: Vec<(String, Decision)> = stream::iter(work)
             .map(|(drv_path, paths)| async move {
-                let decision = decide(store, substitutor, mode, &paths).await;
+                let decision = decide(store, substitutor, mode, &paths, worker).await;
                 (drv_path, decision)
             })
             .buffer_unordered(width)

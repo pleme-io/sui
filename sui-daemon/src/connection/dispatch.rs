@@ -213,7 +213,7 @@ where
         let _keep_failed = read_u64(&mut self.reader).await?;
         let _keep_going = read_u64(&mut self.reader).await?;
         let _try_fallback = read_u64(&mut self.reader).await?;
-        let _verbosity = read_u64(&mut self.reader).await?;
+        self.verbosity = sui_compat::activity::Verbosity::from_code(read_u64(&mut self.reader).await?);
         let _max_build_jobs = read_u64(&mut self.reader).await?;
         let _max_silent_time = read_u64(&mut self.reader).await?;
         if self.client_version >= PROTOCOL_MINOR_USE_BUILD_HOOK {
@@ -384,11 +384,6 @@ where
     ) -> Result<(), ConnectionError> {
         write_string(&mut self.writer, &info.path).await?;
         self.write_unkeyed_path_info(info).await
-    }
-
-    pub(super) fn substitutor(&self) -> sui_store::Substitutor {
-        let local: std::sync::Arc<dyn Store> = self.store.clone();
-        sui_store::Substitutor::new(local, self.caches.clone())
     }
 }
 

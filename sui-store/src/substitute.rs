@@ -7,6 +7,7 @@
 
 use std::sync::Arc;
 
+use sui_compat::activity::{Activity, ActivityType, Verbosity, Worker};
 use sui_compat::store_path::StorePath;
 
 use crate::binary_cache::BinaryCacheStore;
@@ -68,6 +69,9 @@ impl SubstituteResult {
     }
 }
 
+/// The destination store's URI in `actCopyPath` fields.
+const LOCAL_STORE_URI: &str = "local";
+
 /// Connects binary cache fetching with local store registration.
 ///
 /// For each store path, the substitutor:
@@ -98,6 +102,18 @@ impl Substitutor {
     /// - `Substituted` — fetched from a cache and registered locally
     /// - `NotFound` — not available in any configured cache
     pub async fn substitute(&self, path: &StorePath) -> StoreResult<SubstituteResult> {
+        self.substitute_with(path, None).await
+    }
+
+    /// [`Self::substitute`], reporting each fetch to `worker` the way CppNix's
+    /// `PathSubstitutionGoal` does: an `actSubstitute` (store path, cache) with
+    /// an `actCopyPath` child whose `actFileTransfer` child carries the
+    /// download's byte progress, and the worker's substitution counters.
+    pub async fn substitute_observed(&self, path: &StorePath, worker: &Worker) -> StoreResult<SubstituteResult> {
+        self.substitute_with(path, Some(worker)).await
+    }
+
+    async fn substitute_with(&self, path: &StorePath, worker: Option<&Worker>) -> StoreResult<SubstituteResult> {
         tracing::debug!(path = %path.to_absolute_path(), "checking store for path");
 
         // 1. Check if already in local store
@@ -107,7 +123,7 @@ impl Substitutor {
 
         // 2. Try each binary cache in order
         for cache in &self.caches {
-            match self.try_cache(cache, path).await {
+            match self.try_cache(cache, path, worker).await {
                 Ok(Some(result)) => return Ok(result),
                 Ok(None) => {
                     tracing::debug!(
@@ -178,7 +194,12 @@ impl Substitutor {
         Ok(Availability::Missing)
     }
 
-    async fn substitute_references(&self, path: &StorePath, references: &[String]) -> StoreResult<()> {
+    async fn substitute_references(
+        &self,
+        path: &StorePath,
+        references: &[String],
+        worker: Option<&Worker>,
+    ) -> StoreResult<()> {
         let own = path.to_absolute_path();
         let store_dir = sui_compat::store_path::DEFAULT_STORE_DIR;
         for reference in references {
@@ -188,7 +209,7 @@ impl Substitutor {
             }
             let rp = StorePath::from_absolute_path(&abs)
                 .map_err(|e| StoreError::PathNotFound(format!("{own} references {abs}: {e}")))?;
-            if let SubstituteResult::NotFound = Box::pin(self.substitute(&rp)).await? {
+            if let SubstituteResult::NotFound = Box::pin(self.substitute_with(&rp, worker)).await? {
                 return Err(StoreError::PathNotFound(format!(
                     "cannot substitute {own}: its reference {abs} is in no configured cache"
                 )));
@@ -212,6 +233,7 @@ impl Substitutor {
         &self,
         cache: &BinaryCacheStore,
         path: &StorePath,
+        worker: Option<&Worker>,
     ) -> StoreResult<Option<SubstituteResult>> {
         // 1. Fetch narinfo
         let hash = path.hash();
@@ -227,23 +249,75 @@ impl Substitutor {
         //    with no valid trusted signature is REFUSED — never substituted.
         cache.check_narinfo_acceptable(&narinfo)?;
 
-        self.substitute_references(path, &narinfo.references).await?;
+        self.substitute_references(path, &narinfo.references, worker).await?;
 
+        let Some(worker) = worker else {
+            return self.fetch_and_add(cache, path, &narinfo, None).await.map(Some);
+        };
+        worker.substitution_started(narinfo.file_size, narinfo.nar_size);
+        let result = {
+            let store_path = path.to_absolute_path();
+            let substitute = Activity::start(
+                worker.sink(),
+                Verbosity::Error,
+                ActivityType::Substitute,
+                "",
+                vec![store_path.as_str().into(), cache.base_url().into()],
+                0,
+            );
+            let copy = Activity::start(
+                worker.sink(),
+                Verbosity::Info,
+                ActivityType::CopyPath,
+                format!("copying path '{store_path}' from '{}'", cache.base_url()),
+                vec![store_path.as_str().into(), cache.base_url().into(), LOCAL_STORE_URI.into()],
+                substitute.id(),
+            );
+            self.fetch_and_add(cache, path, &narinfo, Some(&copy)).await
+        };
+        worker.substitution_finished(narinfo.file_size, narinfo.nar_size, result.is_ok());
+        result.map(Some)
+    }
+
+    async fn fetch_and_add(
+        &self,
+        cache: &BinaryCacheStore,
+        path: &StorePath,
+        narinfo: &sui_compat::narinfo::NarInfo,
+        copy: Option<&Activity>,
+    ) -> StoreResult<SubstituteResult> {
         // 3. Download NAR
-        let compressed_nar = cache
-            .fetch_nar(&narinfo.url)
-            .await
-            .map_err(|e| StoreError::Http(format!("NAR download failed: {e}")))?;
+        let compressed_nar = match copy {
+            None => cache.fetch_nar(&narinfo.url).await,
+            Some(copy) => {
+                let url = cache.nar_url(&narinfo.url);
+                let transfer = Activity::start(
+                    copy.sink(),
+                    Verbosity::Talkative,
+                    ActivityType::FileTransfer,
+                    format!("downloading '{url}'"),
+                    vec![url.into()],
+                    copy.id(),
+                );
+                cache
+                    .fetch_nar_observed(&narinfo.url, &|done, expected| transfer.progress(done, expected, 0, 0))
+                    .await
+            }
+        }
+        .map_err(|e| StoreError::Http(format!("NAR download failed: {e}")))?;
 
         // 4. Decompress
         let nar_data = decompress_nar(&compressed_nar, &narinfo.compression)?;
+        if let Some(copy) = copy {
+            copy.progress(nar_data.len() as u64, narinfo.nar_size, 0, 0);
+        }
 
         // 5. NAR-hash byte-integrity gate: hash the received (decompressed)
         //    NAR bytes and assert they equal narinfo.narHash. A corrupt or
         //    MITM'd cache that returns different bytes than it advertised is
         //    rejected here — the only way to obtain a `VerifiedNar` is to
         //    pass this check.
-        let verified = VerifiedNar::verify(cache, &narinfo, nar_data)?;
+        let verified = VerifiedNar::verify(cache, narinfo, nar_data)?;
 
         // 6. Add to local store — takes VERIFIED bytes only.
         let name = path.name();
@@ -296,10 +370,10 @@ impl Substitutor {
             "substituted from cache (signature + NAR-hash verified)",
         );
 
-        Ok(Some(SubstituteResult::Substituted {
+        Ok(SubstituteResult::Substituted {
             cache_url: cache.base_url().to_string(),
             nar_size: narinfo.nar_size,
-        }))
+        })
     }
 }
 
@@ -745,6 +819,74 @@ mod tests {
             assert_eq!(cache_url, "https://cache.example.com");
             assert_eq!(nar_size, TEST_NAR_SIZE);
         }
+    }
+
+    #[tokio::test]
+    async fn an_observed_substitution_reports_substitute_copy_and_transfer_activities() {
+        use sui_compat::activity::{ActivityEvent, ActivityType, Field, ResultType, SharedSink, Worker};
+        let nar = make_nar_bytes();
+        let nar_len = nar.len() as u64;
+        let store = Arc::new(MockLocalStore::new());
+        let cache = make_cache_with_narinfo(
+            "https://cache.example.com",
+            &make_narinfo_text("none"),
+            &format!("nar/{TEST_HASH}.nar.none"),
+            nar,
+        );
+        let sub = Substitutor::new(store, vec![cache]);
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink: SharedSink = events.clone();
+        let worker = Worker::start(&sink);
+        let result = sub.substitute_observed(&test_store_path(), &worker).await.unwrap();
+        assert!(result.is_substituted());
+        drop(worker);
+        let events = events.lock().unwrap().clone();
+        let started: Vec<(ActivityType, u64, u64, String, Vec<Field>)> = events
+            .iter()
+            .filter_map(|e| match e {
+                ActivityEvent::Start { id, activity, parent, text, fields, .. } => {
+                    Some((*activity, *id, *parent, text.clone(), fields.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        let kinds: Vec<ActivityType> = started.iter().map(|s| s.0).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                ActivityType::Realise,
+                ActivityType::Builds,
+                ActivityType::CopyPaths,
+                ActivityType::Substitute,
+                ActivityType::CopyPath,
+                ActivityType::FileTransfer,
+            ]
+        );
+        let (substitute, copy, transfer) = (&started[3], &started[4], &started[5]);
+        assert_eq!(substitute.2, 0);
+        assert_eq!(substitute.4, vec![Field::from(TEST_PATH), Field::from("https://cache.example.com")]);
+        assert_eq!(copy.2, substitute.1);
+        assert_eq!(copy.3, format!("copying path '{TEST_PATH}' from 'https://cache.example.com'"));
+        assert_eq!(transfer.2, copy.1);
+        let url = format!("https://cache.example.com/nar/{TEST_HASH}.nar.none");
+        assert_eq!(transfer.3, format!("downloading '{url}'"));
+        assert_eq!(transfer.4, vec![Field::from(url)]);
+        let transfer_done = ActivityEvent::Result {
+            id: transfer.1,
+            result: ResultType::Progress,
+            fields: vec![nar_len.into(), nar_len.into(), 0.into(), 0.into()],
+        };
+        let stops: Vec<u64> =
+            events.iter().filter_map(|e| if let ActivityEvent::Stop { id } = e { Some(*id) } else { None }).collect();
+        assert_eq!(&stops[..3], &[transfer.1, copy.1, substitute.1]);
+        let at = |e: &ActivityEvent| events.iter().position(|x| x == e).unwrap();
+        assert!(at(&transfer_done) < at(&ActivityEvent::Stop { id: transfer.1 }));
+        let copies_done = ActivityEvent::Result {
+            id: started[2].1,
+            result: ResultType::Progress,
+            fields: vec![1.into(), 1.into(), 0.into(), 0.into()],
+        };
+        assert!(at(&ActivityEvent::Stop { id: substitute.1 }) < at(&copies_done));
     }
 
     #[tokio::test]

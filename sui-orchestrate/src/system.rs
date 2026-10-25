@@ -1114,6 +1114,18 @@ pub async fn dry_plan_drv(drv_path: &str) -> Result<sui_build::DryPlan, SystemEr
 }
 
 pub async fn realize_drv(drv_path: &str) -> Result<Vec<String>, SystemError> {
+    realize_drv_observed(drv_path, sui_compat::activity::noop_sink()).await
+}
+
+/// [`realize_drv`], reporting builds, substitutions and their logs to `sink`
+/// as CppNix activities: from the local pipeline, or relayed from the daemon.
+///
+/// # Errors
+/// As [`realize_drv`].
+pub async fn realize_drv_observed(
+    drv_path: &str,
+    sink: sui_compat::activity::SharedSink,
+) -> Result<Vec<String>, SystemError> {
     use sui_store::StoreAccess;
 
     let bound = realize_bound();
@@ -1139,7 +1151,7 @@ pub async fn realize_drv(drv_path: &str) -> Result<Vec<String>, SystemError> {
             let sandbox: Box<dyn sui_build::sandbox::Sandbox> =
                 Box::new(sui_build::sandbox::LinuxSandbox::new());
 
-            let builder = sui_build::LocalBuilder::new(store, sandbox);
+            let builder = sui_build::LocalBuilder::new(store, sandbox).with_sink(sink);
             // Substitute-first: the substitutor pulls already-built paths from the
             // cache; the builder only builds what the cache can't supply.
             let build = builder.build_closure(&closure, Some(&substitutor));
@@ -1190,7 +1202,7 @@ pub async fn realize_drv(drv_path: &str) -> Result<Vec<String>, SystemError> {
             let mut realized_paths = Vec::with_capacity(wanted.len());
             for out_path in &wanted {
                 let realized =
-                    sui_store::realize_via_daemon_bounded(&store, drv_path, out_path, bound)
+                    sui_store::realize_via_daemon_bounded_observed(&store, drv_path, out_path, bound, sink.clone())
                         .await
                         .map_err(|e| {
                             SystemError::RebuildFailed(format!("daemon realize {drv_path}: {e}"))
