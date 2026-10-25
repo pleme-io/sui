@@ -841,28 +841,8 @@ mod tests {
     // ── Unimplemented opcode tests ──────────────────────────────
 
     #[tokio::test]
-    async fn unimplemented_opcode_returns_stderr_error_then_last() {
-        let store = Arc::new(MockStore::new());
-
-        let mut input = Vec::new();
-        wire::write_u64(&mut input, WorkerOp::EnsurePath as u64).unwrap();
-
-        let reader = Cursor::new(input);
-        let writer: Vec<u8> = Vec::new();
-        let mut conn = Connection::new(store, reader, writer, TrustLevel::Trusted);
-        conn.client_version = PROTOCOL_VERSION;
-
-        conn.run().await.expect("should handle gracefully");
-
-        let mut cursor = Cursor::new(conn.writer.as_slice());
-        // STDERR_ERROR
-        let msg_type = wire::read_u64(&mut cursor).unwrap();
-        assert_eq!(msg_type, StderrMsg::Error as u64);
-        let error_msg = read_error_body(&mut cursor);
-        assert!(error_msg.contains("not yet implemented"));
-        // STDERR_LAST
-        let last = wire::read_u64(&mut cursor).unwrap();
-        assert_eq!(last, StderrMsg::Last as u64);
+    async fn an_unimplemented_opcode_is_refused_and_the_connection_closed() {
+        assert_op_unimplemented(WorkerOp::EnsurePath).await;
     }
 
     #[tokio::test]
@@ -1226,8 +1206,10 @@ mod tests {
             msg.contains("not yet implemented"),
             "op {op:?} message should mention not implemented, got {msg:?}"
         );
-        let last = wire::read_u64(&mut cursor).unwrap();
-        assert_eq!(last, StderrMsg::Last as u64);
+        assert!(
+            wire::read_u64(&mut cursor).is_err(),
+            "op {op:?}: nothing may follow the refusal; the connection closes as cppnix's daemon does"
+        );
     }
 
     // ── Newly-implemented read-path ops ──────────────────────────
@@ -2019,7 +2001,7 @@ mod tests {
     // ── Multiple unknown opcodes in a row keep the loop alive ──
 
     #[tokio::test]
-    async fn multiple_unknown_opcodes_in_sequence() {
+    async fn an_unknown_opcode_closes_the_connection_before_the_next() {
         let store = Arc::new(MockStore::new());
         let mut input = Vec::new();
         for op in [9999u64, 8888, 7777] {
@@ -2029,10 +2011,8 @@ mod tests {
         let writer: Vec<u8> = Vec::new();
         let mut conn = Connection::new(store, reader, writer, TrustLevel::Trusted);
         conn.client_version = PROTOCOL_VERSION;
-        conn.run().await.expect("loop should not bail");
+        conn.run().await.expect("refusing is not a daemon failure");
 
-        // Each unknown op writes STDERR_ERROR + 3 string/u64 fields + STDERR_LAST.
-        // We just count the number of STDERR_ERROR markers seen.
         let mut cursor = Cursor::new(conn.writer.as_slice());
         let mut error_count = 0u32;
         while let Ok(v) = wire::read_u64(&mut cursor) {
@@ -2041,7 +2021,7 @@ mod tests {
                 let _ = read_error_body(&mut cursor);
             }
         }
-        assert_eq!(error_count, 3, "should have produced 3 STDERR_ERROR frames");
+        assert_eq!(error_count, 1, "the bytes after an unknown op are unparseable, so the daemon stops at the first");
     }
 
     // ── Handshake -> dispatch ordering: opcode bytes that look like

@@ -64,18 +64,16 @@ where
                 Some(WorkerOp::AddIndirectRoot) => self.handle_add_indirect_root().await?,
                 Some(other) => {
                     tracing::warn!(?other, "unimplemented opcode");
-                    self.write_error(&format!("operation {other:?} is not yet implemented"),
-                    )
-                    .await?;
-                    write_stderr_last(&mut self.writer).await?;
+                    self.write_error(&format!("operation {other:?} is not yet implemented"))
+                        .await?;
                     self.writer.flush().await?;
+                    return Ok(());
                 }
                 None => {
                     tracing::warn!(op_raw, "unknown opcode");
-                    self.write_error(&format!("unknown opcode {op_raw}"))
-                        .await?;
-                    write_stderr_last(&mut self.writer).await?;
+                    self.write_error(&format!("invalid operation {op_raw}")).await?;
                     self.writer.flush().await?;
+                    return Ok(());
                 }
             }
         }
