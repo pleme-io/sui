@@ -587,11 +587,15 @@ impl SandboxMode {
     /// enabled on Linux, disabled elsewhere.
     #[must_use]
     pub fn parse(value: Option<&str>) -> Self {
+        Self::parse_on(value, cfg!(target_os = "linux"))
+    }
+
+    fn parse_on(value: Option<&str>, linux: bool) -> Self {
         match value.map(str::trim) {
             Some("true") => Self::Enabled,
             Some("relaxed") => Self::Relaxed,
             Some("false") => Self::Disabled,
-            _ if cfg!(target_os = "linux") => Self::Enabled,
+            _ if linux => Self::Enabled,
             _ => Self::Disabled,
         }
     }
@@ -857,6 +861,72 @@ impl Sandbox for DarwinSandbox {
 mod tests {
     use super::*;
 
+    fn builder_probe() -> Result<(), String> {
+        use std::io::Write as _;
+        let expected = std::env::var("PROBE_BUILD_DIR").map_err(|e| e.to_string())?;
+        let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+        if cwd.to_string_lossy() != expected {
+            return Err(format!("cwd {} is not the build dir {expected}", cwd.display()));
+        }
+        if std::env::var_os("HOME").is_some() {
+            return Err("HOME leaked into the builder".into());
+        }
+        std::fs::create_dir("relative-dir").map_err(|e| format!("relative mkdir: {e}"))?;
+        for device in ["/dev/stderr", "/dev/stdout"] {
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(device)
+                .and_then(|mut f| f.write_all(b"probe\n"))
+                .map_err(|e| format!("open {device}: {e}"))?;
+        }
+        let out = std::env::var("out").map_err(|e| e.to_string())?;
+        std::fs::write(out, "ok\n").map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn builder_probe_child() {
+        if std::env::var_os("SUI_BUILDER_PROBE").is_none() {
+            return;
+        }
+        if let Err(e) = builder_probe() {
+            eprintln!("probe: {e}");
+            std::process::exit(3);
+        }
+    }
+
+    #[test]
+    fn every_sandbox_mode_keeps_cppnixs_builder_promises() {
+        let me = std::env::current_exe().unwrap().to_string_lossy().into_owned();
+        for mode in [SandboxMode::Disabled, SandboxMode::Enabled, SandboxMode::Relaxed] {
+            let dir = tempfile::tempdir().unwrap();
+            let build_dir = std::fs::canonicalize(dir.path()).unwrap().to_string_lossy().into_owned();
+            let out = format!("{build_dir}/out");
+            let config = SandboxConfig {
+                builder: me.clone(),
+                args: vec!["--exact".into(), "sandbox::tests::builder_probe_child".into(), "--nocapture".into()],
+                env: vec![
+                    ("out".to_string(), out.clone()),
+                    ("SUI_BUILDER_PROBE".to_string(), "1".to_string()),
+                    ("PROBE_BUILD_DIR".to_string(), build_dir.clone()),
+                ],
+                build_dir: build_dir.clone(),
+                output_paths: vec![out.clone()],
+                ..SandboxConfig::default()
+            };
+            let sandbox = for_host(mode);
+            sandbox.prepare(&config).unwrap();
+            let result = sandbox.execute(&config).unwrap();
+            let _ = sandbox.cleanup(&config);
+            assert!(
+                result.is_success(),
+                "{mode:?}: exit {} stderr {}",
+                result.exit_code,
+                String::from_utf8_lossy(&result.stderr)
+            );
+            assert_eq!(std::fs::read_to_string(&out).unwrap(), "ok\n", "{mode:?}");
+        }
+    }
+
     #[test]
     fn an_unsandboxed_builder_starts_in_its_build_dir_with_only_the_derivation_environment() {
         let dir = tempfile::tempdir().unwrap();
@@ -873,12 +943,16 @@ mod tests {
     }
 
     #[test]
-    fn the_sandbox_setting_reads_like_cppnix() {
-        assert_eq!(SandboxMode::parse(Some("false")), SandboxMode::Disabled);
-        assert_eq!(SandboxMode::parse(Some("true")), SandboxMode::Enabled);
-        assert_eq!(SandboxMode::parse(Some("relaxed")), SandboxMode::Relaxed);
-        let default = if cfg!(target_os = "linux") { SandboxMode::Enabled } else { SandboxMode::Disabled };
-        assert_eq!(SandboxMode::parse(None), default);
+    fn the_sandbox_setting_reads_like_cppnix_on_every_platform() {
+        for linux in [true, false] {
+            assert_eq!(SandboxMode::parse_on(Some("false"), linux), SandboxMode::Disabled);
+            assert_eq!(SandboxMode::parse_on(Some("true"), linux), SandboxMode::Enabled);
+            assert_eq!(SandboxMode::parse_on(Some("relaxed"), linux), SandboxMode::Relaxed);
+        }
+        assert_eq!(SandboxMode::parse_on(None, true), SandboxMode::Enabled);
+        assert_eq!(SandboxMode::parse_on(None, false), SandboxMode::Disabled);
+        let here = if cfg!(target_os = "linux") { SandboxMode::Enabled } else { SandboxMode::Disabled };
+        assert_eq!(SandboxMode::parse(None), here);
     }
 
     #[test]
