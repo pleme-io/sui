@@ -77,7 +77,8 @@ fn build_out_link_is_an_indirect_gc_root() {
 
     let refused = delete(&nix_store, &built);
     assert!(refused.is_err(), "the linked output must survive a collection");
-    assert!(refused.unwrap_err().contains("alive"), "refused for liveness");
+    let why = refused.unwrap_err();
+    assert!(why.contains("alive"), "refused for liveness, got: {why}");
 
     std::fs::remove_file(&link).unwrap();
     delete(&nix_store, &built).expect("with the link gone the output is collectable");

@@ -684,7 +684,7 @@ enum FlakeCommands {
         /// output attribute names (matches `nix flake show --json`).
         #[arg(long)] json: bool,
     },
-    Update { input: Option<String> },
+    Update { inputs: Vec<String> },
     Check {
         flake_ref: Option<String>,
         #[arg(long)] no_build: bool,
@@ -7542,29 +7542,20 @@ async fn main() -> Result<(), CliError> {
                     print_flake_tree(&outputs);
                 }
             }
-            FlakeCommands::Update { input } => {
+            FlakeCommands::Update { inputs } => {
                 let flake_dir = std::env::current_dir()?;
-                if let Some(ref name) = input {
-                    sui_eval::flake_lock::update_input(&flake_dir, name).map_err(|e| {
-                        CliError::Orchestrate {
-                            operation: "flake update",
-                            message: e.to_string(),
-                        }
-                    })?;
-                    println!("updated input: {name}");
+                let err = |e: sui_eval::flake_lock::FlakeLockUpdateError| CliError::Orchestrate {
+                    operation: "flake update",
+                    message: e.to_string(),
+                };
+                if inputs.is_empty() {
+                    let updated = sui_eval::flake_lock::update_all_inputs(&flake_dir).map_err(err)?;
+                    println!("updated {} inputs: {}", updated.len(), updated.join(", "));
                 } else {
-                    let updated =
-                        sui_eval::flake_lock::update_all_inputs(&flake_dir).map_err(|e| {
-                            CliError::Orchestrate {
-                                operation: "flake update",
-                                message: e.to_string(),
-                            }
-                        })?;
-                    println!(
-                        "updated {} inputs: {}",
-                        updated.len(),
-                        updated.join(", ")
-                    );
+                    for name in &inputs {
+                        sui_eval::flake_lock::update_input(&flake_dir, name).map_err(err)?;
+                        println!("updated input: {name}");
+                    }
                 }
             }
             FlakeCommands::Check { flake_ref, no_build: _ } => {

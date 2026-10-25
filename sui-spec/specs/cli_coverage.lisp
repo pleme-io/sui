@@ -73,6 +73,13 @@
   :notes "Effective configuration dump (--json)")
 
 (defsui-command
+  :name "config show"
+  :nix-equivalent "nix config show"
+  :maturity Working
+  :substrate ()
+  :notes "Effective configuration, all settings or one by name; access-tokens is printed as <redacted>")
+
+(defsui-command
   :name "why"
   :nix-equivalent "nix why-depends"
   :maturity Stub
