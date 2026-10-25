@@ -51,9 +51,10 @@ pub enum BuildAction {
 /// A builder that executes derivations locally with sandbox isolation.
 pub struct LocalBuilder {
     store: Arc<dyn Store>,
-    sandbox: Box<dyn Sandbox>,
+    sandbox: Arc<dyn Sandbox>,
     build_dir_base: String,
     sink: SharedSink,
+    max_jobs: Option<usize>,
 }
 
 struct RunningBuild<'a> {
@@ -93,13 +94,21 @@ impl LocalBuilder {
     pub fn new(store: Arc<dyn Store>, sandbox: Box<dyn Sandbox>) -> Self {
         Self {
             store,
-            sandbox,
+            sandbox: Arc::from(sandbox),
             build_dir_base: std::env::temp_dir()
                 .join("sui-build")
                 .to_string_lossy()
                 .into_owned(),
             sink: activity::noop_sink(),
+            max_jobs: None,
         }
+    }
+
+    /// Run at most `jobs` builds at once, in place of nix.conf's `max-jobs`.
+    #[must_use]
+    pub fn with_max_jobs(mut self, jobs: usize) -> Self {
+        self.max_jobs = Some(jobs.max(1));
+        self
     }
 
     /// Report builds and substitutions to `sink` as CppNix activities.
@@ -187,11 +196,22 @@ impl LocalBuilder {
         // 5. Execute in sandbox
         log.push(&format!("executing builder: {}", config.builder));
         self.sandbox.prepare(&config)?;
-        let builder_log = std::sync::Mutex::new(BuilderLog::new(&running.activity, false));
-        let result = self.sandbox.execute_observed(&config, &|chunk| {
-            builder_log.lock().unwrap_or_else(std::sync::PoisonError::into_inner).feed(chunk);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+        let sandbox = self.sandbox.clone();
+        let job = config.clone();
+        let execution = tokio::task::spawn_blocking(move || {
+            sandbox.execute_observed(&job, &|chunk| {
+                let _ = tx.send(chunk.to_vec());
+            })
         });
-        builder_log.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner).finish();
+        let mut builder_log = BuilderLog::new(&running.activity, false);
+        while let Some(chunk) = rx.recv().await {
+            builder_log.feed(&chunk);
+        }
+        builder_log.finish();
+        let result = execution
+            .await
+            .map_err(|e| BuildError::Failed(format!("builder task for {}: {e}", deriver.unwrap_or_default())))?;
         let _ = self.sandbox.cleanup(&config);
 
         let result = result?;
@@ -563,26 +583,56 @@ impl LocalBuilder {
             closure.derivations.iter().map(|(p, d)| (p.as_str(), d)).collect();
         skipped += plan.present;
         substituted += plan.substituted;
-        for (drv_path, drv) in &closure.derivations {
-            if !plan.to_build.contains(drv_path) {
-                continue;
+        let order: Vec<(&str, &Derivation)> = closure
+            .derivations
+            .iter()
+            .filter(|(p, _)| plan.to_build.contains(p))
+            .map(|(p, d)| (p.as_str(), d))
+            .collect();
+        let mut waiting: std::collections::HashMap<&str, usize> = order
+            .iter()
+            .map(|(p, d)| (*p, d.input_derivations.keys().filter(|i| plan.to_build.contains(*i)).count()))
+            .collect();
+        let mut dependents: std::collections::HashMap<&str, Vec<&str>> = std::collections::HashMap::new();
+        for (p, d) in &order {
+            for input in d.input_derivations.keys().filter(|i| plan.to_build.contains(*i)) {
+                dependents.entry(input.as_str()).or_default().push(p);
             }
-
-            // 3. Build locally
-            log.push(&format!("building {drv_path}"));
-            tracing::info!(drv_path, "building locally");
-            let result = self.build_one(drv, Some(&index), Some(drv_path.as_str()), &worker).await?;
-
+        }
+        let mut ready: std::collections::VecDeque<&str> =
+            order.iter().filter(|(p, _)| waiting[p] == 0).map(|(p, _)| *p).collect();
+        let jobs = self.max_jobs.unwrap_or_else(max_jobs);
+        let mut running = futures::stream::FuturesUnordered::new();
+        let mut failure: Option<(String, BuildResult)> = None;
+        loop {
+            while failure.is_none() && running.len() < jobs {
+                let Some(drv_path) = ready.pop_front() else { break };
+                let drv = index[drv_path];
+                log.push(&format!("building {drv_path}"));
+                tracing::info!(drv_path, "building locally");
+                let index = &index;
+                let worker = &worker;
+                running.push(async move { (drv_path, self.build_one(drv, Some(index), Some(drv_path), worker).await) });
+            }
+            let Some((drv_path, result)) = futures::StreamExt::next(&mut running).await else { break };
+            let result = result?;
             if !result.success {
                 log.push(&format!("FAILED: {drv_path}"));
-                // Merge closure log into the build result log
-                let merged_log = format!("{}\n{}", log.finish(), result.log);
-                return Ok(BuildResult {
-                    log: merged_log,
-                    ..result
-                });
+                failure.get_or_insert((drv_path.to_string(), result));
+                continue;
             }
             built += 1;
+            for next in dependents.get(drv_path).into_iter().flatten() {
+                let n = waiting.get_mut(next).expect("every dependent is planned");
+                *n -= 1;
+                if *n == 0 {
+                    ready.push_back(next);
+                }
+            }
+        }
+        if let Some((_, result)) = failure {
+            let merged_log = format!("{}\n{}", log.finish(), result.log);
+            return Ok(BuildResult { log: merged_log, ..result });
         }
 
         log.push(&format!(
@@ -1722,6 +1772,46 @@ mod tests {
         assert!(!out.join("debris").exists());
     }
 
+    async fn overlapping(jobs: usize) -> bool {
+        let tmp = tempfile::tempdir().unwrap();
+        let builder = LocalBuilder::new(Arc::new(MockStore::new()), Box::new(NoSandbox))
+            .with_build_dir(tmp.path().join("build").to_str().unwrap().to_string())
+            .with_max_jobs(jobs);
+        let dir = tmp.path().display().to_string();
+        let script = |me: &str, other: &str, out: &str| {
+            format!("echo > {dir}/{me}.started; /bin/sleep 1; if [ -e {dir}/{other}.started ] && [ ! -e {dir}/{other}.done ]; then echo > {dir}/overlap; fi; echo > {dir}/{me}.done; echo hi > {out}")
+        };
+        let (out_a, out_b) = (tmp.path().join("a"), tmp.path().join("b"));
+        let (a, b) = (script("a", "b", out_a.to_str().unwrap()), script("b", "a", out_b.to_str().unwrap()));
+        let (drv_a, drv_b) = ("/nix/store/0123456789abcdfghijklmnpqrsvwxa-a.drv", "/nix/store/0123456789abcdfghijklmnpqrsvwxb-b.drv");
+        let out_root = tmp.path().join("root");
+        let mut root = make_drv("/bin/sh", &["-c", &format!("echo hi > {}", out_root.display())], out_root.to_str().unwrap());
+        root.input_derivations.insert(drv_a.to_string(), vec!["out".to_string()]);
+        root.input_derivations.insert(drv_b.to_string(), vec!["out".to_string()]);
+        let closure = make_closure(vec![
+            (drv_a, make_drv("/bin/sh", &["-c", &a], out_a.to_str().unwrap())),
+            (drv_b, make_drv("/bin/sh", &["-c", &b], out_b.to_str().unwrap())),
+            ("/nix/store/0123456789abcdfghijklmnpqrsvwxc-root.drv", root),
+        ]);
+        let result = builder.build_closure(&closure, None).await.unwrap();
+        assert!(result.success, "{}", result.log);
+        assert!(out_a.exists() && out_b.exists(), "{}", result.log);
+        tmp.path().join("overlap").exists()
+    }
+
+    #[tokio::test]
+    async fn independent_builds_run_together_up_to_max_jobs_and_one_at_a_time_at_one() {
+        assert!(overlapping(2).await);
+        assert!(!overlapping(1).await);
+    }
+
+    #[test]
+    fn max_jobs_reads_like_cppnix() {
+        assert_eq!(parse_max_jobs(None), 1);
+        assert_eq!(parse_max_jobs(Some("6")), 6);
+        assert!(parse_max_jobs(Some("auto")) >= 1);
+    }
+
     #[tokio::test]
     async fn a_closure_build_reports_cppnix_build_activities_log_lines_and_phases() {
         use sui_compat::activity::{ActivityEvent, Field, ResultType};
@@ -2314,6 +2404,20 @@ async fn substitute_paths(substitutor: &Substitutor, paths: &[String], worker: O
         }
     }
     true
+}
+
+fn max_jobs() -> usize {
+    let configured = sui_compat::nix_conf::NixConfig::load().ok().and_then(|c| c.get("max-jobs").map(str::to_string));
+    parse_max_jobs(std::env::var("SUI_MAX_JOBS").ok().as_deref().or(configured.as_deref()))
+}
+
+fn parse_max_jobs(value: Option<&str>) -> usize {
+    let auto = || std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+    match value.map(str::trim) {
+        Some("auto") => auto(),
+        Some(n) => n.parse::<usize>().ok().filter(|n| *n > 0).unwrap_or(1),
+        None => 1,
+    }
 }
 
 fn http_connections() -> usize {
