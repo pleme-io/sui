@@ -88,13 +88,14 @@ impl LocalBuilder {
     /// 4. On success: scan references, compute NAR hashes, register outputs
     /// 5. Clean up the build directory
     async fn build_single(&self, drv: &Derivation) -> Result<BuildResult, BuildError> {
-        self.build_one(drv, None).await
+        self.build_one(drv, None, None).await
     }
 
     async fn build_one(
         &self,
         drv: &Derivation,
         index: Option<&std::collections::HashMap<&str, &Derivation>>,
+        deriver: Option<&str>,
     ) -> Result<BuildResult, BuildError> {
         let start = std::time::Instant::now();
         let mut log = BuildLog::new();
@@ -230,7 +231,7 @@ impl LocalBuilder {
                 nar_hash: format!("sha256:{nar_hash}"),
                 nar_size: nar_size as i64,
                 references: runtime_refs,
-                deriver: None,
+                deriver: deriver.map(String::from),
                 signatures: vec![],
                 registration_time: std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -520,7 +521,7 @@ impl LocalBuilder {
             // 3. Build locally
             log.push(&format!("building {drv_path}"));
             tracing::info!(drv_path, "building locally");
-            let result = self.build_one(drv, Some(&index)).await?;
+            let result = self.build_one(drv, Some(&index), Some(drv_path.as_str())).await?;
 
             if !result.success {
                 log.push(&format!("FAILED: {drv_path}"));
@@ -598,7 +599,7 @@ impl LocalBuilder {
                 action: BuildAction::Building,
             });
             log.push(&format!("building {drv_path}"));
-            let result = self.build_one(drv, Some(&index)).await?;
+            let result = self.build_one(drv, Some(&index), Some(drv_path.as_str())).await?;
 
             if !result.success {
                 log.push(&format!("FAILED: {drv_path}"));
@@ -1695,7 +1696,7 @@ mod tests {
         let target_out = tmp.path().join("target");
 
         let store = Arc::new(MockStore::new().with_path(PathInfo::new(dep_out, "sha256:a")));
-        let builder = LocalBuilder::new(store, Box::new(NoSandbox))
+        let builder = LocalBuilder::new(store.clone(), Box::new(NoSandbox))
             .with_build_dir(tmp.path().join("build").to_str().unwrap().to_string());
 
         let mut dep = make_drv("/bin/sh", &["-c", "exit 1"], dep_out);
@@ -1712,6 +1713,7 @@ mod tests {
         let result = builder.build_closure(&closure, None).await.unwrap();
         assert!(result.is_success(), "{}", result.log);
         assert!(result.log.contains("1 built"));
+        assert_eq!(store.paths.lock().unwrap()[target_out.to_str().unwrap()].deriver.as_deref(), Some("target.drv"));
     }
 
     #[tokio::test]

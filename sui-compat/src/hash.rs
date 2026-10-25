@@ -37,6 +37,17 @@ impl HashAlgorithm {
         }
     }
 
+    #[must_use]
+    pub fn digest(&self, data: &[u8]) -> Vec<u8> {
+        use sha2::Digest;
+        match self {
+            Self::Sha256 => sha2::Sha256::digest(data).to_vec(),
+            Self::Sha512 => sha2::Sha512::digest(data).to_vec(),
+            Self::Sha1 => sha1::Sha1::digest(data).to_vec(),
+            Self::Md5 => md5::Md5::digest(data).to_vec(),
+        }
+    }
+
     /// Digest length in bytes.
     #[must_use]
     pub fn digest_len(&self) -> usize {
@@ -92,6 +103,16 @@ impl NixHash {
     #[must_use]
     pub fn to_sri(&self) -> String {
         format!("{}-{}", self.algorithm, base64_encode(&self.digest))
+    }
+
+    #[must_use]
+    pub fn of(algorithm: HashAlgorithm, data: &[u8]) -> Self {
+        Self::new(algorithm, algorithm.digest(data))
+    }
+
+    #[must_use]
+    pub fn to_nix32(&self) -> String {
+        crate::store_path::nix_base32_encode(&self.digest)
     }
 
     /// Lower-case hex of the digest (no `<algo>:` prefix).  Useful

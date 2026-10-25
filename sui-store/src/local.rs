@@ -238,6 +238,16 @@ impl LocalStore {
         &self.store_dir
     }
 
+    fn unpack_at(&self, path: &str, nar: &[u8]) -> StoreResult<()> {
+        let basename = path.rsplit('/').next().unwrap_or_default();
+        let dest = Path::new(&self.store_dir).join(basename);
+        if std::fs::symlink_metadata(&dest).is_ok() {
+            let cleared = if dest.is_dir() { std::fs::remove_dir_all(&dest) } else { std::fs::remove_file(&dest) };
+            cleared.map_err(StoreError::Io)?;
+        }
+        sui_compat::nar::unpack_nar(nar, &dest).map_err(|e| StoreError::Io(std::io::Error::other(e.to_string())))
+    }
+
     /// Look up a ValidPath row by its full store path string.
     async fn find_by_path(&self, path: &str) -> StoreResult<Option<valid_path::Model>> {
         valid_path::Entity::find()
@@ -498,18 +508,7 @@ impl Store for LocalStore {
     }
 
     async fn add_nar_at(&self, info: &PathInfo, nar_data: &[u8]) -> StoreResult<()> {
-        let basename = info.path.rsplit('/').next().unwrap_or_default();
-        let dest = Path::new(&self.store_dir).join(basename);
-        if std::fs::symlink_metadata(&dest).is_ok() {
-            let cleared = if dest.is_dir() {
-                std::fs::remove_dir_all(&dest)
-            } else {
-                std::fs::remove_file(&dest)
-            };
-            cleared.map_err(StoreError::Io)?;
-        }
-        sui_compat::nar::unpack_nar(nar_data, &dest)
-            .map_err(|e| StoreError::Io(std::io::Error::other(e.to_string())))?;
+        self.unpack_at(&info.path, nar_data)?;
         self.register_path(info).await
     }
 
@@ -519,64 +518,163 @@ impl Store for LocalStore {
         nar_data: &[u8],
         references: &[String],
     ) -> StoreResult<PathInfo> {
-        use sha2::{Sha256, Digest};
-        use sui_compat::store_path::{compress_hash, nix_base32_encode};
-        use sui_compat::nar::unpack_nar;
+        self.add_to_store_from_dump(
+            name,
+            nar_data,
+            &sui_compat::content_address::ContentAddressMethod::Recursive,
+            sui_compat::hash::HashAlgorithm::Sha256,
+            references,
+            false,
+        )
+        .await
+    }
 
-        // Compute the SHA-256 hash of the NAR data.
-        let nar_hash_raw = Sha256::digest(nar_data);
-        let nar_hash_hex = hex_encode(&nar_hash_raw);
-        let nar_hash = format!("sha256:{nar_hash_hex}");
-        let nar_size = nar_data.len() as i64;
+    async fn add_to_store_from_dump(
+        &self,
+        name: &str,
+        dump: &[u8],
+        method: &sui_compat::content_address::ContentAddressMethod,
+        algo: sui_compat::hash::HashAlgorithm,
+        references: &[String],
+        repair: bool,
+    ) -> StoreResult<PathInfo> {
+        use sha2::{Digest, Sha256};
+        use sui_compat::content_address::{make_fixed_output_path_from_ca, render_content_address, ContentAddressMethod};
+        use sui_compat::hash::NixHash;
 
-        // Compute the store path.
-        // The fingerprint uses the actual store_dir for correct hashing.
-        let fingerprint = format!(
-            "{}:sha256:{nar_hash_hex}:{}:{name}",
-            sui_compat::store_path::source_type(references, false),
-            self.store_dir
-        );
-        let fp_hash = Sha256::digest(fingerprint.as_bytes());
-        let compressed = compress_hash(&fp_hash, 20);
-        let b32 = nix_base32_encode(&compressed);
-        let basename = format!("{b32}-{name}");
-        let store_path = format!("{}/{basename}", self.store_dir);
+        let nar = match method {
+            ContentAddressMethod::Recursive => dump.to_vec(),
+            _ => {
+                let mut nar = Vec::new();
+                let node = sui_compat::nar::NarNode::Regular { executable: false, contents: dump.to_vec() };
+                sui_compat::nar::NarWriter::write(&mut nar, &node)
+                    .map_err(|e| StoreError::Io(std::io::Error::other(e.to_string())))?;
+                nar
+            }
+        };
+        let ca_hash = NixHash::of(algo, dump);
+        let store_path = make_fixed_output_path_from_ca(&self.store_dir, method, &ca_hash, references, name)
+            .map_err(|e| StoreError::Internal(e.to_string()))?;
 
         if let Some(existing) = self.find_by_path(&store_path).await? {
+            if repair {
+                self.unpack_at(&store_path, &nar)?;
+            }
             return self.model_to_path_info(&existing).await;
         }
+        self.unpack_at(&store_path, &nar)?;
 
-        // Write the NAR data to the store directory by unpacking.
-        let dest = Path::new(&self.store_dir).join(&basename);
-        if std::fs::symlink_metadata(&dest).is_ok() {
-            let cleared = if dest.is_dir() { std::fs::remove_dir_all(&dest) } else { std::fs::remove_file(&dest) };
-            cleared.map_err(StoreError::Io)?;
-        }
-        unpack_nar(nar_data, &dest).map_err(|e| StoreError::Io(
-            std::io::Error::other(e.to_string()),
-        ))?;
-
-        // Build PathInfo.
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
-
         let info = PathInfo {
             path: store_path,
-            nar_hash,
-            nar_size,
+            nar_hash: format!("sha256:{}", hex_encode(&Sha256::digest(&nar))),
+            nar_size: nar.len() as i64,
             references: references.to_vec(),
             deriver: None,
             signatures: vec![],
             registration_time: now,
-            content_address: Some(format!("fixed:r:sha256:{}", nix_base32_encode(&nar_hash_raw))),
+            content_address: Some(render_content_address(method, &ca_hash)),
         };
-
-        // Register in the database.
         self.register_path(&info).await?;
-
         Ok(info)
+    }
+
+    async fn add_signatures(&self, path: &StorePath, signatures: &[String]) -> StoreResult<()> {
+        let abs = path.to_absolute_path();
+        let Some(model) = self.find_by_path(&abs).await? else {
+            return Err(StoreError::PathNotFound(format!("path '{abs}' is not valid")));
+        };
+        let mut sigs: std::collections::BTreeSet<String> = model
+            .sigs
+            .as_deref()
+            .unwrap_or_default()
+            .split_whitespace()
+            .map(String::from)
+            .collect();
+        sigs.extend(signatures.iter().cloned());
+        let mut active: valid_path::ActiveModel = model.into();
+        active.sigs = Set(Some(sigs.into_iter().collect::<Vec<_>>().join(" ")));
+        active.update(&self.db).await.map_err(db_err)?;
+        Ok(())
+    }
+
+    async fn query_derivation_output_map(&self, drv: &StorePath) -> StoreResult<Option<Vec<(String, String)>>> {
+        let Some(model) = self.find_by_path(&drv.to_absolute_path()).await? else {
+            return Ok(None);
+        };
+        let rows = derivation_output::Entity::find()
+            .filter(derivation_output::Column::Drv.eq(model.id))
+            .order_by_asc(derivation_output::Column::Id)
+            .all(&self.db)
+            .await
+            .map_err(db_err)?;
+        Ok(Some(rows.into_iter().map(|r| (r.id, r.path)).collect()))
+    }
+
+    async fn query_referrers(&self, path: &StorePath) -> StoreResult<Vec<StorePath>> {
+        let Some(model) = self.find_by_path(&path.to_absolute_path()).await? else {
+            return Ok(Vec::new());
+        };
+        let ids: Vec<i64> = reference::Entity::find()
+            .filter(reference::Column::Reference.eq(model.id))
+            .all(&self.db)
+            .await
+            .map_err(db_err)?
+            .into_iter()
+            .map(|r| r.referrer)
+            .collect();
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        Ok(valid_path::Entity::find()
+            .filter(valid_path::Column::Id.is_in(ids))
+            .order_by_asc(valid_path::Column::Path)
+            .all(&self.db)
+            .await
+            .map_err(db_err)?
+            .into_iter()
+            .filter_map(|m| StorePath::from_absolute_path(&m.path).ok())
+            .collect())
+    }
+
+    async fn query_valid_derivers(&self, path: &StorePath) -> StoreResult<Vec<String>> {
+        let rows = derivation_output::Entity::find()
+            .filter(derivation_output::Column::Path.eq(path.to_absolute_path()))
+            .all(&self.db)
+            .await
+            .map_err(db_err)?;
+        let ids: Vec<i64> = rows.iter().map(|r| r.drv).collect();
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut drvs: Vec<String> = valid_path::Entity::find()
+            .filter(valid_path::Column::Id.is_in(ids))
+            .all(&self.db)
+            .await
+            .map_err(db_err)?
+            .into_iter()
+            .map(|m| m.path)
+            .collect();
+        drvs.sort();
+        drvs.dedup();
+        Ok(drvs)
+    }
+
+    async fn query_path_from_hash_part(&self, hash_part: &str) -> StoreResult<Option<String>> {
+        if hash_part.len() != sui_compat::store_path::STORE_PATH_HASH_LEN {
+            return Err(StoreError::Internal(format!("invalid hash part '{hash_part}'")));
+        }
+        let prefix = format!("{}/{hash_part}", sui_compat::store_path::DEFAULT_STORE_DIR);
+        let row = valid_path::Entity::find()
+            .filter(valid_path::Column::Path.gte(prefix.as_str()))
+            .order_by_asc(valid_path::Column::Path)
+            .one(&self.db)
+            .await
+            .map_err(db_err)?;
+        Ok(row.map(|m| m.path).filter(|p| p.starts_with(&format!("{prefix}-"))))
     }
 
     async fn collect_garbage(
@@ -944,7 +1042,163 @@ pub fn find_gc_roots(store_dir: &str) -> Vec<String> {
     roots
 }
 
-/// Recursively scan a directory for symlinks that root a store path — DIRECTLY
+#[must_use]
+pub fn find_root_links(state_dir: &Path, store_dir: &str) -> Vec<(String, String)> {
+    let mut found = Vec::new();
+    for dir in [state_dir.join("gcroots"), state_dir.join("profiles")] {
+        root_links_in(&dir, store_dir, &mut found);
+    }
+    found.sort();
+    found.dedup();
+    found
+}
+
+#[must_use]
+pub fn find_runtime_roots(store_dir: &str) -> Vec<(String, String)> {
+    let mut unchecked: Vec<(String, String)> = Vec::new();
+    if let Ok(procs) = std::fs::read_dir("/proc") {
+        for proc in procs.flatten() {
+            let pid = proc.file_name().to_string_lossy().into_owned();
+            if pid.is_empty() || !pid.bytes().all(|b| b.is_ascii_digit()) {
+                continue;
+            }
+            let base = Path::new("/proc").join(&pid);
+            for link in [base.join("exe"), base.join("cwd")] {
+                if let Ok(t) = std::fs::read_link(&link) {
+                    unchecked.push((t.to_string_lossy().into_owned(), link.to_string_lossy().into_owned()));
+                }
+            }
+            if let Ok(fds) = std::fs::read_dir(base.join("fd")) {
+                for fd in fds.flatten() {
+                    if let Ok(t) = std::fs::read_link(fd.path()) {
+                        unchecked.push((t.to_string_lossy().into_owned(), fd.path().to_string_lossy().into_owned()));
+                    }
+                }
+            }
+            let maps = base.join("maps");
+            if let Ok(text) = std::fs::read_to_string(&maps) {
+                for line in text.lines() {
+                    if let Some(file) = line.split_whitespace().nth(5).filter(|f| f.starts_with('/')) {
+                        unchecked.push((file.to_string(), maps.to_string_lossy().into_owned()));
+                    }
+                }
+            }
+            let environ = base.join("environ");
+            if let Ok(bytes) = std::fs::read(&environ) {
+                for target in store_paths_in(&String::from_utf8_lossy(&bytes), store_dir) {
+                    unchecked.push((target, environ.to_string_lossy().into_owned()));
+                }
+            }
+        }
+    }
+    #[cfg(target_os = "linux")]
+    for file in ["/proc/sys/kernel/modprobe", "/proc/sys/kernel/fbsplash", "/proc/sys/kernel/poweroff_cmd"] {
+        if let Ok(t) = std::fs::read_to_string(file) {
+            unchecked.push((t, file.to_string()));
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    if std::env::var("_NIX_TEST_NO_LSOF").as_deref() != Ok("1")
+        && let Ok(out) = std::process::Command::new("/usr/sbin/lsof").args(["-n", "-w", "-F", "n"]).output()
+    {
+        for line in String::from_utf8_lossy(&out.stdout).lines() {
+            if let Some(path) = line.strip_prefix('n').filter(|p| p.starts_with('/')) {
+                unchecked.push((path.to_string(), "{lsof}".to_string()));
+            }
+        }
+    }
+    let mut roots: Vec<(String, String)> = unchecked
+        .into_iter()
+        .filter_map(|(target, link)| store_root_of(&target, store_dir).map(|root| (link, root)))
+        .collect();
+    roots.sort();
+    roots.dedup();
+    roots
+}
+
+#[must_use]
+pub fn find_temp_roots(state_dir: &Path, store_dir: &str) -> Vec<(String, String)> {
+    let mut roots = Vec::new();
+    let Ok(entries) = std::fs::read_dir(state_dir.join("temproots")) else {
+        return roots;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with('.') {
+            continue;
+        }
+        let Ok(file) = std::fs::OpenOptions::new().read(true).write(true).open(entry.path()) else {
+            continue;
+        };
+        if file.try_lock().is_ok() {
+            let _ = file.unlock();
+            continue;
+        }
+        let Ok(contents) = std::fs::read(entry.path()) else {
+            continue;
+        };
+        for root in contents.split(|b| *b == 0).filter(|r| !r.is_empty()) {
+            if let Some(path) = store_root_of(&String::from_utf8_lossy(root), store_dir) {
+                roots.push((format!("{{temp:{name}}}"), path));
+            }
+        }
+    }
+    roots.sort();
+    roots.dedup();
+    roots
+}
+
+fn store_paths_in(text: &str, store_dir: &str) -> Vec<String> {
+    let prefix = format!("{store_dir}/");
+    let mut out = Vec::new();
+    let mut rest = text;
+    while let Some(i) = rest.find(&prefix) {
+        let tail = &rest[i + prefix.len()..];
+        let end = tail
+            .find(|c: char| !(c.is_ascii_alphanumeric() || "+-._?=".contains(c)))
+            .unwrap_or(tail.len());
+        if end > 0 && tail.as_bytes()[0].is_ascii_alphanumeric() {
+            out.push(format!("{prefix}{}", &tail[..end]));
+        }
+        rest = &tail[end..];
+    }
+    out
+}
+
+fn root_links_in(path: &Path, store_dir: &str, found: &mut Vec<(String, String)>) {
+    let Ok(meta) = std::fs::symlink_metadata(path) else {
+        return;
+    };
+    let in_store = |target: &Path| store_root_of(&target.to_string_lossy(), store_dir);
+    if meta.is_dir() {
+        if let Ok(entries) = std::fs::read_dir(path) {
+            for entry in entries.flatten() {
+                root_links_in(&entry.path(), store_dir, found);
+            }
+        }
+    } else if meta.file_type().is_symlink() {
+        let Ok(target) = std::fs::read_link(path) else {
+            return;
+        };
+        if let Some(root) = in_store(&target) {
+            found.push((path.to_string_lossy().into_owned(), root));
+            return;
+        }
+        let target = path.parent().map_or(target.clone(), |p| p.join(&target));
+        if !std::fs::symlink_metadata(&target).is_ok_and(|m| m.file_type().is_symlink()) {
+            return;
+        }
+        if let Some(root) = std::fs::read_link(&target).ok().and_then(|t2| in_store(&t2)) {
+            found.push((target.to_string_lossy().into_owned(), root));
+        }
+    } else if meta.is_file()
+        && let Some(name) = path.file_name()
+    {
+        found.push((path.to_string_lossy().into_owned(), format!("{store_dir}/{}", name.to_string_lossy())));
+    }
+}
+
+/// Recursively scan a directory for symlinks that root a store path — DIRECTLY/// Recursively scan a directory for symlinks that root a store path — DIRECTLY
 /// or through an INDIRECT (`auto/`) two-hop chain (seal I6a).
 ///
 /// A direct root is a symlink under `gcroots/`/`profiles/` whose target is
@@ -1992,6 +2246,112 @@ mod tests {
         assert!(store.repair_derivation_outputs(false).await.unwrap().is_empty());
     }
 
+    #[test]
+    fn root_links_follow_cppnix_direct_indirect_and_regular_file_roots() {
+        let state = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let gc = state.path().join("gcroots");
+        std::fs::create_dir_all(gc.join("auto")).unwrap();
+        std::os::unix::fs::symlink("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-a/bin/x", gc.join("direct")).unwrap();
+        let result = home.path().join("result");
+        std::os::unix::fs::symlink("/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-b", &result).unwrap();
+        std::os::unix::fs::symlink(&result, gc.join("auto/h")).unwrap();
+        std::fs::write(gc.join("cccccccccccccccccccccccccccccccc-c"), b"").unwrap();
+        std::os::unix::fs::symlink(home.path().join("gone"), gc.join("auto/stale")).unwrap();
+        let links = find_root_links(state.path(), "/nix/store");
+        let mut expected = vec![
+                (gc.join("cccccccccccccccccccccccccccccccc-c").to_string_lossy().into_owned(), "/nix/store/cccccccccccccccccccccccccccccccc-c".to_string()),
+                (gc.join("direct").to_string_lossy().into_owned(), "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-a".to_string()),
+                (result.to_string_lossy().into_owned(), "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-b".to_string()),
+        ];
+        expected.sort();
+        assert_eq!(links, expected);
+        std::fs::create_dir_all(state.path().join("temproots")).unwrap();
+        std::fs::write(state.path().join("temproots/42"), b"/nix/store/dddddddddddddddddddddddddddddddd-d\0").unwrap();
+        std::fs::write(state.path().join("temproots/43"), b"/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-e\0").unwrap();
+        let held = std::fs::File::open(state.path().join("temproots/42")).unwrap();
+        held.lock_shared().unwrap();
+        assert_eq!(
+            find_temp_roots(state.path(), "/nix/store"),
+            vec![("{temp:42}".to_string(), "/nix/store/dddddddddddddddddddddddddddddddd-d".to_string())]
+        );
+        drop(held);
+        assert_eq!(
+            store_paths_in("A=/nix/store/abc-x/bin:/nix/store/def-y\0/nix/store/", "/nix/store"),
+            vec!["/nix/store/abc-x".to_string(), "/nix/store/def-y".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn derivation_queries_read_the_registered_outputs() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalStore::open_in_memory_with_dir(dir.path().to_str().unwrap()).await.unwrap();
+        let out = "/nix/store/hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh-hello";
+        let dev = "/nix/store/iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii-hello-dev";
+        let drv_name = "gggggggggggggggggggggggggggggggg-hello.drv";
+        std::fs::write(
+            dir.path().join(drv_name),
+            format!(r#"Derive([("dev","{dev}","",""),("out","{out}","","")],[],[],"aarch64-darwin","/bin/sh",[],[])"#),
+        )
+        .unwrap();
+        let drv_path = format!("/nix/store/{drv_name}");
+        store.register_path(&PathInfo::new(&drv_path, "sha256:00")).await.unwrap();
+        store.register_path(&PathInfo::new(out, "sha256:00")).await.unwrap();
+        let drv = StorePath::from_absolute_path(&drv_path).unwrap();
+        assert_eq!(
+            store.query_derivation_output_map(&drv).await.unwrap(),
+            Some(vec![("dev".to_string(), dev.to_string()), ("out".to_string(), out.to_string())])
+        );
+        let absent = StorePath::from_absolute_path("/nix/store/ffffffffffffffffffffffffffffffff-x.drv").unwrap();
+        assert_eq!(store.query_derivation_output_map(&absent).await.unwrap(), None);
+        let out_sp = StorePath::from_absolute_path(out).unwrap();
+        assert_eq!(store.query_valid_derivers(&out_sp).await.unwrap(), vec![drv_path.clone()]);
+        let lib = "/nix/store/jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjj-lib";
+        store.register_path(&PathInfo { references: vec![out.to_string(), lib.to_string()], ..PathInfo::new(lib, "sha256:00") }).await.unwrap();
+        let referrers: Vec<String> = store.query_referrers(&out_sp).await.unwrap().iter().map(StorePath::to_absolute_path).collect();
+        assert_eq!(referrers, vec![lib.to_string()]);
+        assert_eq!(
+            store.query_path_from_hash_part("hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh").await.unwrap().as_deref(),
+            Some(out)
+        );
+        assert_eq!(store.query_path_from_hash_part("hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh0").await.unwrap(), None);
+        store.add_signatures(&out_sp, &["k:b".into(), "k:a".into()]).await.unwrap();
+        store.add_signatures(&out_sp, &["k:a".into()]).await.unwrap();
+        assert_eq!(store.query_path_info(&out_sp).await.unwrap().unwrap().signatures, vec!["k:a", "k:b"]);
+        assert!(store.add_signatures(&absent, &["k:a".into()]).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn add_to_store_nar_checks_the_declared_hash_size_and_content_address() {
+        use sui_compat::hash::{HashAlgorithm, NixHash};
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalStore::open_in_memory_with_dir(dir.path().to_str().unwrap()).await.unwrap();
+        let mut nar = Vec::new();
+        sui_compat::nar::NarWriter::write(&mut nar, &sui_compat::nar::NarNode::Regular { executable: false, contents: b"z".to_vec() })
+            .unwrap();
+        let path = "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-z";
+        let good = PathInfo {
+            nar_size: nar.len() as i64,
+            ..PathInfo::new(path, format!("sha256:{}", NixHash::of(HashAlgorithm::Sha256, &nar).to_nix32()))
+        };
+        let wrong_hash = PathInfo { nar_hash: format!("sha256:{}", hex_encode(&[0; 32])), ..good.clone() };
+        assert!(matches!(store.add_to_store_nar(&wrong_hash, &nar, false).await, Err(StoreError::NarHashMismatch { .. })));
+        let wrong_size = PathInfo { nar_size: 1, ..good.clone() };
+        assert!(store.add_to_store_nar(&wrong_size, &nar, false).await.is_err());
+        let wrong_ca = PathInfo {
+            content_address: Some(format!("fixed:sha256:{}", NixHash::of(HashAlgorithm::Sha256, b"other").to_nix32())),
+            ..good.clone()
+        };
+        assert!(store.add_to_store_nar(&wrong_ca, &nar, false).await.is_err());
+        let right_ca = PathInfo {
+            content_address: Some(format!("fixed:sha256:{}", NixHash::of(HashAlgorithm::Sha256, b"z").to_nix32())),
+            ..good.clone()
+        };
+        store.add_to_store_nar(&right_ca, &nar, false).await.unwrap();
+        store.add_to_store_nar(&good, &nar, false).await.unwrap();
+        assert_eq!(std::fs::read(dir.path().join("0123456789abcdfghijklmnpqrsvwxyz-z")).unwrap(), b"z");
+    }
+
     #[tokio::test]
     async fn adding_a_path_that_is_already_valid_returns_it() {
         let dir = tempfile::tempdir().unwrap();
@@ -2124,6 +2484,56 @@ mod tests {
         store.add_nar_at(&info, &nar_data).await.unwrap();
 
         assert_eq!(std::fs::read(&wanted).unwrap(), b"dev");
+    }
+
+    #[tokio::test]
+    async fn every_ingestion_method_lands_at_its_content_address() {
+        use sui_compat::content_address::{make_fixed_output_path_from_ca, ContentAddressMethod};
+        use sui_compat::hash::{HashAlgorithm, NixHash};
+
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let store_dir = tmp_dir.path().to_str().unwrap();
+        let store = LocalStore::open_in_memory_with_dir(store_dir).await.unwrap();
+        for (method, algo, prefix) in [
+            (ContentAddressMethod::Text, HashAlgorithm::Sha256, "text:sha256:"),
+            (ContentAddressMethod::Flat, HashAlgorithm::Sha1, "fixed:sha1:"),
+            (ContentAddressMethod::Flat, HashAlgorithm::Md5, "fixed:md5:"),
+            (ContentAddressMethod::Flat, HashAlgorithm::Sha512, "fixed:sha512:"),
+        ] {
+            let info = store.add_to_store_from_dump("y", b"y", &method, algo, &[], false).await.unwrap();
+            let expected = make_fixed_output_path_from_ca(store_dir, &method, &NixHash::of(algo, b"y"), &[], "y").unwrap();
+            assert_eq!(info.path, expected);
+            assert_eq!(std::fs::read(&info.path).unwrap(), b"y");
+            assert!(info.content_address.as_deref().unwrap().starts_with(prefix));
+            let again = store.add_to_store_from_dump("y", b"y", &method, algo, &[], false).await.unwrap();
+            assert_eq!(again.path, info.path);
+        }
+        let flat_with_refs = store
+            .add_to_store_from_dump("y", b"y", &ContentAddressMethod::Flat, HashAlgorithm::Sha256, &["/x".into()], false)
+            .await;
+        assert!(flat_with_refs.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_recursive_non_sha256_dump_hashes_the_nar_under_that_algorithm() {
+        use sui_compat::content_address::ContentAddressMethod;
+        use sui_compat::hash::HashAlgorithm;
+        use sui_compat::nar::{NarNode, NarWriter};
+
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let store_dir = tmp_dir.path().to_str().unwrap();
+        let store = LocalStore::open_in_memory_with_dir(store_dir).await.unwrap();
+        let mut nar = Vec::new();
+        NarWriter::write(&mut nar, &NarNode::Regular { executable: true, contents: b"x".to_vec() }).unwrap();
+        let info = store
+            .add_to_store_from_dump("x", &nar, &ContentAddressMethod::Recursive, HashAlgorithm::Sha512, &[], false)
+            .await
+            .unwrap();
+        assert_eq!(
+            info.path,
+            sui_compat::store_path::make_fixed_output_path_in(store_dir, "r:", "sha512", &hex_encode(&HashAlgorithm::Sha512.digest(&nar)), "x")
+        );
+        assert_eq!(info.nar_size, nar.len() as i64);
     }
 
     // ── hex_encode helper ──────────────────────────────────────

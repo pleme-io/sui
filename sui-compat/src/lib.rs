@@ -13,6 +13,7 @@ pub mod flake_ref;
 pub mod hash;
 pub mod nar;
 pub mod narinfo;
+pub mod realisation;
 pub mod nix_conf;
 pub mod signature;
 pub mod source;

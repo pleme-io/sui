@@ -42,6 +42,7 @@ pub enum Availability {
         nar_size: u64,
         /// Absolute store paths it references; each must be present or fetched too.
         references: Vec<String>,
+        deriver: Option<String>,
     },
     /// No trusted cache serves it; it must be built.
     Missing,
@@ -141,6 +142,10 @@ impl Substitutor {
         if self.local_store.is_valid_path(path).await? {
             return Ok(Availability::Present);
         }
+        self.query_caches(path).await
+    }
+
+    pub async fn query_caches(&self, path: &StorePath) -> StoreResult<Availability> {
         let hash = path.hash();
         for cache in &self.caches {
             let narinfo = match cache.fetch_narinfo(&hash).await {
@@ -163,6 +168,11 @@ impl Substitutor {
                     .iter()
                     .map(|r| if r.starts_with('/') { r.clone() } else { format!("{store_dir}/{r}") })
                     .collect(),
+                deriver: narinfo
+                    .deriver
+                    .as_ref()
+                    .filter(|d| !d.is_empty() && d.as_str() != "unknown-deriver")
+                    .map(|d| if d.starts_with('/') { d.clone() } else { format!("{store_dir}/{d}") }),
             });
         }
         Ok(Availability::Missing)

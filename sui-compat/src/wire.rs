@@ -71,6 +71,8 @@ pub enum WorkerOp {
     QueryRealisation = 43,
     AddMultipleToStore = 44,
     AddBuildLog = 45,
+    BuildPathsWithResults = 46,
+    AddPermRoot = 47,
 }
 
 impl WorkerOp {
@@ -128,6 +130,8 @@ impl TryFrom<u64> for WorkerOp {
             43 => Ok(Self::QueryRealisation),
             44 => Ok(Self::AddMultipleToStore),
             45 => Ok(Self::AddBuildLog),
+            46 => Ok(Self::BuildPathsWithResults),
+            47 => Ok(Self::AddPermRoot),
             _ => Err(WireError::Protocol(format!("unknown worker op: {v}"))),
         }
     }
@@ -150,6 +154,8 @@ pub enum StderrMsg {
     StopActivity = 0x53544f50, // "STOP"
     /// Activity result.
     Result = 0x52534c54,     // "RSLT"
+    Read = 0x64617461,
+    Data = 0x64617416,
 }
 
 // ── Wire primitives ──────────────────────────────────────────
@@ -387,6 +393,8 @@ mod tests {
             (26, WorkerOp::QueryPathInfo),
             (38, WorkerOp::NarFromPath),
             (45, WorkerOp::AddBuildLog),
+            (46, WorkerOp::BuildPathsWithResults),
+            (47, WorkerOp::AddPermRoot),
         ];
         for (code, expected) in valid_ops {
             assert_eq!(WorkerOp::from_u64(code), Some(expected));
@@ -399,7 +407,7 @@ mod tests {
         assert_eq!(WorkerOp::from_u64(2), None);
         assert_eq!(WorkerOp::from_u64(15), None);
         assert_eq!(WorkerOp::from_u64(17), None);
-        assert_eq!(WorkerOp::from_u64(46), None);
+        assert_eq!(WorkerOp::from_u64(48), None);
         assert_eq!(WorkerOp::from_u64(u64::MAX), None);
     }
 

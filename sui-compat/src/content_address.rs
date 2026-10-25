@@ -3,8 +3,7 @@
 //! Nix supports several content-addressing methods for store paths.
 
 use crate::hash::{hex, HashAlgorithm, NixHash};
-use crate::store_path::{compress_hash, StorePath, StorePathError};
-use sha2::{Digest, Sha256};
+use crate::store_path::{make_fixed_output_path_in, make_store_path_in, make_type, StorePath, StorePathError, DEFAULT_STORE_DIR};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -13,6 +12,12 @@ pub enum ContentAddressError {
     InvalidFormat(String),
     #[error("store path error: {0}")]
     StorePath(#[from] StorePathError),
+    #[error("experimental Nix feature 'git-hashing' is disabled; add '--extra-experimental-features git-hashing' to enable it")]
+    GitHashing,
+    #[error("text hashing must use sha256, not {0}")]
+    TextNotSha256(HashAlgorithm),
+    #[error("fixed output derivation '{0}' is not allowed to refer to other store paths.\nYou may need to use the 'unsafeDiscardReferences' derivation attribute, see the manual for more details.")]
+    ReferencesNotAllowed(String),
 }
 
 /// Content-addressing method.
@@ -115,47 +120,93 @@ impl std::str::FromStr for ContentAddress {
 /// Compute a store path for text content (like `builtins.toFile`).
 ///
 /// The fingerprint is: `text:<sha256hash>:<references...>:/nix/store:<name>`
+impl ContentAddressMethod {
+    pub fn parse_with_algo(s: &str) -> Result<(Self, HashAlgorithm), ContentAddressError> {
+        let (method, algo) = if let Some(algo) = s.strip_prefix("text:") {
+            (Self::Text, algo)
+        } else if let Some(rest) = s.strip_prefix("fixed:") {
+            if let Some(algo) = rest.strip_prefix("r:") {
+                (Self::Recursive, algo)
+            } else if rest.starts_with("git:") {
+                return Err(ContentAddressError::GitHashing);
+            } else {
+                (Self::Flat, rest)
+            }
+        } else {
+            return Err(ContentAddressError::InvalidFormat(format!(
+                "content address prefix of '{s}' is unrecognized. Recogonized prefixes are 'text' or 'fixed'"
+            )));
+        };
+        let algo = HashAlgorithm::from_nix_str(algo).map_err(|e| ContentAddressError::InvalidFormat(e.to_string()))?;
+        Ok((method, algo))
+    }
+
+    #[must_use]
+    pub fn render_modern_prefix(&self) -> &'static str {
+        match self {
+            Self::Text => "text:",
+            Self::Flat => "fixed:",
+            Self::Recursive => "fixed:r:",
+        }
+    }
+}
+
+#[must_use]
+pub fn render_content_address(method: &ContentAddressMethod, hash: &NixHash) -> String {
+    format!("{}{}:{}", method.render_modern_prefix(), hash.algorithm, hash.to_nix32())
+}
+
+pub fn parse_content_address(s: &str) -> Result<(ContentAddressMethod, NixHash), ContentAddressError> {
+    let (prefix, digest) = s
+        .rsplit_once(':')
+        .ok_or_else(|| ContentAddressError::InvalidFormat(s.to_string()))?;
+    let (method, algo) = ContentAddressMethod::parse_with_algo(prefix)?;
+    let hash = NixHash::parse_any(algo, digest).map_err(|e| ContentAddressError::InvalidFormat(format!("{s}: {e}")))?;
+    Ok((method, hash))
+}
+
+pub fn make_fixed_output_path_from_ca(
+    store_dir: &str,
+    method: &ContentAddressMethod,
+    hash: &NixHash,
+    references: &[String],
+    name: &str,
+) -> Result<String, ContentAddressError> {
+    let typed = format!("{}:{}", hash.algorithm, hex::encode(&hash.digest));
+    match method {
+        ContentAddressMethod::Text => {
+            if hash.algorithm != HashAlgorithm::Sha256 {
+                return Err(ContentAddressError::TextNotSha256(hash.algorithm));
+            }
+            Ok(make_store_path_in(store_dir, &make_type("text", references, false), &typed, name))
+        }
+        ContentAddressMethod::Recursive if hash.algorithm == HashAlgorithm::Sha256 => {
+            Ok(make_store_path_in(store_dir, &make_type("source", references, false), &typed, name))
+        }
+        ContentAddressMethod::Recursive | ContentAddressMethod::Flat => {
+            if !references.is_empty() {
+                return Err(ContentAddressError::ReferencesNotAllowed(name.to_string()));
+            }
+            let ingestion = if *method == ContentAddressMethod::Recursive { "r:" } else { "" };
+            Ok(make_fixed_output_path_in(store_dir, ingestion, hash.algorithm.as_nix_str(), &hex::encode(&hash.digest), name))
+        }
+    }
+}
+
 pub fn compute_text_store_path(
     name: &str,
     contents: &[u8],
     references: &[String],
 ) -> Result<StorePath, StorePathError> {
-    let content_hash = Sha256::digest(contents);
-
-    // ★ FIELD ORDER. CppNix composes this as `makeType` + `makeStorePath`:
-    // `makeType` yields `text:<ref1>:<ref2>…` — the references come
-    // IMMEDIATELY after the type word — and `makeStorePath` then appends
-    // `:sha256:<hex>:/nix/store:<name>`. So the layout is
-    //
-    //     text:<refs…>:sha256:<hex>:/nix/store:<name>
-    //
-    // not `text:sha256:<hex>:<refs…>`, which is what this built.
-    //
-    // The bug was INVISIBLE for as long as it existed, and not by luck: the
-    // only caller (`builtins.toFile`) passed an empty reference slice, so the
-    // loop never ran and both orders produce identical bytes. Two wrongs in
-    // series, each masking the other — fixing either one alone still diverges
-    // from nix, which is why neither showed up as a regression.
-    let mut fingerprint = String::from("text");
-    for r in references {
-        fingerprint.push(':');
-        fingerprint.push_str(r);
-    }
-    fingerprint.push_str(":sha256:");
-    fingerprint.push_str(&hex::encode(&content_hash));
-    fingerprint.push_str(":/nix/store:");
-    fingerprint.push_str(name);
-
-    let path_hash = compress_hash(&Sha256::digest(fingerprint.as_bytes()), 20);
-    let digest: [u8; 20] = path_hash.try_into().map_err(|_| StorePathError::InvalidHashLength {
-        expected: 20,
-        got: 0, // compress_hash guarantees length, so this branch is unreachable
-    })?;
-
-    Ok(StorePath {
-        digest,
-        name: name.to_string(),
-    })
+    let path = make_fixed_output_path_from_ca(
+        DEFAULT_STORE_DIR,
+        &ContentAddressMethod::Text,
+        &NixHash::of(HashAlgorithm::Sha256, contents),
+        references,
+        name,
+    )
+    .map_err(|e| StorePathError::Invalid(e.to_string()))?;
+    StorePath::from_absolute_path(&path)
 }
 
 /// Parse `<algo>:<hex-hash>` format.
@@ -220,6 +271,7 @@ mod tests {
     }
 
     use super::*;
+    use crate::store_path::compress_hash;
 
     #[test]
     fn parse_text_ca() {
@@ -626,14 +678,57 @@ mod tests {
     }
 
     #[test]
-    fn compute_text_store_path_reference_order_matters() {
+    fn compute_text_store_path_references_are_a_set() {
         let r1 = vec!["/nix/store/aaa".to_string(), "/nix/store/bbb".to_string()];
-        let r2 = vec!["/nix/store/bbb".to_string(), "/nix/store/aaa".to_string()];
+        let r2 = vec!["/nix/store/bbb".to_string(), "/nix/store/aaa".to_string(), "/nix/store/aaa".to_string()];
         let p1 = compute_text_store_path("x", b"data", &r1).unwrap();
         let p2 = compute_text_store_path("x", b"data", &r2).unwrap();
-        // The current implementation does not sort references, so order matters.
-        // Document the current behavior so any future change is intentional.
-        assert_ne!(p1.digest, p2.digest);
+        assert_eq!(p1.digest, p2.digest);
+    }
+
+    #[test]
+    fn every_ingestion_method_cppnix_accepts_parses_with_its_algorithm() {
+        for (s, method, algo) in [
+            ("text:sha256", ContentAddressMethod::Text, HashAlgorithm::Sha256),
+            ("fixed:sha1", ContentAddressMethod::Flat, HashAlgorithm::Sha1),
+            ("fixed:r:sha256", ContentAddressMethod::Recursive, HashAlgorithm::Sha256),
+            ("fixed:r:sha512", ContentAddressMethod::Recursive, HashAlgorithm::Sha512),
+            ("fixed:md5", ContentAddressMethod::Flat, HashAlgorithm::Md5),
+        ] {
+            let (m, a) = ContentAddressMethod::parse_with_algo(s).unwrap();
+            assert_eq!((m.clone(), a), (method.clone(), algo));
+            assert_eq!(format!("{}{}", m.render_modern_prefix(), a), s);
+        }
+        assert!(matches!(ContentAddressMethod::parse_with_algo("fixed:git:sha1"), Err(ContentAddressError::GitHashing)));
+        assert!(ContentAddressMethod::parse_with_algo("nar:sha256").is_err());
+    }
+
+    #[test]
+    fn a_ca_path_matches_cppnix_for_each_method() {
+        let y = NixHash::of(HashAlgorithm::Sha256, b"y");
+        assert_eq!(
+            make_fixed_output_path_from_ca(DEFAULT_STORE_DIR, &ContentAddressMethod::Text, &y, &[], "x").unwrap(),
+            compute_text_store_path("x", b"y", &[]).unwrap().to_absolute_path()
+        );
+        assert_eq!(
+            make_fixed_output_path_from_ca(DEFAULT_STORE_DIR, &ContentAddressMethod::Recursive, &y, &[], "x").unwrap(),
+            crate::store_path::compute_fixed_output_hash("sha256", &y.to_hex(), true, "x")
+        );
+        assert_eq!(
+            make_fixed_output_path_from_ca(DEFAULT_STORE_DIR, &ContentAddressMethod::Flat, &y, &[], "x").unwrap(),
+            crate::store_path::compute_fixed_output_hash("sha256", &y.to_hex(), false, "x")
+        );
+        assert!(matches!(
+            make_fixed_output_path_from_ca(DEFAULT_STORE_DIR, &ContentAddressMethod::Flat, &y, &["/nix/store/a".into()], "x"),
+            Err(ContentAddressError::ReferencesNotAllowed(_))
+        ));
+        assert!(matches!(
+            make_fixed_output_path_from_ca(DEFAULT_STORE_DIR, &ContentAddressMethod::Text, &NixHash::of(HashAlgorithm::Sha1, b"y"), &[], "x"),
+            Err(ContentAddressError::TextNotSha256(_))
+        ));
+        let rendered = render_content_address(&ContentAddressMethod::Recursive, &y);
+        assert_eq!(rendered, format!("fixed:r:sha256:{}", y.to_nix32()));
+        assert_eq!(parse_content_address(&rendered).unwrap(), (ContentAddressMethod::Recursive, y));
     }
 
     // ── ContentAddressMethod equality + clone ────────────

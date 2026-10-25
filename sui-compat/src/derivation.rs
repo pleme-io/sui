@@ -294,6 +294,77 @@ impl Derivation {
     }
 }
 
+impl Derivation {
+    #[must_use]
+    pub fn is_fixed_output(&self) -> bool {
+        !self.outputs.is_empty() && self.outputs.values().all(|o| !o.hash.is_empty() && !o.path.is_empty())
+    }
+
+    #[must_use]
+    pub fn substitutes_allowed(&self) -> bool {
+        if let Some(json) = self.env.get("__json") {
+            return serde_json::from_str::<serde_json::Value>(json)
+                .ok()
+                .and_then(|v| v.get("allowSubstitutes").and_then(serde_json::Value::as_bool))
+                .unwrap_or(true);
+        }
+        self.env.get("allowSubstitutes").is_none_or(|v| v == "1")
+    }
+
+    #[must_use]
+    pub fn masked(&self) -> Self {
+        let mut masked = self.clone();
+        for (name, output) in &mut masked.outputs {
+            output.path.clear();
+            if let Some(v) = masked.env.get_mut(name) {
+                v.clear();
+            }
+        }
+        masked
+    }
+}
+
+pub fn output_hashes_modulo(
+    drv: &Derivation,
+    mask_outputs: bool,
+    load: &mut impl FnMut(&str) -> Result<Derivation, DerivationError>,
+    memo: &mut std::collections::HashMap<String, BTreeMap<String, String>>,
+) -> Result<BTreeMap<String, String>, DerivationError> {
+    use sha2::{Digest, Sha256};
+    if drv.is_fixed_output() {
+        return Ok(drv
+            .outputs
+            .iter()
+            .map(|(name, o)| {
+                let pre = format!("fixed:out:{}:{}:{}", o.hash_algo, o.hash, o.path);
+                (name.clone(), crate::hash::hex::encode(&Sha256::digest(pre.as_bytes())))
+            })
+            .collect());
+    }
+    let mut resolved: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for (input, wanted) in &drv.input_derivations {
+        let hashes = match memo.get(input) {
+            Some(h) => h.clone(),
+            None => {
+                let input_drv = load(input)?;
+                let h = output_hashes_modulo(&input_drv, false, load, memo)?;
+                memo.insert(input.clone(), h.clone());
+                h
+            }
+        };
+        let first = wanted.first().map_or("out", String::as_str);
+        let hex = hashes.get(first).ok_or_else(|| DerivationError::Parse {
+            pos: 0,
+            message: format!("no hash for output '{first}' of derivation '{input}'"),
+        })?;
+        resolved.insert(input.clone(), hex.clone());
+    }
+    let subject = if mask_outputs { drv.masked() } else { drv.clone() };
+    let aterm = subject.serialize_modulo(|p| resolved.get(p).cloned().unwrap_or_else(|| p.to_string()));
+    let hex = crate::hash::hex::encode(&Sha256::digest(aterm.as_bytes()));
+    Ok(drv.outputs.keys().map(|name| (name.clone(), hex.clone())).collect())
+}
+
 /// Join an iterator of string fragments with commas.
 fn join_comma(items: impl Iterator<Item = String>) -> String {
     let mut out = String::new();
@@ -327,6 +398,36 @@ pub(crate) fn escape(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn output_hashes_modulo_reproduce_the_output_paths_cppnix_2_31_5_wrote() {
+        let a = r#"Derive([("out","/nix/store/19k94y693b5mi3rbb0f3y9c4zq1jc3z0-a","sha256","0000000000000000000000000000000000000000000000000000000000000000")],[],[],"aarch64-darwin","/bin/sh",[],[("builder","/bin/sh"),("name","a"),("out","/nix/store/19k94y693b5mi3rbb0f3y9c4zq1jc3z0-a"),("outputHash","0000000000000000000000000000000000000000000000000000000000000000"),("outputHashAlgo","sha256"),("outputHashMode","flat"),("system","aarch64-darwin")])"#;
+        let b = r#"Derive([("dev","/nix/store/h4ayh8c8zf9hvnwbaf1dr990ghfy71cw-b-dev","",""),("out","/nix/store/49dc9j6aviq2v2xjswzwzbhvwcc6693b-b","","")],[("/nix/store/iyb4kvbj4ldvky1ia33wv05fsk49xcil-a.drv",["out"])],[],"aarch64-darwin","/bin/sh",["-c","/nix/store/19k94y693b5mi3rbb0f3y9c4zq1jc3z0-a"],[("builder","/bin/sh"),("dev","/nix/store/h4ayh8c8zf9hvnwbaf1dr990ghfy71cw-b-dev"),("name","b"),("out","/nix/store/49dc9j6aviq2v2xjswzwzbhvwcc6693b-b"),("outputs","out dev"),("system","aarch64-darwin")])"#;
+        let c = r#"Derive([("out","/nix/store/wpdbmhnn9ypjjk44pk8m8i5dq16ndqaz-c","","")],[("/nix/store/khbdq1zqmpdpppz3k8wai0p2v878c173-b.drv",["dev","out"])],[],"aarch64-darwin","/bin/sh",["/nix/store/h4ayh8c8zf9hvnwbaf1dr990ghfy71cw-b-dev","/nix/store/49dc9j6aviq2v2xjswzwzbhvwcc6693b-b"],[("builder","/bin/sh"),("name","c"),("out","/nix/store/wpdbmhnn9ypjjk44pk8m8i5dq16ndqaz-c"),("system","aarch64-darwin")])"#;
+        let mut load = |p: &str| {
+            Derivation::parse(if p.ends_with("-a.drv") { a.as_bytes() } else { b.as_bytes() })
+        };
+        let mut memo = std::collections::HashMap::new();
+        let cd = Derivation::parse(c.as_bytes()).unwrap();
+        let ch = output_hashes_modulo(&cd, true, &mut load, &mut memo).unwrap();
+        assert_eq!(crate::store_path::compute_output_path(&ch["out"], "out", "c"), cd.outputs["out"].path);
+        let bd = Derivation::parse(b.as_bytes()).unwrap();
+        let bh = output_hashes_modulo(&bd, true, &mut load, &mut memo).unwrap();
+        assert_eq!(crate::store_path::compute_output_path(&bh["dev"], "dev", "b"), bd.outputs["dev"].path);
+        assert!(Derivation::parse(a.as_bytes()).unwrap().is_fixed_output());
+        assert!(cd.substitutes_allowed());
+    }
+
+    #[test]
+    fn substitutes_allowed_reads_the_env_and_structured_attrs() {
+        let mut d = Derivation::default();
+        d.env.insert("allowSubstitutes".into(), String::new());
+        assert!(!d.substitutes_allowed());
+        d.env.insert("allowSubstitutes".into(), "1".into());
+        assert!(d.substitutes_allowed());
+        d.env.insert("__json".into(), r#"{"allowSubstitutes":false}"#.into());
+        assert!(!d.substitutes_allowed());
+    }
     use proptest::prelude::*;
 
     #[test]

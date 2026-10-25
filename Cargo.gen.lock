@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "7fd1f434d28bbb5f2ee766a0c59c68cef80d9b0a79afe74b289c3241563685f3",
+  "cargo_lock_sha256": "4e2583bf25043fddbfd887f2259eb667e3fc6bfd4b8abeaa8eda0ed8f594ad86",
   "manifest_sha256": {
     "Cargo.toml": "68fd1a2e60bcf1aa29e86cac1209c1e17d55dea0afadf9670bef05b715f80037",
     "canteiro-types/Cargo.toml": "140edf011d225b89a3a8b8cc15d5212e84c056493e7c8a5b488d1c7e88847388",
@@ -10,7 +10,7 @@
     "sui-cache-eval/Cargo.toml": "f16c2a3764aebcbc7d0583a9618dfadd596883dd4842c32b65843999034e5589",
     "sui-cache/Cargo.toml": "850c76ff1e7e4f20964245c633e176df5b44c0c70698e36dd3e8d8398c0b7472",
     "sui-castore/Cargo.toml": "4b22d6e29f4c2ed57df3ffe024600c13464b4dba5afdeaff6d8ce9118a389298",
-    "sui-compat/Cargo.toml": "fc4c928af7eedcae4f8b6ec9d3225f0650f3966836d5ef06a33b797000fd3402",
+    "sui-compat/Cargo.toml": "64f02e71de7b64f7009db8574936f6d3bfe8751e98578fa78494e136c4c071d4",
     "sui-daemon-client/Cargo.toml": "d8acc61441eadccaf9bb426aa83dfdb71bc628ac13eb23bd2e73ac5fdfb0e477",
     "sui-daemon-frame/Cargo.toml": "391a8e59253c00d6886605ef104794d330d935cab6f7f13d335804258d4144e6",
     "sui-daemon-graph/Cargo.toml": "206356f44f08a819630a8057714643b7f13dfa63b8270759aec804cbcf28e6b6",
@@ -24859,6 +24859,16 @@
             "tree": "target"
           },
           {
+            "name": "md5",
+            "package_key": "md-5-0.10.6",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
             "name": "nix_nar",
             "package_key": "nix-nar-0.3.1",
             "kind": "normal",
@@ -24895,6 +24905,16 @@
           {
             "name": "serde_json",
             "package_key": "serde_json-1.0.150",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "sha1",
+            "package_key": "sha1-0.10.6",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,

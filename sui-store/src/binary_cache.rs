@@ -258,8 +258,7 @@ impl BinaryCacheStore {
         narinfo: &NarInfo,
         trusted_keys: &[String],
     ) -> StoreResult<bool> {
-        use sui_compat::signature::{StorePathSignature, compute_fingerprint};
-        use sui_compat::hash::base64_decode;
+        use sui_compat::signature::compute_fingerprint;
 
         if trusted_keys.is_empty() {
             return Ok(false);
@@ -296,36 +295,7 @@ impl BinaryCacheStore {
             &absolute_refs,
         );
 
-        // Build a map of key_name -> public_key_bytes from trusted keys.
-        let mut key_map: std::collections::HashMap<String, Vec<u8>> =
-            std::collections::HashMap::new();
-        for key_str in trusted_keys {
-            if let Some((name, b64_pubkey)) = key_str.split_once(':')
-                && let Ok(pubkey_bytes) = base64_decode(b64_pubkey) {
-                    key_map.insert(name.to_string(), pubkey_bytes);
-                }
-        }
-
-        // Check each signature against the matching trusted key.
-        for sig_str in &narinfo.signatures {
-            let parsed = match StorePathSignature::parse(sig_str) {
-                Ok(s) => s,
-                Err(_) => continue,
-            };
-
-            if let Some(pubkey_bytes) = key_map.get(&parsed.key_name)
-                && pubkey_bytes.len() == 32 {
-                    let pubkey: [u8; 32] = pubkey_bytes
-                        .as_slice()
-                        .try_into()
-                        .expect("length checked");
-                    if parsed.verify(&fingerprint, &pubkey).is_ok() {
-                        return Ok(true);
-                    }
-                }
-        }
-
-        Ok(false)
+        Ok(sui_compat::signature::any_signature_trusted(&fingerprint, &narinfo.signatures, trusted_keys))
     }
 
     /// Decide whether a narinfo is acceptable to substitute FROM THIS CACHE,

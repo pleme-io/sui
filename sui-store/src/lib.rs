@@ -46,6 +46,6 @@ pub use pg::{
 };
 pub use profile::{Generation, ProfileError, ProfileManager};
 pub use substitute::{Availability, SubstituteResult, Substitutor};
-pub use local::{find_gc_roots, optimise_link_over};
+pub use local::{find_gc_roots, find_root_links, find_runtime_roots, find_temp_roots, optimise_link_over};
 pub use convergence::{ConvergenceStore, DefaultConvergenceStore, GenerationalPath, ImpactReport};
 pub use traits::{CorruptPath, GcOptions, GcResult, OptimiseResult, PathInfo, Store, StoreError, StoreResult, VerifyResult};

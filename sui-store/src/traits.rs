@@ -339,6 +339,20 @@ pub trait Store: Send + Sync {
         ))
     }
 
+    async fn add_to_store_from_dump(
+        &self,
+        _name: &str,
+        _dump: &[u8],
+        _method: &sui_compat::content_address::ContentAddressMethod,
+        _algo: sui_compat::hash::HashAlgorithm,
+        _references: &[String],
+        _repair: bool,
+    ) -> StoreResult<PathInfo> {
+        Err(StoreError::NotSupported(
+            "add_to_store_from_dump not implemented for this backend".to_string(),
+        ))
+    }
+
     async fn add_nar_at(&self, _info: &PathInfo, _nar_data: &[u8]) -> StoreResult<()> {
         Err(StoreError::NotSupported(
             "add_nar_at not implemented for this backend".to_string(),
@@ -363,6 +377,55 @@ pub trait Store: Send + Sync {
     ) -> StoreResult<()> {
         Err(StoreError::NotSupported(
             "add_signatures not implemented for this backend".to_string(),
+        ))
+    }
+
+    async fn add_to_store_nar(&self, info: &PathInfo, nar: &[u8], repair: bool) -> StoreResult<()> {
+        let sp = StorePath::from_absolute_path(&info.path)
+            .map_err(|e| StoreError::PathNotFound(format!("path '{}' is not a store path: {e}", info.path)))?;
+        if !repair && self.is_valid_path(&sp).await? {
+            return Ok(());
+        }
+        let algo = sui_compat::hash::HashAlgorithm::Sha256;
+        let declared = sui_compat::hash::NixHash::parse_any(algo, &info.nar_hash)
+            .map_err(|e| StoreError::Internal(format!("narHash '{}' of '{}': {e}", info.nar_hash, info.path)))?;
+        let got = sui_compat::hash::NixHash::of(algo, nar);
+        if got != declared {
+            return Err(StoreError::NarHashMismatch {
+                path: info.path.clone(),
+                expected: format!("sha256:{}", declared.to_nix32()),
+                actual: format!("sha256:{}", got.to_nix32()),
+            });
+        }
+        if i64::try_from(nar.len()).ok() != Some(info.nar_size) {
+            return Err(StoreError::Internal(format!(
+                "size mismatch importing path '{}';\n  specified: {}\n  got:       {}",
+                info.path,
+                info.nar_size,
+                nar.len()
+            )));
+        }
+        if let Some(ca) = &info.content_address {
+            verify_content_address(&info.path, ca, nar)?;
+        }
+        self.add_nar_at(info, nar).await
+    }
+
+    async fn query_derivation_output_map(&self, _drv: &StorePath) -> StoreResult<Option<Vec<(String, String)>>> {
+        Err(StoreError::NotSupported(
+            "query_derivation_output_map not implemented for this backend".to_string(),
+        ))
+    }
+
+    async fn query_valid_derivers(&self, _path: &StorePath) -> StoreResult<Vec<String>> {
+        Err(StoreError::NotSupported(
+            "query_valid_derivers not implemented for this backend".to_string(),
+        ))
+    }
+
+    async fn query_path_from_hash_part(&self, _hash_part: &str) -> StoreResult<Option<String>> {
+        Err(StoreError::NotSupported(
+            "query_path_from_hash_part not implemented for this backend".to_string(),
         ))
     }
 
@@ -402,6 +465,33 @@ pub trait Store: Send + Sync {
             "optimise_store not implemented for this backend".to_string(),
         ))
     }
+}
+
+pub fn verify_content_address(path: &str, ca: &str, nar: &[u8]) -> StoreResult<()> {
+    use sui_compat::content_address::{parse_content_address, ContentAddressMethod};
+    let (method, declared) = parse_content_address(ca).map_err(|e| StoreError::Internal(format!("path '{path}': {e}")))?;
+    let contents = match method {
+        ContentAddressMethod::Recursive => nar.to_vec(),
+        _ => match sui_compat::nar::NarReader::read_complete(&mut std::io::Cursor::new(nar)) {
+            Ok(sui_compat::nar::NarNode::Regular { contents, .. }) => contents,
+            _ => {
+                return Err(StoreError::Internal(format!(
+                    "path '{path}' asserts the flat content address '{ca}' but its NAR is not a single regular file"
+                )))
+            }
+        },
+    };
+    let actual = sui_compat::hash::NixHash::of(declared.algorithm, &contents);
+    if actual != declared {
+        return Err(StoreError::Internal(format!(
+            "ca hash mismatch importing path '{path}';\n  specified: {}:{}\n  got:       {}:{}",
+            declared.algorithm,
+            declared.to_nix32(),
+            actual.algorithm,
+            actual.to_nix32()
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

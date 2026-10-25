@@ -211,10 +211,35 @@ pub fn compress_hash(hash: &[u8], output_len: usize) -> Vec<u8> {
 /// the given `name`.
 #[must_use]
 pub fn compute_store_path_from_fingerprint(fingerprint: &str, name: &str) -> String {
+    store_path_in(DEFAULT_STORE_DIR, fingerprint, name)
+}
+
+fn store_path_in(store_dir: &str, fingerprint: &str, name: &str) -> String {
     let hash = Sha256::digest(fingerprint.as_bytes());
     let compressed = compress_hash(&hash, 20);
     let b32 = nix_base32_encode(&compressed);
-    format!("{DEFAULT_STORE_DIR}/{b32}-{name}")
+    format!("{store_dir}/{b32}-{name}")
+}
+
+#[must_use]
+pub fn make_store_path_in(store_dir: &str, kind: &str, hash: &str, name: &str) -> String {
+    store_path_in(store_dir, &format!("{kind}:{hash}:{store_dir}:{name}"), name)
+}
+
+#[must_use]
+pub fn make_type(kind: &str, references: &[String], has_self: bool) -> String {
+    let mut sorted: Vec<&String> = references.iter().collect();
+    sorted.sort();
+    sorted.dedup();
+    let mut out = String::from(kind);
+    for r in sorted {
+        out.push(':');
+        out.push_str(r);
+    }
+    if has_self {
+        out.push_str(":self");
+    }
+    out
 }
 
 /// Compute the `.drv` store path for a serialized derivation,
@@ -298,25 +323,25 @@ pub fn compute_output_path(inner_hash_hex: &str, output_name: &str, name: &str) 
 /// as `:<path>`, then `:self` when the content refers to itself.
 #[must_use]
 pub fn source_type(references: &[String], has_self: bool) -> String {
-    let mut sorted: Vec<&String> = references.iter().collect();
-    sorted.sort();
-    sorted.dedup();
-    let mut kind = String::from("source");
-    for r in sorted {
-        kind.push(':');
-        kind.push_str(r);
-    }
-    if has_self {
-        kind.push_str(":self");
-    }
-    kind
+    make_type("source", references, has_self)
 }
 
 /// The store path of a NAR-hashed `source` in the default store dir.
 #[must_use]
 pub fn make_source_path(nar_sha256_hex: &str, references: &[String], has_self: bool, name: &str) -> String {
-    let kind = source_type(references, has_self);
-    compute_store_path_from_fingerprint(&format!("{kind}:sha256:{nar_sha256_hex}:{DEFAULT_STORE_DIR}:{name}"), name)
+    make_store_path_in(DEFAULT_STORE_DIR, &source_type(references, has_self), &format!("sha256:{nar_sha256_hex}"), name)
+}
+
+#[must_use]
+pub fn make_fixed_output_path_in(
+    store_dir: &str,
+    ingestion: &str,
+    algo: &str,
+    hash_hex: &str,
+    name: &str,
+) -> String {
+    let inner = Sha256::digest(format!("fixed:out:{ingestion}{algo}:{hash_hex}:").as_bytes());
+    make_store_path_in(store_dir, "output:out", &format!("sha256:{}", hash::hex::encode(&inner)), name)
 }
 
 /// Compute the output store path for a fixed-output derivation.
@@ -347,11 +372,7 @@ pub fn compute_fixed_output_hash(
         return make_source_path(hash, &[], false, name);
     }
 
-    let mode = if is_recursive { "r:" } else { "" };
-    let inner = format!("fixed:out:{mode}{algo}:{hash}:");
-    let inner_hash = Sha256::digest(inner.as_bytes());
-    let inner_hex = hash::hex::encode(&inner_hash);
-    compute_output_path(&inner_hex, "out", name)
+    make_fixed_output_path_in(DEFAULT_STORE_DIR, if is_recursive { "r:" } else { "" }, algo, hash, name)
 }
 
 #[cfg(test)]

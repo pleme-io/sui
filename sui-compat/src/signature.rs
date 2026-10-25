@@ -206,6 +206,24 @@ pub fn compute_fingerprint(
     format!("1;{store_path};{nar_hash};{nar_size};{refs}")
 }
 
+#[must_use]
+pub fn any_signature_trusted(fingerprint: &str, signatures: &[String], trusted_keys: &[String]) -> bool {
+    let keys: std::collections::HashMap<&str, [u8; 32]> = trusted_keys
+        .iter()
+        .filter_map(|k| {
+            let (name, b64) = k.split_once(':')?;
+            let bytes: [u8; 32] = crate::hash::base64_decode(b64).ok()?.try_into().ok()?;
+            Some((name, bytes))
+        })
+        .collect();
+    signatures.iter().any(|sig| {
+        StorePathSignature::parse(sig)
+            .ok()
+            .and_then(|parsed| keys.get(parsed.key_name.as_str()).map(|key| parsed.verify(fingerprint, key).is_ok()))
+            .unwrap_or(false)
+    })
+}
+
 /// Base64 decode using the `base64` crate.
 fn b64_decode(input: &str) -> Result<Vec<u8>, ()> {
     crate::hash::base64_decode(input).map_err(|_| ())
@@ -356,6 +374,16 @@ impl SecretKey {
     #[must_use]
     pub fn to_public_string(&self) -> String {
         format!("{}:{}", self.key_name, base64_encode(&self.verifying_key().to_bytes()))
+    }
+
+    #[must_use]
+    pub fn sign_fingerprint(&self, fingerprint: &str) -> String {
+        use ed25519_dalek::Signer;
+        StorePathSignature {
+            key_name: self.key_name.clone(),
+            signature: self.signing_key.sign(fingerprint.as_bytes()).to_bytes().to_vec(),
+        }
+        .to_string_repr()
     }
 }
 
