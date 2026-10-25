@@ -111,12 +111,32 @@ fn init_submodules_recursive(repo: &gix::Repository) -> Result<(), String> {
 /// Checkout a specific revision (commit SHA) in an already-cloned repo.
 ///
 /// This detaches HEAD at the given commit and resets the working tree.
-pub fn checkout_rev(repo_path: &Path, rev: &str) -> Result<(), String> {
-    let repo = gix::open(repo_path)
-        .map_err(|e| format!("open {}: {e}", repo_path.display()))?;
+fn fetch_rev(repo_path: &Path, rev: &str) -> Result<(), String> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo_path)
+        .args(["fetch", "--quiet", "origin", rev])
+        .stdout(std::process::Stdio::null())
+        .output()
+        .map_err(|e| format!("git fetch origin {rev}: {e}"))?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "rev {rev} is on no ref the clone fetched, and git fetch origin {rev} failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ))
+    }
+}
 
+pub fn checkout_rev(repo_path: &Path, rev: &str) -> Result<(), String> {
     let oid = gix::ObjectId::from_hex(rev.as_bytes())
         .map_err(|e| format!("invalid rev {rev}: {e}"))?;
+    if gix::open(repo_path).map_err(|e| format!("open {}: {e}", repo_path.display()))?.find_object(oid).is_err() {
+        fetch_rev(repo_path, rev)?;
+    }
+    let repo = gix::open(repo_path)
+        .map_err(|e| format!("open {}: {e}", repo_path.display()))?;
 
     let commit = repo
         .find_object(oid)
@@ -713,6 +733,41 @@ mod tests {
         );
 
         drop(cloned);
+        let _ = fs::remove_dir_all(&src);
+        let _ = fs::remove_dir_all(&dest);
+    }
+
+    #[test]
+    fn checkout_rev_fetches_a_commit_no_cloned_ref_reaches() {
+        let src = temp_dir("orphan_src");
+        fs::create_dir_all(&src).unwrap();
+        let git = |dir: &std::path::Path, args: &[&str]| {
+            let out = std::process::Command::new("git").arg("-C").arg(dir).args(args).output().unwrap();
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+            String::from_utf8(out.stdout).unwrap().trim().to_string()
+        };
+        git(&src, &["init", "-q", "-b", "main"]);
+        git(&src, &["config", "user.email", "test@sui.local"]);
+        git(&src, &["config", "user.name", "sui-test"]);
+        fs::write(src.join("a.txt"), "main").unwrap();
+        git(&src, &["add", "."]);
+        git(&src, &["commit", "-q", "--no-verify", "-m", "main"]);
+        git(&src, &["checkout", "-q", "-b", "side"]);
+        fs::write(src.join("side.txt"), "side").unwrap();
+        git(&src, &["add", "."]);
+        git(&src, &["commit", "-q", "--no-verify", "-m", "side"]);
+        let side = git(&src, &["rev-parse", "HEAD"]);
+        git(&src, &["update-ref", "refs/custom/side", &side]);
+        git(&src, &["checkout", "-q", "main"]);
+        git(&src, &["branch", "-q", "-D", "side"]);
+
+        let dest = temp_dir("orphan_dest");
+        drop(clone(&format!("file://{}", src.display()), &dest, None, false, false).unwrap());
+        assert!(!dest.join("side.txt").exists());
+
+        checkout_rev(&dest, &side).unwrap();
+        assert_eq!(fs::read_to_string(dest.join("side.txt")).unwrap(), "side");
+
         let _ = fs::remove_dir_all(&src);
         let _ = fs::remove_dir_all(&dest);
     }

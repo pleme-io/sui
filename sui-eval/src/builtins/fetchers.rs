@@ -122,6 +122,7 @@ pub(crate) fn fetch_git(arg: &Value) -> Result<Value, EvalError> {
         }
         _ => return Err(EvalError::TypeError("fetchGit: expected string or attrset".into())),
     };
+    let (ref_opt, rev_opt) = rev_named_as_ref(ref_opt, rev_opt);
     let key = format!("{url}\n{ref_opt:?}\n{rev_opt:?}\n{submodules}");
     use sha2::{Digest, Sha256};
     let cache_hash = format!("{:x}", Sha256::digest(key.as_bytes()));
@@ -185,6 +186,13 @@ pub(crate) fn fetch_git(arg: &Value) -> Result<Value, EvalError> {
         }
     }
     git_result_attrs(&target, submodules)
+}
+
+fn rev_named_as_ref(ref_opt: Option<String>, rev_opt: Option<String>) -> (Option<String>, Option<String>) {
+    match (ref_opt, rev_opt) {
+        (Some(r), None) if r.len() == 40 && r.bytes().all(|b| b.is_ascii_hexdigit()) => (None, Some(r)),
+        other => other,
+    }
 }
 
 /// Read git metadata from the already-cloned target directory and
@@ -487,4 +495,25 @@ pub(crate) fn hex_to_bytes(hex: &str) -> Vec<u8> {
 pub(crate) fn base64_encode(bytes: &[u8]) -> String {
     use base64::Engine;
     base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+#[cfg(test)]
+mod rev_named_as_ref_tests {
+    use super::rev_named_as_ref;
+
+    #[test]
+    fn a_commit_hash_given_as_ref_is_the_rev() {
+        let sha = "2219c0853a003bc89d98eae3ad05b369594072de".to_string();
+        assert_eq!(rev_named_as_ref(Some(sha.clone()), None), (None, Some(sha)));
+    }
+
+    #[test]
+    fn a_branch_ref_and_an_explicit_rev_stay_as_given() {
+        assert_eq!(rev_named_as_ref(Some("main".into()), None), (Some("main".into()), None));
+        let sha = "2219c0853a003bc89d98eae3ad05b369594072de".to_string();
+        assert_eq!(
+            rev_named_as_ref(Some("main".into()), Some(sha.clone())),
+            (Some("main".into()), Some(sha))
+        );
+    }
 }

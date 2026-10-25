@@ -73,7 +73,8 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
     });
 
     register_builtin(builtins, "readFileType", |args| {
-        let path = crate::path::materialize_str(&args[0].as_string()?);
+        let given = args[0].as_string()?;
+        let path = crate::path::materialize_str(&given);
         match std::fs::symlink_metadata(&path) {
             Ok(meta) => {
                 let kind = if meta.is_symlink() {
@@ -87,7 +88,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                 };
                 Ok(Value::string(kind))
             }
-            Err(e) => Err(EvalError::IoError { context: "readFileType".into(), message: e.to_string() }),
+            Err(e) => Err(EvalError::IoError { context: format!("readFileType {given:?} (read at {path:?}){}", crate::eval::eval_file_ctx()), message: e.to_string() }),
         }
     });
 

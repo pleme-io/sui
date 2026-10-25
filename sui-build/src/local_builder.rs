@@ -88,6 +88,14 @@ impl LocalBuilder {
     /// 4. On success: scan references, compute NAR hashes, register outputs
     /// 5. Clean up the build directory
     async fn build_single(&self, drv: &Derivation) -> Result<BuildResult, BuildError> {
+        self.build_one(drv, None).await
+    }
+
+    async fn build_one(
+        &self,
+        drv: &Derivation,
+        index: Option<&std::collections::HashMap<&str, &Derivation>>,
+    ) -> Result<BuildResult, BuildError> {
         let start = std::time::Instant::now();
         let mut log = BuildLog::new();
 
@@ -112,13 +120,21 @@ impl LocalBuilder {
         );
         let build_dir = format!("{}/{}", self.build_dir_base, build_id);
         self.clear_invalid_outputs(drv).await?;
+        let redirects = self.valid_output_redirects(drv).await;
+        for (_, scratch) in redirects.values() {
+            let _ = remove_path(scratch);
+        }
+        let rewrites: Vec<(String, String)> =
+            redirects.values().map(|(real, scratch)| (hash_part(real), hash_part(scratch))).collect();
+        let built = rewrite_derivation(drv, &rewrites);
+        let candidates = self.reference_candidates(drv, index).await;
         std::fs::create_dir_all(&build_dir)?;
-        for (path, value) in SandboxConfig::attr_files(drv, &build_dir) {
+        for (path, value) in SandboxConfig::attr_files(&built, &build_dir) {
             std::fs::write(path, value)?;
         }
 
         // 3. Create sandbox config from derivation
-        let mut config = SandboxConfig::from_derivation(drv, &build_dir);
+        let mut config = SandboxConfig::from_derivation(&built, &build_dir);
 
         // 4. Handle fixed-output derivations (allow network)
         if is_fixed_output(drv) {
@@ -156,8 +172,28 @@ impl LocalBuilder {
 
         // 7. Post-build: for each output, scan references and register
         let mut output_paths = Vec::new();
+        let back: Vec<(String, String)> = rewrites.iter().map(|(real, scratch)| (scratch.clone(), real.clone())).collect();
         for (output_name, output) in &drv.outputs {
             let output_path = &output.path;
+
+            if let Some((_, scratch)) = redirects.get(output_name) {
+                let produced = Path::new(scratch).exists();
+                let _ = remove_path(scratch);
+                if !produced {
+                    let _ = std::fs::remove_dir_all(&build_dir);
+                    return Ok(BuildResult::failure(
+                        log.finish(),
+                        format!("output '{output_name}' not created"),
+                        1,
+                        start.elapsed().as_secs_f64(),
+                    ));
+                }
+                log.push(&format!("output '{output_name}' was already valid: {output_path}"));
+                if let Ok(sp) = StorePath::from_absolute_path(output_path) {
+                    output_paths.push(sp);
+                }
+                continue;
+            }
 
             // Check if the output path actually exists on disk
             if !Path::new(output_path).exists() {
@@ -174,7 +210,10 @@ impl LocalBuilder {
             }
 
             // Scan references
-            let runtime_refs = self.scan_output_refs(drv, output_path)?;
+            if !back.is_empty() {
+                rewrite_tree(Path::new(output_path), &back)?;
+            }
+            let runtime_refs = scan_refs(&candidates, output_path);
 
             // Compute NAR hash of the output
             let (nar_hash, nar_size) = compute_nar_hash(output_path)?;
@@ -247,63 +286,171 @@ impl LocalBuilder {
             .collect()
     }
 
-    /// Scan a build output for store path references.
-    ///
-    /// Collects all candidate hashes from the derivation's inputs (both
-    /// input derivations and input sources), then uses the reference scanner
-    /// to find which actually appear in the output.
-    fn scan_output_refs(
+    async fn valid_output_redirects(&self, drv: &Derivation) -> std::collections::BTreeMap<String, (String, String)> {
+        let mut redirects = std::collections::BTreeMap::new();
+        for (name, output) in &drv.outputs {
+            let Ok(sp) = StorePath::from_absolute_path(&output.path) else {
+                continue;
+            };
+            if self.store.is_valid_path(&sp).await.unwrap_or(false) {
+                redirects.insert(name.clone(), (output.path.clone(), scratch_path(&output.path)));
+            }
+        }
+        redirects
+    }
+
+    /// Every path a build output may reference: the closure of the inputs plus the drv's own outputs.
+    async fn reference_candidates(
         &self,
         drv: &Derivation,
-        output_path: &str,
-    ) -> Result<Vec<String>, BuildError> {
-        // Collect candidate store path hashes and their full paths
-        let mut candidates: Vec<(String, String)> = Vec::new(); // (hash, full_path)
-
-        for input_drv_path in drv.input_derivations.keys() {
-            if let Ok(sp) = StorePath::from_absolute_path(input_drv_path) {
-                let basename = sp.to_basename();
-                let hash = &basename[..STORE_PATH_HASH_LEN];
-                candidates.push((hash.to_string(), sp.to_absolute_path()));
+        index: Option<&std::collections::HashMap<&str, &Derivation>>,
+    ) -> Vec<String> {
+        let mut queue: Vec<String> = drv.input_sources.clone();
+        for (input, wanted) in &drv.input_derivations {
+            let parsed;
+            let input_drv = match index.and_then(|i| i.get(input.as_str()).copied()) {
+                Some(d) => d,
+                None => match std::fs::read(input).ok().and_then(|b| Derivation::parse(&b).ok()) {
+                    Some(d) => {
+                        parsed = d;
+                        &parsed
+                    }
+                    None => continue,
+                },
+            };
+            for name in wanted {
+                if let Some(out) = input_drv.outputs.get(name) {
+                    queue.push(out.path.clone());
+                }
             }
         }
-
-        for src in &drv.input_sources {
-            if let Ok(sp) = StorePath::from_absolute_path(src) {
-                let basename = sp.to_basename();
-                let hash = &basename[..STORE_PATH_HASH_LEN];
-                candidates.push((hash.to_string(), sp.to_absolute_path()));
+        let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        while let Some(path) = queue.pop() {
+            if !seen.insert(path.clone()) {
+                continue;
+            }
+            if let Ok(sp) = StorePath::from_absolute_path(&path)
+                && let Ok(Some(info)) = self.store.query_path_info(&sp).await
+            {
+                queue.extend(info.references.into_iter().filter(|r| !seen.contains(r)));
             }
         }
-
-        if candidates.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        // Scan the output path for references
-        let hash_strs: Vec<&str> = candidates.iter().map(|(h, _)| h.as_str()).collect();
-
-        let found_hashes = if Path::new(output_path).is_dir() {
-            reference_scan::scan_directory(output_path, &hash_strs)
-                .unwrap_or_default()
-        } else {
-            reference_scan::scan_file(output_path, &hash_strs)
-                .unwrap_or_default()
-        };
-
-        // Map found hashes back to full store paths
-        let found_paths: Vec<String> = found_hashes
-            .iter()
-            .filter_map(|found_hash| {
-                candidates
-                    .iter()
-                    .find(|(h, _)| h == found_hash)
-                    .map(|(_, path)| path.clone())
-            })
-            .collect();
-
-        Ok(found_paths)
+        seen.extend(drv.outputs.values().map(|o| o.path.clone()));
+        seen.into_iter().collect()
     }
+}
+
+fn scan_refs(candidates: &[String], output_path: &str) -> Vec<String> {
+    let hashes: Vec<String> = candidates.iter().map(|p| hash_part(p)).collect();
+    let hash_strs: Vec<&str> = hashes.iter().map(String::as_str).filter(|h| h.len() == STORE_PATH_HASH_LEN).collect();
+    if hash_strs.is_empty() {
+        return Vec::new();
+    }
+    let found = if Path::new(output_path).is_dir() {
+        reference_scan::scan_directory(output_path, &hash_strs).unwrap_or_default()
+    } else {
+        reference_scan::scan_file(output_path, &hash_strs).unwrap_or_default()
+    };
+    candidates
+        .iter()
+        .filter(|p| found.iter().any(|h| *h == hash_part(p)))
+        .cloned()
+        .collect()
+}
+
+fn hash_part(path: &str) -> String {
+    let base = path.rsplit('/').next().unwrap_or_default();
+    base.get(..STORE_PATH_HASH_LEN).unwrap_or(base).to_string()
+}
+
+fn scratch_path(real: &str) -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    let digest = Sha256::digest(format!("rewrite:{real}:{nanos}:{}", std::process::id()).as_bytes());
+    let hash = sui_compat::store_path::nix_base32_encode(&sui_compat::store_path::compress_hash(&digest, 20));
+    let (dir, base) = real.rsplit_once('/').unwrap_or(("", real));
+    let name = base.get(STORE_PATH_HASH_LEN..).unwrap_or_default();
+    format!("{dir}/{hash}{name}")
+}
+
+fn rewrite_str(value: &str, rewrites: &[(String, String)]) -> String {
+    rewrites.iter().fold(value.to_string(), |acc, (from, to)| acc.replace(from.as_str(), to))
+}
+
+fn rewrite_derivation(drv: &Derivation, rewrites: &[(String, String)]) -> Derivation {
+    if rewrites.is_empty() {
+        return drv.clone();
+    }
+    let mut out = drv.clone();
+    out.builder = rewrite_str(&drv.builder, rewrites);
+    out.args = drv.args.iter().map(|a| rewrite_str(a, rewrites)).collect();
+    for value in out.env.values_mut() {
+        *value = rewrite_str(value, rewrites);
+    }
+    for output in out.outputs.values_mut() {
+        output.path = rewrite_str(&output.path, rewrites);
+    }
+    out
+}
+
+fn remove_path(path: &str) -> std::io::Result<()> {
+    let p = Path::new(path);
+    match std::fs::symlink_metadata(p) {
+        Ok(m) if m.is_dir() => std::fs::remove_dir_all(p),
+        Ok(_) => std::fs::remove_file(p),
+        Err(_) => Ok(()),
+    }
+}
+
+fn rewrite_bytes(data: &[u8], rewrites: &[(String, String)]) -> Option<Vec<u8>> {
+    let mut out = data.to_vec();
+    let mut changed = false;
+    for (from, to) in rewrites {
+        let (from, to) = (from.as_bytes(), to.as_bytes());
+        if from.is_empty() || from.len() != to.len() {
+            continue;
+        }
+        let mut i = 0;
+        while i + from.len() <= out.len() {
+            if &out[i..i + from.len()] == from {
+                out[i..i + from.len()].copy_from_slice(to);
+                changed = true;
+                i += from.len();
+            } else {
+                i += 1;
+            }
+        }
+    }
+    changed.then_some(out)
+}
+
+fn rewrite_tree(path: &Path, rewrites: &[(String, String)]) -> Result<(), BuildError> {
+    let meta = std::fs::symlink_metadata(path)?;
+    if meta.file_type().is_symlink() {
+        let target = std::fs::read_link(path)?;
+        let target = target.to_string_lossy();
+        let rewritten = rewrite_str(&target, rewrites);
+        if rewritten != target {
+            std::fs::remove_file(path)?;
+            std::os::unix::fs::symlink(rewritten, path)?;
+        }
+    } else if meta.is_dir() {
+        for entry in std::fs::read_dir(path)? {
+            rewrite_tree(&entry?.path(), rewrites)?;
+        }
+    } else if let Some(bytes) = rewrite_bytes(&std::fs::read(path)?, rewrites) {
+        let mode = meta.permissions();
+        let mut writable = mode.clone();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut writable, std::os::unix::fs::PermissionsExt::mode(&mode) | 0o200);
+        std::fs::set_permissions(path, writable)?;
+        std::fs::write(path, bytes)?;
+        std::fs::set_permissions(path, mode)?;
+    }
+    Ok(())
+}
+
+impl LocalBuilder {
 }
 
 impl LocalBuilder {
@@ -357,6 +504,8 @@ impl LocalBuilder {
         let mut skipped: u32 = 0;
 
         let plan = self.plan_closure(closure, substitutor).await?;
+        let index: std::collections::HashMap<&str, &Derivation> =
+            closure.derivations.iter().map(|(p, d)| (p.as_str(), d)).collect();
         skipped += plan.present;
         substituted += plan.substituted;
         for (drv_path, drv) in &closure.derivations {
@@ -367,7 +516,7 @@ impl LocalBuilder {
             // 3. Build locally
             log.push(&format!("building {drv_path}"));
             tracing::info!(drv_path, "building locally");
-            let result = self.build_single(drv).await?;
+            let result = self.build_one(drv, Some(&index)).await?;
 
             if !result.success {
                 log.push(&format!("FAILED: {drv_path}"));
@@ -421,6 +570,8 @@ impl LocalBuilder {
         let mut completed: usize = 0;
 
         let plan = self.plan_closure(closure, substitutor).await?;
+        let index: std::collections::HashMap<&str, &Derivation> =
+            closure.derivations.iter().map(|(p, d)| (p.as_str(), d)).collect();
         skipped += plan.present;
         substituted += plan.substituted;
         for (drv_path, drv) in &closure.derivations {
@@ -443,7 +594,7 @@ impl LocalBuilder {
                 action: BuildAction::Building,
             });
             log.push(&format!("building {drv_path}"));
-            let result = self.build_single(drv).await?;
+            let result = self.build_one(drv, Some(&index)).await?;
 
             if !result.success {
                 log.push(&format!("FAILED: {drv_path}"));
@@ -1204,64 +1355,81 @@ mod tests {
     // ── Reference scanning integration ─────────────────────────
 
     #[test]
-    fn scan_output_refs_finds_embedded_hash() {
-        let store = Arc::new(MockStore::new());
-        let builder = LocalBuilder::new(store, Box::new(NoSandbox));
-
+    fn scan_refs_finds_embedded_hash() {
         let tmp = tempfile::tempdir().unwrap();
         let output_file = tmp.path().join("output");
+        let input_path = "/nix/store/sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6-dependency-1.0".to_string();
+        std::fs::write(&output_file, format!("using {input_path}/lib/libfoo.so")).unwrap();
+        let other = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1-other".to_string();
 
-        // Create a file that contains a store path hash
-        let input_hash = "sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6";
-        let input_path = format!("/nix/store/{input_hash}-dependency-1.0");
-        let content = format!("using {input_path}/lib/libfoo.so");
-        std::fs::write(&output_file, content.as_bytes()).unwrap();
-
-        // Build a derivation that references the input
-        let mut drv = Derivation::default();
-        drv.input_sources.push(input_path.clone());
-
-        let refs = builder
-            .scan_output_refs(&drv, output_file.to_str().unwrap())
-            .unwrap();
-        assert_eq!(refs.len(), 1);
-        assert_eq!(refs[0], input_path);
+        let refs = scan_refs(&[input_path.clone(), other], output_file.to_str().unwrap());
+        assert_eq!(refs, vec![input_path]);
     }
 
     #[test]
-    fn scan_output_refs_no_matches_returns_empty() {
-        let store = Arc::new(MockStore::new());
-        let builder = LocalBuilder::new(store, Box::new(NoSandbox));
-
+    fn scan_refs_no_matches_or_no_candidates_returns_empty() {
         let tmp = tempfile::tempdir().unwrap();
         let output_file = tmp.path().join("output");
         std::fs::write(&output_file, b"no store paths here").unwrap();
+        let dep = "/nix/store/sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6-dep-1.0".to_string();
+        assert!(scan_refs(&[dep], output_file.to_str().unwrap()).is_empty());
+        assert!(scan_refs(&[], output_file.to_str().unwrap()).is_empty());
+    }
 
-        let mut drv = Derivation::default();
-        drv.input_sources.push(
-            "/nix/store/sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6-dep-1.0".to_string(),
+    #[tokio::test]
+    async fn reference_candidates_are_the_input_closure_and_the_own_outputs() {
+        let lib = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1-lib";
+        let dep_out = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa2-dep";
+        let src = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa3-src";
+        let own_dev = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa4-me-dev";
+        let own_out = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa5-me";
+        let mut dep_info = PathInfo::new(dep_out, "sha256:d");
+        dep_info.references = vec![lib.to_string()];
+        let store = Arc::new(
+            MockStore::new()
+                .with_path(PathInfo::new(lib, "sha256:l"))
+                .with_path(dep_info),
         );
+        let builder = LocalBuilder::new(store, Box::new(NoSandbox));
 
-        let refs = builder
-            .scan_output_refs(&drv, output_file.to_str().unwrap())
-            .unwrap();
-        assert!(refs.is_empty());
+        let dep = make_drv("/bin/sh", &[], dep_out);
+        let mut me = depends_on(make_drv("/bin/sh", &[], own_out), "dep.drv");
+        me.input_sources.push(src.to_string());
+        me.outputs.insert(
+            "dev".to_string(),
+            DerivationOutput { path: own_dev.to_string(), hash_algo: String::new(), hash: String::new() },
+        );
+        let index: std::collections::HashMap<&str, &Derivation> = [("dep.drv", &dep)].into_iter().collect();
+
+        let mut got = builder.reference_candidates(&me, Some(&index)).await;
+        got.sort();
+        assert_eq!(got, vec![lib, dep_out, src, own_dev, own_out]);
     }
 
     #[test]
-    fn scan_output_refs_empty_inputs() {
-        let store = Arc::new(MockStore::new());
-        let builder = LocalBuilder::new(store, Box::new(NoSandbox));
+    fn a_valid_output_is_redirected_and_its_hash_rewritten_back() {
+        let real = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa5-me";
+        let scratch = scratch_path(real);
+        assert_eq!(scratch.len(), real.len());
+        assert!(scratch.ends_with("-me") && scratch != real);
+
+        let rewrites = vec![(hash_part(real), hash_part(&scratch))];
+        let mut drv = make_drv("/bin/sh", &["-c", &format!("echo {real} > $dev")], real);
+        drv.env.insert("out".into(), real.into());
+        let built = rewrite_derivation(&drv, &rewrites);
+        assert_eq!(built.outputs["out"].path, scratch);
+        assert_eq!(built.env["out"], scratch);
+        assert!(built.args[1].contains(&scratch));
 
         let tmp = tempfile::tempdir().unwrap();
-        let output_file = tmp.path().join("output");
-        std::fs::write(&output_file, b"data").unwrap();
-
-        let drv = Derivation::default();
-        let refs = builder
-            .scan_output_refs(&drv, output_file.to_str().unwrap())
-            .unwrap();
-        assert!(refs.is_empty());
+        let dev = tmp.path().join("dev");
+        std::fs::create_dir(&dev).unwrap();
+        std::fs::write(dev.join("f"), format!("lib={scratch}/lib")).unwrap();
+        std::os::unix::fs::symlink(format!("{scratch}/bin"), dev.join("l")).unwrap();
+        let back: Vec<(String, String)> = rewrites.iter().map(|(a, b)| (b.clone(), a.clone())).collect();
+        rewrite_tree(&dev, &back).unwrap();
+        assert_eq!(std::fs::read_to_string(dev.join("f")).unwrap(), format!("lib={real}/lib"));
+        assert_eq!(std::fs::read_link(dev.join("l")).unwrap(), std::path::PathBuf::from(format!("{real}/bin")));
     }
 
     // ── Build with references ──────────────────────────────────

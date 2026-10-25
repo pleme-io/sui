@@ -7382,34 +7382,24 @@ async fn main() -> Result<(), CliError> {
                         message: format!("fetch: {e}"),
                     }
                 })?;
-                let flake_result = sui_eval::builtins::evaluate_flake(
-                    &flake_dir,
-                )
-                .map_err(|e| CliError::Orchestrate {
-                    operation: "build",
-                    message: format!("eval: {e}"),
-                })?;
-                let attr_segments: Vec<&str> = flake_ref.attribute.split('.').collect();
-                let target = sui_eval::builtins::navigate_attrs(&flake_result, &attr_segments)
-                    .map_err(|e| CliError::Orchestrate {
-                        operation: "build",
-                        message: format!("navigate: {e}"),
-                    })?;
-                // Extract drvPath from the derivation attrset. `drvPath` is a
-                // lazy thunk, so it MUST be forced before `as_string` — without
-                // the force the extraction silently yields `None` and the build
-                // falls through to just printing the derivation (the flake-build
-                // path never realizes anything). Force the target too, in case a
-                // navigated attr is itself a thunk.
-                let target = sui_eval::eval::force_value(&target).unwrap_or(target);
-                let drv_path = match &target {
-                    sui_eval::Value::Attrs(attrs) => attrs.get("drvPath").and_then(|v| {
-                        let forced = sui_eval::eval::force_value(&v).ok()?;
-                        forced.as_string().ok().map(std::string::ToString::to_string)
-                    }),
-                    _ => None,
-                };
-                if let Some(drv_path) = drv_path {
+                let attr = flake_ref.attribute.clone();
+                let drv_path = on_eval_stack("sui-build-eval", move || -> Result<Result<String, String>, CliError> {
+                    let err = |stage: &str, e: String| CliError::Orchestrate { operation: "build", message: format!("{stage}: {e}") };
+                    let flake_result = sui_eval::builtins::evaluate_flake(&flake_dir).map_err(|e| err("eval", e.to_string()))?;
+                    let attr_segments: Vec<&str> = attr.split('.').collect();
+                    let target = sui_eval::builtins::navigate_attrs(&flake_result, &attr_segments)
+                        .map_err(|e| err("navigate", e.to_string()))?;
+                    let target = sui_eval::eval::force_value(&target).map_err(|e| err("eval", e.to_string()))?;
+                    let sui_eval::Value::Attrs(attrs) = &target else {
+                        return Ok(Err(target.to_string()));
+                    };
+                    let Some(drv) = attrs.get("drvPath") else {
+                        return Ok(Err(target.to_string()));
+                    };
+                    let drv = sui_eval::eval::force_value(&drv).map_err(|e| err("drvPath", e.to_string()))?;
+                    drv.as_string().map(std::string::ToString::to_string).map(Ok).map_err(|e| err("drvPath", e.to_string()))
+                })??;
+                if let Ok(drv_path) = drv_path {
                     // ── ★ --dry-run MUST NOT BUILD ────────────────────────
                     // `dry_run` was destructured to `_`, so `sui build
                     // --dry-run <x>` performed a real build. That is a wrong
@@ -7418,9 +7408,9 @@ async fn main() -> Result<(), CliError> {
                     // `sui system rebuild --dry-run` gets this right and
                     // comments about it; this arm simply never read the flag.
                     build_drv(&drv_path, &request).await?;
-                } else {
+                } else if let Err(shown) = drv_path {
                     // Not a derivation — just display the evaluated value.
-                    println!("{target}");
+                    println!("{shown}");
                 }
             }
         }
@@ -8269,18 +8259,10 @@ async fn main() -> Result<(), CliError> {
             let flake_dir = sui_eval::fetcher::resolve_flake_dir(&flake_ref).map_err(|e| CliError::Orchestrate { operation: "run", message: format!("fetch: {e}") })?;
             let system = current_system();
             let attr_name = flake_ref.attribute.clone();
-            let program = std::thread::Builder::new()
-                .name("sui-run-eval".into())
-                .stack_size(256 * 1024 * 1024)
-                .spawn(move || -> Result<String, CliError> {
-                    let _ifd_guard = install_ifd_hook();
-                    let _vm_bridges = sui_eval::install_vm_bridges();
-                    let result = sui_eval::builtins::evaluate_flake(&flake_dir).map_err(|e| CliError::Orchestrate { operation: "run", message: format!("eval: {e}") })?;
-                    realized_program(&result, &system, &attr_name)
-                })
-                .map_err(|e| CliError::Orchestrate { operation: "run", message: format!("spawn eval thread: {e}") })?
-                .join()
-                .map_err(|_| CliError::Orchestrate { operation: "run", message: "eval thread panicked".into() })??;
+            let program = on_eval_stack("sui-run-eval", move || -> Result<String, CliError> {
+                let result = sui_eval::builtins::evaluate_flake(&flake_dir).map_err(|e| CliError::Orchestrate { operation: "run", message: format!("eval: {e}") })?;
+                realized_program(&result, &system, &attr_name)
+            })??;
             let err = std::os::unix::process::CommandExt::exec(std::process::Command::new(&program).args(&args));
             return Err(CliError::Orchestrate { operation: "run", message: format!("exec {program}: {err}") });
         }
@@ -9413,26 +9395,34 @@ fn render_walker_value(
     })
 }
 
+fn on_eval_stack<T: Send + 'static>(name: &str, f: impl FnOnce() -> T + Send + 'static) -> Result<T, CliError> {
+    let fail = |message: String| CliError::Orchestrate { operation: "eval", message };
+    std::thread::Builder::new()
+        .name(name.into())
+        .stack_size(256 * 1024 * 1024)
+        .spawn(move || {
+            let _ifd_guard = install_ifd_hook();
+            let _vm_bridges = sui_eval::install_vm_bridges();
+            f()
+        })
+        .map_err(|e| fail(format!("spawn eval thread: {e}")))?
+        .join()
+        .map_err(|_| fail("eval thread panicked".into()))
+}
+
 fn eval_render_threaded(expr: &str, json_flag: bool, raw_flag: bool) -> Result<String, CliError> {
     let expr_clone = expr.to_string();
-    let handle = std::thread::Builder::new()
-        .name("sui-eval".into())
-        .stack_size(256 * 1024 * 1024) // 256MB
-        .spawn(move || -> Result<String, CliError> {
-            // IFD: reads of a derivation output mid-eval realize it.
-            let _ifd_guard = install_ifd_hook();
-            let value = sui_eval::eval(&expr_clone)?;
-            let output = render_walker_value(&value, json_flag, raw_flag)?;
-            // SUI_PARITY_STRICT: drain the thread-local swallowed-force-error
-            // ledger on THIS worker thread (no-op unless the env is set).
-            report_parity_strict();
-            // SUI_PERF_TRACE diagnostics (no-op unless the env is set).
-            sui_compat::source::nar_hash_dump();
-            ifd_realize_dump();
-            Ok(output)
-        })
-        .expect("failed to spawn eval thread");
-    handle.join().expect("eval thread panicked")
+    on_eval_stack("sui-eval", move || -> Result<String, CliError> {
+        let value = sui_eval::eval(&expr_clone)?;
+        let output = render_walker_value(&value, json_flag, raw_flag)?;
+        // SUI_PARITY_STRICT: drain the thread-local swallowed-force-error
+        // ledger on THIS worker thread (no-op unless the env is set).
+        report_parity_strict();
+        // SUI_PERF_TRACE diagnostics (no-op unless the env is set).
+        sui_compat::source::nar_hash_dump();
+        ifd_realize_dump();
+        Ok(output)
+    })?
 }
 
 // ── flake show ──────────────────────────────────────────────────

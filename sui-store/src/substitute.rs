@@ -168,6 +168,25 @@ impl Substitutor {
         Ok(Availability::Missing)
     }
 
+    async fn substitute_references(&self, path: &StorePath, references: &[String]) -> StoreResult<()> {
+        let own = path.to_absolute_path();
+        let store_dir = sui_compat::store_path::DEFAULT_STORE_DIR;
+        for reference in references {
+            let abs = if reference.starts_with('/') { reference.clone() } else { format!("{store_dir}/{reference}") };
+            if abs == own {
+                continue;
+            }
+            let rp = StorePath::from_absolute_path(&abs)
+                .map_err(|e| StoreError::PathNotFound(format!("{own} references {abs}: {e}")))?;
+            if let SubstituteResult::NotFound = Box::pin(self.substitute(&rp)).await? {
+                return Err(StoreError::PathNotFound(format!(
+                    "cannot substitute {own}: its reference {abs} is in no configured cache"
+                )));
+            }
+        }
+        Ok(())
+    }
+
     /// Attempt to fetch and register a store path from a single cache.
     ///
     /// Returns `Ok(Some(result))` on success, `Ok(None)` if the path is not
@@ -197,6 +216,8 @@ impl Substitutor {
         //    valid signature from one of this cache's trusted keys. A path
         //    with no valid trusted signature is REFUSED — never substituted.
         cache.check_narinfo_acceptable(&narinfo)?;
+
+        self.substitute_references(path, &narinfo.references).await?;
 
         // 3. Download NAR
         let compressed_nar = cache
@@ -598,6 +619,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_path_is_substituted_after_the_paths_it_references() {
+        const DEP_HASH: &str = "0000000000000000000000000000000a";
+        let dep_path = format!("/nix/store/{DEP_HASH}-dep");
+        let nar = make_nar_bytes();
+        let top = make_narinfo_text("none").replace("References: \n", &format!("References: {DEP_HASH}-dep\n"));
+        let dep = make_narinfo_text("none")
+            .replace(TEST_PATH, &dep_path)
+            .replace(&format!("nar/{TEST_HASH}"), &format!("nar/{DEP_HASH}"));
+        let client = MockHttpClient::new()
+            .with_text(&format!("https://cache.example.com/{TEST_HASH}.narinfo"), 200, &top)
+            .with_bytes(&format!("https://cache.example.com/nar/{TEST_HASH}.nar.none"), nar.clone())
+            .with_text(&format!("https://cache.example.com/{DEP_HASH}.narinfo"), 200, &dep)
+            .with_bytes(&format!("https://cache.example.com/nar/{DEP_HASH}.nar.none"), nar);
+        let cache = Arc::new(
+            BinaryCacheStore::builder("https://cache.example.com")
+                .http_client(Box::new(client))
+                .require_signatures(false)
+                .build(),
+        );
+        let store = Arc::new(MockLocalStore::new());
+        let sub = Substitutor::new(store.clone(), vec![cache]);
+
+        assert!(sub.substitute(&test_store_path()).await.unwrap().is_substituted());
+        let order: Vec<String> = store.valid_paths.lock().unwrap().clone();
+        assert_eq!(order, vec![dep_path, TEST_PATH.to_string()]);
+    }
+
+    #[tokio::test]
+    async fn a_path_whose_reference_no_cache_serves_is_not_substituted() {
+        let top = make_narinfo_text("none").replace("References: \n", "References: 0000000000000000000000000000000b-gone\n");
+        let cache = make_cache_with_narinfo(
+            "https://cache.example.com",
+            &top,
+            &format!("nar/{TEST_HASH}.nar.none"),
+            make_nar_bytes(),
+        );
+        let store = Arc::new(MockLocalStore::new());
+        let sub = Substitutor::new(store.clone(), vec![cache]);
+
+        assert!(sub.substitute(&test_store_path()).await.unwrap().is_not_found());
+        assert_eq!(store.added_count(), 0);
+    }
+
+    #[tokio::test]
     async fn query_reports_a_cached_path_without_fetching_it() {
         let narinfo = make_narinfo_text("none");
         let store = Arc::new(MockLocalStore::new());
@@ -802,12 +867,12 @@ mod tests {
              FileSize: 100\n\
              NarHash: {TEST_NAR_HASH}\n\
              NarSize: {TEST_NAR_SIZE}\n\
-             References: abc123-glibc-2.37\n\
+             References: 0000000000000000000000000000000c-glibc-2.37\n\
              Sig: cache.nixos.org-1:fakesig\n"
         );
 
         let nar = make_nar_bytes();
-        let store = Arc::new(MockLocalStore::new());
+        let store = Arc::new(MockLocalStore::new().with_valid_path("/nix/store/0000000000000000000000000000000c-glibc-2.37"));
         let cache = make_cache_with_narinfo(
             "https://cache.example.com",
             &narinfo_text,
@@ -822,7 +887,7 @@ mod tests {
         // Verify the reference was prefixed with /nix/store/
         let added = store.added.lock().unwrap();
         assert_eq!(added.len(), 1);
-        assert_eq!(added[0].2, vec!["/nix/store/abc123-glibc-2.37"]);
+        assert_eq!(added[0].2, vec!["/nix/store/0000000000000000000000000000000c-glibc-2.37"]);
     }
 
     #[tokio::test]
@@ -835,12 +900,12 @@ mod tests {
              FileSize: 100\n\
              NarHash: {TEST_NAR_HASH}\n\
              NarSize: {TEST_NAR_SIZE}\n\
-             References: /nix/store/abc123-glibc-2.37\n\
+             References: /nix/store/0000000000000000000000000000000c-glibc-2.37\n\
              Sig: cache.nixos.org-1:fakesig\n"
         );
 
         let nar = make_nar_bytes();
-        let store = Arc::new(MockLocalStore::new());
+        let store = Arc::new(MockLocalStore::new().with_valid_path("/nix/store/0000000000000000000000000000000c-glibc-2.37"));
         let cache = make_cache_with_narinfo(
             "https://cache.example.com",
             &narinfo_text,
@@ -852,7 +917,7 @@ mod tests {
         sub.substitute(&test_store_path()).await.unwrap();
 
         let added = store.added.lock().unwrap();
-        assert_eq!(added[0].2, vec!["/nix/store/abc123-glibc-2.37"]);
+        assert_eq!(added[0].2, vec!["/nix/store/0000000000000000000000000000000c-glibc-2.37"]);
     }
 
     // ── Trust gate + NAR-hash gate (require_signatures = true) ──────────
