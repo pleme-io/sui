@@ -1769,6 +1769,7 @@ mod tests {
         ));
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn darwin_generate_sbpl_profile_includes_build_dir_write() {
         let config = SandboxConfig::default()
