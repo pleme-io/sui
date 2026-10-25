@@ -130,6 +130,7 @@ impl LocalBuilder {
         let built = rewrite_derivation(drv, &rewrites);
         let candidates = self.reference_candidates(drv, index).await;
         std::fs::create_dir_all(&build_dir)?;
+        let build_dir = std::fs::canonicalize(&build_dir)?.to_string_lossy().into_owned();
         for (path, value) in SandboxConfig::attr_files(&built, &build_dir) {
             std::fs::write(path, value)?;
         }
@@ -1744,6 +1745,26 @@ mod tests {
         assert!(plan.to_fetch.is_empty());
         assert!(!dep_out.exists());
         assert!(!target_out.exists());
+    }
+
+    #[tokio::test]
+    async fn the_builder_sees_its_build_dir_with_every_symlink_resolved() {
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        let link = tmp.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let out = tmp.path().join("out");
+        let store = Arc::new(MockStore::new());
+        let builder = LocalBuilder::new(store, Box::new(NoSandbox))
+            .with_build_dir(link.to_str().unwrap().to_string());
+        let drv = make_drv("/bin/sh", &["-c", &format!("echo $NIX_BUILD_TOP > {}", out.display())], out.to_str().unwrap());
+
+        let result = builder.build(&drv).await.unwrap();
+        assert!(result.is_success(), "{}", result.log);
+        let top = std::fs::read_to_string(&out).unwrap();
+        let canon_real = std::fs::canonicalize(&real).unwrap();
+        assert!(top.trim().starts_with(canon_real.to_str().unwrap()), "NIX_BUILD_TOP={top}");
     }
 
     #[tokio::test]
