@@ -1018,7 +1018,7 @@ pub fn build_caches(configs: &[SubstituterConfig]) -> Vec<std::sync::Arc<sui_sto
 /// large closure yet well under any outer harness timeout.
 #[must_use]
 pub fn realize_bound() -> std::time::Duration {
-    const DEFAULT_SECS: u64 = 600;
+    const DEFAULT_SECS: u64 = 86_400;
     let secs = std::env::var("SUI_REALIZE_TIMEOUT_SECS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())

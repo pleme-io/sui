@@ -8961,7 +8961,7 @@ fn build_ifd_realizer() -> Result<IfdRealizer, String> {
 /// a large closure yet well under any outer eval harness timeout, so sui itself
 /// NAMES the stalled derivation instead of being killed as a mystery hang.
 fn ifd_realize_bound() -> std::time::Duration {
-    const DEFAULT_SECS: u64 = 300;
+    const DEFAULT_SECS: u64 = 86_400;
     let secs = std::env::var("SUI_IFD_REALIZE_TIMEOUT_SECS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
