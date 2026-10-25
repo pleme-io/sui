@@ -42,17 +42,101 @@ impl HttpResponse {
     }
 }
 
+/// How a transfer survives a slow or silent server: cppnix's
+/// `connect-timeout`, `stalled-download-timeout` and `download-attempts`
+/// (libstore filetransfer), with cppnix's defaults.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TransferPolicy {
+    pub connect_timeout: Option<std::time::Duration>,
+    pub stall: std::time::Duration,
+    pub attempts: u32,
+    pub base_retry: std::time::Duration,
+}
+
+impl Default for TransferPolicy {
+    fn default() -> Self {
+        Self {
+            connect_timeout: None,
+            stall: std::time::Duration::from_secs(300),
+            attempts: 5,
+            base_retry: std::time::Duration::from_millis(250),
+        }
+    }
+}
+
+impl TransferPolicy {
+    /// The policy a nix.conf lookup describes; an absent or unparsable
+    /// setting keeps cppnix's default.
+    pub fn from_settings<'a>(get: impl Fn(&str) -> Option<&'a str>) -> Self {
+        let d = Self::default();
+        let num = |k: &str| get(k).and_then(|v| v.trim().parse::<u64>().ok());
+        Self {
+            connect_timeout: num("connect-timeout").filter(|s| *s > 0).map(std::time::Duration::from_secs),
+            stall: num("stalled-download-timeout").map_or(d.stall, std::time::Duration::from_secs),
+            attempts: num("download-attempts").map_or(d.attempts, |n| u32::try_from(n.max(1)).unwrap_or(u32::MAX)),
+            base_retry: d.base_retry,
+        }
+    }
+
+    /// The policy this host's nix.conf describes.
+    #[must_use]
+    pub fn from_nix_conf() -> Self {
+        sui_compat::nix_conf::NixConfig::load().map_or_else(|_| Self::default(), |c| Self::from_settings(|k| c.get(k)))
+    }
+
+    fn delay(&self, attempt: u32) -> std::time::Duration {
+        self.base_retry.saturating_mul(1u32 << attempt.saturating_sub(1).min(10))
+    }
+}
+
 /// Default [`HttpClient`] backed by reqwest.
 pub struct ReqwestHttpClient {
     inner: reqwest::Client,
+    policy: TransferPolicy,
 }
 
 impl ReqwestHttpClient {
-    /// Create a new HTTP client with default settings.
+    /// A client under this host's nix.conf transfer policy.
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            inner: reqwest::Client::new(),
+        Self::with_policy(TransferPolicy::from_nix_conf())
+    }
+
+    /// A client under `policy`.
+    #[must_use]
+    pub fn with_policy(policy: TransferPolicy) -> Self {
+        let mut builder = reqwest::Client::builder().read_timeout(policy.stall);
+        if let Some(t) = policy.connect_timeout {
+            builder = builder.connect_timeout(t);
+        }
+        Self { inner: builder.build().unwrap_or_default(), policy }
+    }
+
+    async fn attempt(&self, url: &str, headers: &[(&str, &str)]) -> Result<(u16, Vec<u8>), HttpError> {
+        let mut req = self.inner.get(url);
+        for &(key, value) in headers {
+            req = req.header(key, value);
+        }
+        let response = req.send().await.map_err(|e| HttpError::Request(e.to_string()))?;
+        let status = response.status().as_u16();
+        let body = response.bytes().await.map_err(|e| HttpError::Decode(e.to_string()))?.to_vec();
+        Ok((status, body))
+    }
+
+    async fn fetch(&self, url: &str, headers: &[(&str, &str)]) -> Result<(u16, Vec<u8>), HttpError> {
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            let result = self.attempt(url, headers).await;
+            let transient = match &result {
+                Err(_) => true,
+                Ok((status, _)) => *status == 429 || *status >= 500,
+            };
+            if !transient || attempt >= self.policy.attempts {
+                return result;
+            }
+            tracing::warn!(url, attempt, "transfer failed; retrying");
+            tokio::time::sleep(self.policy.delay(attempt)).await;
         }
     }
 }
@@ -66,51 +150,61 @@ impl Default for ReqwestHttpClient {
 #[async_trait::async_trait]
 impl HttpClient for ReqwestHttpClient {
     async fn get(&self, url: &str, headers: &[(&str, &str)]) -> Result<HttpResponse, HttpError> {
-        let mut req = self.inner.get(url);
-        for &(key, value) in headers {
-            req = req.header(key, value);
-        }
-
-        let response = req
-            .send()
-            .await
-            .map_err(|e| HttpError::Request(e.to_string()))?;
-
-        let status = response.status().as_u16();
-        let body = response
-            .text()
-            .await
-            .map_err(|e| HttpError::Decode(e.to_string()))?;
-
+        let (status, body) = self.fetch(url, headers).await?;
+        let body = String::from_utf8(body).map_err(|e| HttpError::Decode(e.to_string()))?;
         Ok(HttpResponse { status, body })
     }
 
     async fn get_bytes(&self, url: &str) -> Result<Vec<u8>, HttpError> {
-        let response = self
-            .inner
-            .get(url)
-            .send()
-            .await
-            .map_err(|e| HttpError::Request(e.to_string()))?;
-
-        if !response.status().is_success() {
-            return Err(HttpError::Request(format!(
-                "HTTP {}: {url}",
-                response.status()
-            )));
+        let (status, body) = self.fetch(url, &[]).await?;
+        if !(200..300).contains(&status) {
+            return Err(HttpError::Request(format!("HTTP {status}: {url}")));
         }
-
-        response
-            .bytes()
-            .await
-            .map(|b| b.to_vec())
-            .map_err(|e| HttpError::Decode(e.to_string()))
+        Ok(body)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_server_that_never_answers_fails_after_every_attempt_within_the_stall_bound() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let accepted = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = accepted.clone();
+        tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((sock, _)) = listener.accept().await {
+                seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                held.push(sock);
+            }
+        });
+        let client = ReqwestHttpClient::with_policy(TransferPolicy {
+            connect_timeout: None,
+            stall: std::time::Duration::from_millis(200),
+            attempts: 3,
+            base_retry: std::time::Duration::from_millis(10),
+        });
+        let url = ["http://", &addr.to_string(), "/x.narinfo"].concat();
+        let result = tokio::time::timeout(std::time::Duration::from_secs(10), client.get(&url, &[])).await;
+        assert!(matches!(result, Ok(Err(_))), "{result:?}");
+        assert_eq!(accepted.load(std::sync::atomic::Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn the_policy_reads_cppnix_settings_with_cppnix_defaults() {
+        let d = TransferPolicy::default();
+        assert_eq!((d.stall.as_secs(), d.attempts, d.connect_timeout), (300, 5, None));
+        let p = TransferPolicy::from_settings(|k| match k {
+            "stalled-download-timeout" => Some("12"),
+            "download-attempts" => Some("2"),
+            "connect-timeout" => Some("4"),
+            _ => None,
+        });
+        assert_eq!((p.stall.as_secs(), p.attempts, p.connect_timeout.map(|d| d.as_secs())), (12, 2, Some(4)));
+    }
 
     #[test]
     fn http_error_display() {
