@@ -125,6 +125,81 @@ impl LocalStore {
         Ok(repaired)
     }
 
+    /// Valid non-drv paths this machine built without a signature (`ultimate = 0`, no sigs): what sui's builder registers.
+    ///
+    /// # Errors
+    ///
+    /// When the database cannot be read.
+    pub async fn unsigned_local_builds(&self) -> StoreResult<Vec<String>> {
+        let rows = valid_path::Entity::find()
+            .filter(valid_path::Column::Ultimate.eq(0))
+            .filter(valid_path::Column::Sigs.is_null())
+            .filter(valid_path::Column::Path.not_like("%.drv"))
+            .all(&self.db)
+            .await
+            .map_err(db_err)?;
+        Ok(rows.into_iter().map(|r| r.path).collect())
+    }
+
+    /// Valid signed (substituted) paths registered at or after `since` (unix seconds), with their recorded references.
+    ///
+    /// # Errors
+    ///
+    /// When the database cannot be read.
+    pub async fn signed_since(&self, since: i64) -> StoreResult<Vec<(String, Vec<String>)>> {
+        let rows = valid_path::Entity::find()
+            .filter(valid_path::Column::Sigs.is_not_null())
+            .filter(valid_path::Column::RegistrationTime.gte(since))
+            .all(&self.db)
+            .await
+            .map_err(db_err)?;
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            let sp = StorePath::from_absolute_path(&row.path).map_err(|e| StoreError::PathNotFound(format!("{}: {e}", row.path)))?;
+            let refs = self.query_path_info(&sp).await?.map(|i| i.references).unwrap_or_default();
+            out.push((row.path, refs));
+        }
+        Ok(out)
+    }
+
+    /// Records each of `references` for `path` that is not recorded yet; returns those added.
+    ///
+    /// # Errors
+    ///
+    /// When `path` or a reference is not valid, or the database cannot be written.
+    pub async fn add_missing_references(&self, path: &str, references: &[String], dry_run: bool) -> StoreResult<Vec<String>> {
+        let row = self
+            .find_by_path(path)
+            .await?
+            .ok_or_else(|| StoreError::PathNotFound(path.to_string()))?;
+        let recorded: std::collections::BTreeSet<i64> = reference::Entity::find()
+            .filter(reference::Column::Referrer.eq(row.id))
+            .all(&self.db)
+            .await
+            .map_err(db_err)?
+            .into_iter()
+            .map(|r| r.reference)
+            .collect();
+        let mut added = Vec::new();
+        for reference_path in references {
+            let target = self
+                .find_by_path(reference_path)
+                .await?
+                .ok_or_else(|| StoreError::PathNotFound(reference_path.clone()))?;
+            if recorded.contains(&target.id) {
+                continue;
+            }
+            if !dry_run {
+                reference::ActiveModel { referrer: Set(row.id), reference: Set(target.id) }
+                    .insert(&self.db)
+                    .await
+                    .map_err(db_err)?;
+            }
+            added.push(reference_path.clone());
+        }
+        Ok(added)
+    }
+
     fn read_derivation_outputs(&self, drv_path: &str) -> StoreResult<Vec<(String, String)>> {
         let basename = drv_path.rsplit('/').next().unwrap_or_default();
         let bytes = std::fs::read(Path::new(&self.store_dir).join(basename)).map_err(StoreError::Io)?;
@@ -352,6 +427,23 @@ impl Store for LocalStore {
             None
         };
 
+        let mut reference_ids: Vec<Option<i64>> = Vec::with_capacity(info.references.len());
+        for ref_path_str in &info.references {
+            if *ref_path_str == info.path {
+                reference_ids.push(None);
+                continue;
+            }
+            let Some(ref_row) = self.find_by_path(ref_path_str).await? else {
+                return Err(StoreError::PathNotFound(format!(
+                    "cannot register {}: reference {ref_path_str} is not a valid path in this \
+                     store. CppNix rejects this too; accepting it would record a path whose \
+                     dependency the store does not know about, so a GC could collect it.",
+                    info.path
+                )));
+            };
+            reference_ids.push(Some(ref_row.id));
+        }
+
         // Insert into ValidPaths.
         let new_path = valid_path::ActiveModel {
             id: sea_orm::ActiveValue::NotSet,
@@ -368,7 +460,8 @@ impl Store for LocalStore {
         let inserted = new_path.insert(&self.db).await.map_err(db_err)?;
         let path_id = inserted.id;
 
-        // Insert reference edges into Refs.
+        // Insert reference edges into Refs. Every reference was resolved
+        // above, before the ValidPaths row existed: a refusal leaves no row.
         //
         // ── ★ AN UNKNOWN REFERENCE IS A REFUSAL, NOT A DROPPED EDGE ───────
         // This used to be `if let Some(ref_row) = ...` with no else: a
@@ -389,18 +482,10 @@ impl Store for LocalStore {
         // REJECTS. That is not a laxness to tolerate: it is the same
         // "declares a dependency it never supplies" disease that lets a `.drv`
         // carry an inputSrc nothing produced, seen from the store side.
-        for ref_path_str in &info.references {
-            let Some(ref_row) = self.find_by_path(ref_path_str).await? else {
-                return Err(StoreError::PathNotFound(format!(
-                    "cannot register {}: reference {ref_path_str} is not a valid path in this \
-                     store. CppNix rejects this too; accepting it would record a path whose \
-                     dependency the store does not know about, so a GC could collect it.",
-                    info.path
-                )));
-            };
+        for reference_id in reference_ids {
             let new_ref = reference::ActiveModel {
                 referrer: Set(path_id),
-                reference: Set(ref_row.id),
+                reference: Set(reference_id.unwrap_or(path_id)),
             };
             new_ref.insert(&self.db).await.map_err(db_err)?;
         }
@@ -1896,6 +1981,21 @@ mod tests {
         assert_eq!(store.repair_derivation_outputs(true).await.unwrap(), vec![drv_path.clone()]);
         assert_eq!(store.repair_derivation_outputs(false).await.unwrap(), vec![drv_path]);
         assert!(store.repair_derivation_outputs(false).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_path_with_an_unknown_reference_leaves_no_row() {
+        let store = LocalStore::open_in_memory().await.unwrap();
+        let path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1-curl-dev";
+        let mut info = PathInfo::new(path, "sha256:c");
+        info.references = vec![path.to_string(), "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa2-nghttp2-lib".to_string()];
+        assert!(store.register_path(&info).await.is_err());
+        assert!(store.find_by_path(path).await.unwrap().is_none());
+
+        info.references = vec![path.to_string()];
+        store.register_path(&info).await.unwrap();
+        let sp = StorePath::from_absolute_path(path).unwrap();
+        assert_eq!(store.query_path_info(&sp).await.unwrap().unwrap().references, vec![path.to_string()]);
     }
 
     #[tokio::test]

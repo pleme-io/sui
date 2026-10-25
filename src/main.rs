@@ -375,6 +375,7 @@ enum StoreCommands {
     Verify,
     Optimise { #[arg(long)] dry_run: bool },
     RepairDrvOutputs { #[arg(long)] dry_run: bool },
+    RepairReferences { #[arg(long)] dry_run: bool, #[arg(long)] substituted_since: Option<i64> },
     Info,
     Delete {
         paths: Vec<String>,
@@ -6883,6 +6884,34 @@ async fn main() -> Result<(), CliError> {
                     }
                     let verb = if dry_run { "would repair" } else { "repaired" };
                     eprintln!("{verb} {} derivations registered without their outputs", repaired.len());
+                }
+                StoreCommands::RepairReferences { dry_run, substituted_since } => {
+                    let rw_store = LocalStore::open_rw(NIX_DB_PATH).await.map_err(|e| CliError::StoreOpen { path: NIX_DB_PATH, source: e })?;
+                    let mut repairs = sui_build::repair::repair_references(&rw_store, dry_run).await?;
+                    if let Some(since) = substituted_since {
+                        let caches = sui_orchestrate::system::build_caches(&sui_orchestrate::system::get_substituters());
+                        let local: std::sync::Arc<dyn sui_store::Store> = std::sync::Arc::new(
+                            LocalStore::open_rw(NIX_DB_PATH).await.map_err(|e| CliError::StoreOpen { path: NIX_DB_PATH, source: e })?,
+                        );
+                        let substitutor = sui_store::Substitutor::new(local, caches.clone());
+                        repairs.extend(sui_build::repair::repair_substituted_references(&rw_store, &substitutor, &caches, since, dry_run).await?);
+                    }
+                    for r in &repairs {
+                        println!("{}", r.path);
+                        for a in &r.added {
+                            println!("  + {a}");
+                        }
+                        for a in &r.absent {
+                            println!("  ! absent {a}");
+                        }
+                    }
+                    let broken = repairs.iter().filter(|r| !r.absent.is_empty()).count();
+                    let verb = if dry_run { "would add" } else { "added" };
+                    eprintln!(
+                        "{verb} {} references on {} paths; {broken} paths name an absent store path (their closure is broken)",
+                        repairs.iter().map(|r| r.added.len()).sum::<usize>(),
+                        repairs.len()
+                    );
                 }
                 StoreCommands::Info => {
                     let paths = store.query_all_valid_paths().await?;

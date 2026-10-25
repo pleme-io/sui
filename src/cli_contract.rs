@@ -482,6 +482,8 @@ pub const CONTRACT: &[(&[&str], &str, Honour)] = &[
     (&["store", "path-info"], "json", H),
     (&["store", "paths"], "limit", H),
     (&["store", "repair-drv-outputs"], "dry_run", H),
+    (&["store", "repair-references"], "dry_run", H),
+    (&["store", "repair-references"], "substituted_since", H),
     (&["store", "gc"], "max_age_days", H),
     (&["store", "gc"], "print_roots", H),
     (&["store", "gc"], "dry_run", H),
