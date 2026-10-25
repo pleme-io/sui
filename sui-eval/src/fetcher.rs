@@ -953,7 +953,7 @@ fn retry_after_seconds(headers: &ureq::http::HeaderMap) -> Option<u64> {
 ///
 /// # Errors
 /// A malformed nix configuration, which CppNix refuses outright.
-fn github_token_for_url(url: &str) -> Result<Option<String>, FetchError> {
+pub(crate) fn github_token_for_url(url: &str) -> Result<Option<String>, FetchError> {
     let Some(repo_key) = github_repo_key(url) else {
         return Ok(None);
     };

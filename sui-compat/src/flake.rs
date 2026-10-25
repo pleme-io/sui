@@ -167,9 +167,12 @@ impl FlakeLock {
         Ok(lock)
     }
 
-    /// Serialize the lock back to pretty-printed JSON.
+    /// Serialize the lock back to pretty-printed JSON, byte-for-byte as CppNix
+    /// writes it: every object's keys sorted, and a final newline.
     pub fn to_json(&self) -> Result<String, FlakeLockError> {
-        Ok(serde_json::to_string_pretty(self)?)
+        let mut out = serde_json::to_string_pretty(&sorted_keys(serde_json::to_value(self)?))?;
+        out.push('\n');
+        Ok(out)
     }
 
     /// Get the root node.
@@ -354,6 +357,18 @@ impl FlakeLock {
 }
 
 // ── Tests ───────────────────────────────────────────────────
+
+fn sorted_keys(value: serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(map) => {
+            let mut entries: Vec<(String, serde_json::Value)> = map.into_iter().collect();
+            entries.sort_by(|a, b| a.0.cmp(&b.0));
+            serde_json::Value::Object(entries.into_iter().map(|(k, v)| (k, sorted_keys(v))).collect())
+        }
+        serde_json::Value::Array(items) => serde_json::Value::Array(items.into_iter().map(sorted_keys).collect()),
+        other => other,
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -1664,5 +1679,12 @@ mod tests {
         let local2 = reparsed.get_node("local").unwrap();
         let locked2 = local2.locked.as_ref().unwrap();
         assert_eq!(locked2.extra.get("revCount"), Some(&serde_json::json!(42)));
+    }
+
+    #[test]
+    fn a_nix_written_lock_round_trips_byte_for_byte() {
+        let nix_written = "{\n  \"nodes\": {\n    \"root\": {\n      \"inputs\": {\n        \"sui\": \"sui\"\n      }\n    },\n    \"sui\": {\n      \"locked\": {\n        \"lastModified\": 1792872116,\n        \"narHash\": \"sha256-V4APRJ7YoihEw9G21XHO4Semr9uT6VVxc4+XCV5HRn4=\",\n        \"owner\": \"pleme-io\",\n        \"repo\": \"sui\",\n        \"rev\": \"457ecf7c048431d3a4c1fac9aef8b3cf1fcf20a1\",\n        \"type\": \"github\"\n      },\n      \"original\": {\n        \"owner\": \"pleme-io\",\n        \"repo\": \"sui\",\n        \"type\": \"github\"\n      }\n    }\n  },\n  \"root\": \"root\",\n  \"version\": 7\n}\n";
+        let lock = FlakeLock::parse(nix_written).unwrap();
+        assert_eq!(lock.to_json().unwrap(), nix_written);
     }
 }

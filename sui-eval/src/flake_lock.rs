@@ -242,7 +242,7 @@ fn resolve_github(
         .repo
         .as_deref()
         .ok_or(FlakeLockUpdateError::InvalidFormat)?;
-    let ref_name = original.git_ref.as_deref().unwrap_or("main");
+    let ref_name = original.git_ref.as_deref().unwrap_or("HEAD");
 
     let url = format!("https://api.github.com/repos/{owner}/{repo}/commits/{ref_name}");
 
@@ -250,8 +250,9 @@ fn resolve_github(
         .header("User-Agent", "sui/0.1")
         .header("Accept", "application/vnd.github.v3+json");
 
-    // Use GITHUB_TOKEN if available for rate limiting.
-    if let Ok(token) = std::env::var("GITHUB_TOKEN") {
+    if let Some(token) = crate::fetcher::github_token_for_url(&url)
+        .map_err(|e| FlakeLockUpdateError::FetchFailed(e.to_string()))?
+    {
         request = request.header("Authorization", &format!("token {token}"));
     }
 
@@ -279,13 +280,32 @@ fn resolve_github(
         .and_then(|s| s.as_str())
         .ok_or_else(|| FlakeLockUpdateError::FetchFailed("no sha in response".into()))?;
 
+    let last_modified = commit
+        .pointer("/commit/committer/date")
+        .and_then(|d| d.as_str())
+        .and_then(rfc3339_utc_seconds)
+        .ok_or_else(|| FlakeLockUpdateError::FetchFailed(format!("no committer date for {owner}/{repo}@{sha}")))?;
+    let fetch_key = sui_compat::flake::LockedInput {
+        source_type: "github".to_string(),
+        owner: Some(owner.to_string()),
+        repo: Some(repo.to_string()),
+        rev: Some(sha.to_string()),
+        ..sui_compat::flake::LockedInput::default()
+    };
+    let tree = crate::fetcher::InputFetcher::new()
+        .fetch(&fetch_key)
+        .map_err(|e| FlakeLockUpdateError::FetchFailed(format!("{owner}/{repo}@{sha}: {e}")))?;
+    let nar_hash = sui_compat::source::nar_hash_source_tree(&tree, "source")
+        .map_err(|e| FlakeLockUpdateError::FetchFailed(format!("narHash {owner}/{repo}@{sha}: {e}")))?
+        .nar_hash_sri;
+
     Ok(sui_compat::flake::LockedInput {
         source_type: "github".to_string(),
         owner: Some(owner.to_string()),
         repo: Some(repo.to_string()),
         rev: Some(sha.to_string()),
-        nar_hash: None, // Must be recomputed on first fetch.
-        last_modified: None,
+        nar_hash: Some(nar_hash),
+        last_modified: Some(last_modified),
         path: None,
         url: None,
         git_ref: original.git_ref.clone(),
@@ -293,6 +313,23 @@ fn resolve_github(
         host: None,
         extra: std::collections::BTreeMap::new(),
     })
+}
+
+fn rfc3339_utc_seconds(date: &str) -> Option<u64> {
+    let date = date.strip_suffix('Z')?;
+    let (day, time) = date.split_once('T')?;
+    let mut d = day.split('-').map(str::parse::<i64>);
+    let (y, m, dd) = (d.next()?.ok()?, d.next()?.ok()?, d.next()?.ok()?);
+    let mut t = time.split(':').map(str::parse::<i64>);
+    let (hh, mm, ss) = (t.next()?.ok()?, t.next()?.ok()?, t.next()?.ok()?);
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let mp = (m + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + dd - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    u64::try_from(days * 86_400 + hh * 3_600 + mm * 60 + ss).ok()
 }
 
 /// Resolve latest commit for a git input via `git ls-remote`.
@@ -329,6 +366,14 @@ fn resolve_git(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn committer_date_converts_to_the_last_modified_nix_records() {
+        assert_eq!(rfc3339_utc_seconds("2026-10-24T22:48:51Z"), Some(1_792_882_131));
+        assert_eq!(rfc3339_utc_seconds("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(rfc3339_utc_seconds("2000-02-29T12:00:00Z"), Some(951_825_600));
+        assert_eq!(rfc3339_utc_seconds("2026-10-24 22:48:51"), None);
+    }
 
     /// Helper: write a minimal flake.nix.
     fn write_flake_nix(dir: &Path) {
