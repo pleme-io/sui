@@ -408,8 +408,7 @@ enum StoreCommands {
     Info,
     Delete {
         paths: Vec<String>,
-        /// Delete without a liveness check. REQUIRED — `store delete` refuses
-        /// without it, since sui has no `is_live` wired yet.
+        /// Delete even a path reachable from a root (cppnix `--ignore-liveness`).
         #[arg(long)] ignore_liveness: bool,
     },
     Ls { path: String, #[arg(short = 'R', long)] recursive: bool, #[arg(short = 'l', long)] long: bool, #[arg(long)] json: bool },
@@ -1409,62 +1408,13 @@ fn cmd_collect_garbage(delete_old: bool, age: Option<&str>) -> Result<(), CliErr
     )))
 }
 
-fn store_delete(paths: &[String], ignore_liveness: bool) -> Result<(), CliError> {
-    let layouts = sui_spec::store_layout::load_canonical()
-        .map_err(|e| CliError::NotImplemented(format!("store delete: {e:?}")))?;
-    for p in paths {
-        let mut ok = false;
-        for layout in &layouts {
-            if sui_spec::store_layout::parse_path(layout, p).is_ok() {
-                ok = true;
-                break;
-            }
-        }
-        if !ok {
-            return Err(CliError::NotImplemented(format!(
-                "store delete: `{p}` not a recognised store path"
-            )));
-        }
-        if !ignore_liveness {
-            // Conservative: refuse without --ignore-liveness
-            // until the substrate GC has a liveness oracle wired.
-            return Err(CliError::NotImplemented(
-                "store delete: refusing to delete without --ignore-liveness (liveness check needs sui_spec::gc::is_live)".into()
-            ));
-        }
-        // ── ★ DELETING THE BYTES WITHOUT UNREGISTERING MANUFACTURES
-        //        STORE CORRUPTION, AT EXIT 0 ──────────────────────────────
-        // This removed the directory and never touched `db.sqlite`, so
-        // `query_all_valid_paths` kept returning a path that no longer
-        // exists. Every later consumer — a closure walk, a substituter
-        // decision, `verify`, a build that treats the path as an already-valid
-        // input — then reasons from a store the store itself contradicts.
-        //
-        // That is worse than the inert commands fixed alongside it: those did
-        // nothing and said they did something, while this one does something
-        // real and leaves the system less consistent than it found it. An
-        // unregistered delete is not a partial success; it is damage.
-        //
-        // Refusing rather than implementing the unregister for the same reason
-        // `collect-garbage` refuses: the DB write is async over a read-write
-        // store this sync helper does not hold, and a half-right implementation
-        // of a delete path is exactly how a store gets destroyed. The
-        // destination is `LocalStore`'s own delete/GC path, which already
-        // unregisters — `sui store gc` is the working command today.
-        //
-        // The `--ignore-liveness` guard above is a real mitigation and is why
-        // this was never reachable by accident. It is not a substitute for the
-        // invariant: an operator who supplies the flag is asking to skip the
-        // LIVENESS check, not asking for a corrupt database.
-        return Err(CliError::NotImplemented(format!(
-            "store delete: refusing to unlink `{p}` without unregistering it from the store \
-             database. Removing the bytes while `db.sqlite` still lists the path as valid \
-             leaves the store internally inconsistent — a closure walk, a substituter \
-             decision or a build would then treat a path that no longer exists as usable. \
-             Use `sui store gc`, which deletes and unregisters together."
-        )));
-    }
-    // Only reachable with an empty path list.
+async fn store_delete(paths: &[String], ignore_liveness: bool) -> Result<(), CliError> {
+    let store = LocalStore::open_rw(NIX_DB_PATH).await.map_err(|e| CliError::StoreOpen { path: NIX_DB_PATH, source: e })?;
+    let freed = store
+        .delete_specific(paths, ignore_liveness)
+        .await
+        .map_err(|e| CliError::Orchestrate { operation: "store delete", message: e.to_string() })?;
+    eprintln!("{} store paths deleted, {:.2} MiB freed", paths.len(), freed as f64 / 1_048_576.0);
     Ok(())
 }
 
@@ -6950,7 +6900,7 @@ async fn main() -> Result<(), CliError> {
                     println!("Database:     {NIX_DB_PATH}");
                 }
                 StoreCommands::Delete { paths: dp, ignore_liveness } => {
-                    store_delete(&dp, ignore_liveness)?;
+                    store_delete(&dp, ignore_liveness).await?;
                 }
                 StoreCommands::Ls { path: p, recursive, long, json } => {
                     store_ls(&p, recursive, long, json)?;

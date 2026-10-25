@@ -615,28 +615,11 @@ impl Store for LocalStore {
     }
 
     async fn query_referrers(&self, path: &StorePath) -> StoreResult<Vec<StorePath>> {
-        let Some(model) = self.find_by_path(&path.to_absolute_path()).await? else {
-            return Ok(Vec::new());
-        };
-        let ids: Vec<i64> = reference::Entity::find()
-            .filter(reference::Column::Reference.eq(model.id))
-            .all(&self.db)
-            .await
-            .map_err(db_err)?
-            .into_iter()
-            .map(|r| r.referrer)
-            .collect();
-        if ids.is_empty() {
-            return Ok(Vec::new());
-        }
-        Ok(valid_path::Entity::find()
-            .filter(valid_path::Column::Id.is_in(ids))
-            .order_by_asc(valid_path::Column::Path)
-            .all(&self.db)
-            .await
-            .map_err(db_err)?
-            .into_iter()
-            .filter_map(|m| StorePath::from_absolute_path(&m.path).ok())
+        Ok(self
+            .referrers_of(&path.to_absolute_path())
+            .await?
+            .iter()
+            .filter_map(|p| StorePath::from_absolute_path(p).ok())
             .collect())
     }
 
@@ -696,53 +679,7 @@ impl Store for LocalStore {
             p.rsplit('/').next().filter(|b| !b.is_empty()).map(str::to_string)
         };
 
-        // 1. Enumerate GC roots (store-root-relative — see `find_gc_roots`).
-        let roots = find_gc_roots(&self.store_dir);
-
-        // 2. Enumerate every registered valid path AS STORED (physical prefix
-        //    preserved), so temp-store rows are not dropped the way
-        //    `query_all_valid_paths` drops them (it filters through StorePath).
-        let all_path_strings: Vec<String> = {
-            use sea_orm::QueryOrder;
-            valid_path::Entity::find()
-                .order_by_asc(valid_path::Column::Path)
-                .all(&self.db)
-                .await
-                .map_err(db_err)?
-                .into_iter()
-                .map(|m| m.path)
-                .collect()
-        };
-
-        // Index references by basename for the closure walk.
-        let mut refs_by_basename: std::collections::HashMap<String, Vec<String>> =
-            std::collections::HashMap::new();
-        for path_str in &all_path_strings {
-            if let Some(bn) = basename_of(path_str)
-                && let Some(model) = self.find_by_path(path_str).await?
-            {
-                let info = self.model_to_path_info(&model).await?;
-                let ref_basenames: Vec<String> =
-                    info.references.iter().filter_map(|r| basename_of(r)).collect();
-                refs_by_basename.insert(bn, ref_basenames);
-            }
-        }
-
-        // 3. Compute the reachable closure (basename domain).
-        let mut reachable: HashSet<String> = HashSet::new();
-        let mut queue: Vec<String> = roots.iter().filter_map(|r| basename_of(r)).collect();
-        while let Some(bn) = queue.pop() {
-            if !reachable.insert(bn.clone()) {
-                continue;
-            }
-            if let Some(refs) = refs_by_basename.get(&bn) {
-                for r in refs {
-                    if !reachable.contains(r) {
-                        queue.push(r.clone());
-                    }
-                }
-            }
-        }
+        let (all_path_strings, reachable) = self.liveness().await?;
 
         // 4. Garbage = every valid path whose basename is not reachable.
         let garbage: Vec<String> = all_path_strings
@@ -1009,6 +946,120 @@ where
 /// (`/nix/store` → `/nix/var/nix`, `<X>/nix/store` → `<X>/nix/var/nix`). If the
 /// store dir does not end in `/store` we fall back to the canonical system
 /// state dir so real-world behavior is never regressed.
+impl LocalStore {
+    /// The valid paths that refer to `path`, as stored (a temp-rooted store
+    /// keeps its physical prefix).
+    ///
+    /// # Errors
+    ///
+    /// When the database cannot be read.
+    pub async fn referrers_of(&self, path: &str) -> StoreResult<Vec<String>> {
+        let Some(model) = self.find_by_path(path).await? else {
+            return Ok(Vec::new());
+        };
+        let ids: Vec<i64> = reference::Entity::find()
+            .filter(reference::Column::Reference.eq(model.id))
+            .all(&self.db)
+            .await
+            .map_err(db_err)?
+            .into_iter()
+            .map(|r| r.referrer)
+            .collect();
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        Ok(valid_path::Entity::find()
+            .filter(valid_path::Column::Id.is_in(ids))
+            .order_by_asc(valid_path::Column::Path)
+            .all(&self.db)
+            .await
+            .map_err(db_err)?
+            .into_iter()
+            .map(|m| m.path)
+            .collect())
+    }
+
+    /// Every valid path as stored, and the basenames reachable from the
+    /// roots cppnix's collector starts from: the GC root links, the runtime
+    /// roots of running processes, and the temp roots of builds in flight.
+    ///
+    /// # Errors
+    ///
+    /// When the database cannot be read.
+    pub async fn liveness(&self) -> StoreResult<(Vec<String>, std::collections::HashSet<String>)> {
+        use sea_orm::QueryOrder;
+        let basename_of = |p: &str| -> Option<String> { p.rsplit('/').next().filter(|b| !b.is_empty()).map(str::to_string) };
+        let state_dir = std::path::PathBuf::from(state_dir_for_store(&self.store_dir));
+        let mut roots = find_gc_roots(&self.store_dir);
+        roots.extend(find_runtime_roots(&self.store_dir).into_iter().map(|(path, _)| path));
+        roots.extend(find_temp_roots(&state_dir, &self.store_dir).into_iter().map(|(path, _)| path));
+        let all_path_strings: Vec<String> = valid_path::Entity::find()
+            .order_by_asc(valid_path::Column::Path)
+            .all(&self.db)
+            .await
+            .map_err(db_err)?
+            .into_iter()
+            .map(|m| m.path)
+            .collect();
+        let mut refs_by_basename: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+        for path_str in &all_path_strings {
+            if let Some(bn) = basename_of(path_str)
+                && let Some(model) = self.find_by_path(path_str).await?
+            {
+                let info = self.model_to_path_info(&model).await?;
+                refs_by_basename.insert(bn, info.references.iter().filter_map(|r| basename_of(r)).collect());
+            }
+        }
+        let mut reachable = std::collections::HashSet::new();
+        let mut queue: Vec<String> = roots.iter().filter_map(|r| basename_of(r)).collect();
+        while let Some(bn) = queue.pop() {
+            if !reachable.insert(bn.clone()) {
+                continue;
+            }
+            if let Some(refs) = refs_by_basename.get(&bn) {
+                queue.extend(refs.iter().filter(|r| !reachable.contains(*r)).cloned());
+            }
+        }
+        Ok((all_path_strings, reachable))
+    }
+
+    /// cppnix's `nix-store --delete`: each named path, after the dead paths
+    /// that refer to it, unregistered and removed together; a path reachable
+    /// from a root is refused with cppnix's message and nothing is deleted.
+    ///
+    /// # Errors
+    ///
+    /// When a named path is alive, or the store cannot be read or written.
+    pub async fn delete_specific(&self, paths: &[String], ignore_liveness: bool) -> StoreResult<u64> {
+        let (_, reachable) = if ignore_liveness { (Vec::new(), std::collections::HashSet::new()) } else { self.liveness().await? };
+        let basename = |p: &str| p.rsplit('/').next().unwrap_or_default().to_string();
+        for p in paths {
+            if reachable.contains(&basename(p)) {
+                return Err(crate::traits::StoreError::StillAlive(p.clone()));
+            }
+        }
+        let mut order: Vec<String> = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        let mut stack: Vec<(String, bool)> = paths.iter().rev().map(|p| (p.clone(), false)).collect();
+        while let Some((p, expanded)) = stack.pop() {
+            if expanded {
+                order.push(p);
+                continue;
+            }
+            if !seen.insert(p.clone()) {
+                continue;
+            }
+            stack.push((p.clone(), true));
+            stack.extend(self.referrers_of(&p).await?.into_iter().map(|r| (r, false)));
+        }
+        let mut freed = 0;
+        for p in &order {
+            freed += self.delete_path_by_string(p).await?;
+        }
+        Ok(freed)
+    }
+}
+
 pub(crate) fn state_dir_for_store(store_dir: &str) -> String {
     match store_dir.strip_suffix("/store") {
         Some(prefix) => format!("{prefix}/var/nix"),
@@ -2683,6 +2734,36 @@ mod tests {
         assert_eq!(freed, 0);
         // But it should be gone from the DB.
         assert!(!store.is_valid_path(&sp).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_named_delete_takes_dead_referrers_first_and_refuses_a_live_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store_dir = tmp.path().join("nix/store");
+        let roots = tmp.path().join("nix/var/nix/gcroots");
+        std::fs::create_dir_all(&store_dir).unwrap();
+        std::fs::create_dir_all(&roots).unwrap();
+        let store = LocalStore::open_in_memory_with_dir(store_dir.to_str().unwrap()).await.unwrap();
+        let path = |h: char, name: &str| format!("{}/{}-{name}", store_dir.display(), h.to_string().repeat(32));
+        let (dead, referrer, live) = (path('a', "dead"), path('b', "refers-to-dead"), path('c', "rooted"));
+        for (p, refs) in [(&dead, vec![]), (&referrer, vec![dead.clone()]), (&live, vec![])] {
+            std::fs::create_dir_all(p).unwrap();
+            std::fs::write(Path::new(p).join("payload"), vec![0u8; 1000]).unwrap();
+            let info = PathInfo { path: p.clone(), nar_hash: "sha256:00".into(), references: refs, ..PathInfo::default() };
+            store.register_path(&info).await.unwrap();
+        }
+        std::os::unix::fs::symlink(&live, roots.join("keep")).unwrap();
+
+        let refused = store.delete_specific(std::slice::from_ref(&live), false).await.unwrap_err();
+        assert!(refused.to_string().starts_with(&format!("Cannot delete path '{live}' since it is still alive")), "{refused}");
+        assert!(Path::new(&live).exists());
+
+        let freed = store.delete_specific(std::slice::from_ref(&dead), false).await.unwrap();
+        assert_eq!(freed, 2000, "two dead paths of 1000 bytes each");
+        assert!(store.find_by_path(&dead).await.unwrap().is_none());
+        assert!(store.find_by_path(&referrer).await.unwrap().is_none());
+        assert!(!Path::new(&dead).exists() && !Path::new(&referrer).exists());
+        assert!(store.find_by_path(&live).await.unwrap().is_some());
     }
 
     // ── nar_node_from_path tests ────────────────────────────────

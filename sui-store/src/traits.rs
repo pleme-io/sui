@@ -27,6 +27,9 @@ pub enum StoreError {
     /// The operation is not supported by this store backend.
     #[error("not supported: {0}")]
     NotSupported(String),
+    /// A path named for deletion is reachable from a root (cppnix's message).
+    #[error("Cannot delete path '{0}' since it is still alive. To find out why, use: nix-store --query --roots and nix-store --query --referrers")]
+    StillAlive(String),
     /// An internal invariant was violated.
     #[error("internal error: {0}")]
     Internal(String),
