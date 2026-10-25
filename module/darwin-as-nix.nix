@@ -24,6 +24,13 @@ in
       description = "The cppnix package kept installed as `cppnix`, and the daemon when `daemon` is \"cppnix\".";
     };
 
+    compatibleNixVersion = mkOption {
+      type = types.str;
+      default = cfg.cppnixPackage.version;
+      defaultText = lib.literalExpression "config.services.sui-as-nix.cppnixPackage.version";
+      description = "The nix version sui answers for: the version nix-darwin reads from nix.package for its feature checks (isNixAtLeast).";
+    };
+
     daemon = mkOption {
       type = types.enum [ "cppnix" "sui" ];
       default = "cppnix";
@@ -32,7 +39,7 @@ in
   };
 
   config = mkIf cfg.enable {
-    nix.package = cfg.package;
+    nix.package = cfg.package.overrideAttrs (_: { version = cfg.compatibleNixVersion; });
     system.tools.darwin-rebuild.enable = false;
     environment.etc."sui/cppnix-passthrough".text = "off\n";
     environment.systemPackages = [ cppnixAlias ];
