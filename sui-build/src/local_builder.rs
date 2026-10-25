@@ -172,6 +172,7 @@ impl LocalBuilder {
 
         // 7. Post-build: for each output, scan references and register
         let mut output_paths = Vec::new();
+        let mut pending: Vec<(String, PathInfo)> = Vec::new();
         let back: Vec<(String, String)> = rewrites.iter().map(|(real, scratch)| (scratch.clone(), real.clone())).collect();
         for (output_name, output) in &drv.outputs {
             let output_path = &output.path;
@@ -238,15 +239,18 @@ impl LocalBuilder {
                 content_address: fixed_output_ca(output),
             };
 
+            pending.push((output_name.clone(), info));
+        }
+
+        let ordered = topo_sort_outputs(pending).map_err(BuildError::Failed)?;
+        for (output_name, info) in ordered {
             self.store.register_path(&info).await.map_err(|e| {
                 BuildError::Failed(format!("failed to register output: {e}"))
             })?;
-
-            if let Ok(sp) = StorePath::from_absolute_path(output_path) {
+            if let Ok(sp) = StorePath::from_absolute_path(&info.path) {
                 output_paths.push(sp);
             }
-
-            log.push(&format!("registered output '{output_name}': {output_path}"));
+            log.push(&format!("registered output '{output_name}': {}", info.path));
         }
 
         // 8. Clean up build directory
@@ -1255,6 +1259,77 @@ mod tests {
         assert_eq!(info.path, output_str);
     }
 
+    struct ReferenceCheckingStore(MockStore);
+
+    #[async_trait::async_trait]
+    impl Store for ReferenceCheckingStore {
+        async fn query_path_info(&self, path: &StorePath) -> sui_store::traits::StoreResult<Option<PathInfo>> {
+            self.0.query_path_info(path).await
+        }
+
+        async fn is_valid_path(&self, path: &StorePath) -> sui_store::traits::StoreResult<bool> {
+            self.0.is_valid_path(path).await
+        }
+
+        async fn query_all_valid_paths(&self) -> sui_store::traits::StoreResult<Vec<StorePath>> {
+            self.0.query_all_valid_paths().await
+        }
+
+        async fn register_path(&self, info: &PathInfo) -> sui_store::traits::StoreResult<()> {
+            let known = self.0.paths.lock().unwrap().keys().cloned().collect::<std::collections::BTreeSet<_>>();
+            if let Some(r) = info.references.iter().find(|r| **r != info.path && !known.contains(*r)) {
+                return Err(sui_store::traits::StoreError::PathNotFound(format!(
+                    "cannot register {}: reference {r} is not a valid path in this store",
+                    info.path
+                )));
+            }
+            self.0.register_path(info).await
+        }
+    }
+
+    #[tokio::test]
+    async fn outputs_that_reference_each_other_register_in_reference_order() {
+        let tmp = tempfile::tempdir().unwrap();
+        let out = tmp.path().join("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa2-thing");
+        let lib = tmp.path().join("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1-thing-lib");
+        let store = Arc::new(ReferenceCheckingStore(MockStore::new()));
+        let builder = LocalBuilder::new(store.clone(), Box::new(NoSandbox))
+            .with_build_dir(tmp.path().join("build").to_str().unwrap().to_string());
+        let mut drv = make_drv(
+            "/bin/sh",
+            &["-c", &format!("echo {o} > {o}; echo {o} {l} > {l}", o = out.display(), l = lib.display())],
+            out.to_str().unwrap(),
+        );
+        drv.outputs.insert(
+            "lib".to_string(),
+            DerivationOutput { path: lib.to_str().unwrap().to_string(), hash_algo: String::new(), hash: String::new() },
+        );
+
+        let result = builder.build(&drv).await.unwrap();
+        assert!(result.is_success(), "{}", result.log);
+        let paths = store.0.paths.lock().unwrap();
+        let lib_info = &paths[lib.to_str().unwrap()];
+        assert!(lib_info.references.contains(&out.to_str().unwrap().to_string()));
+        assert!(lib_info.references.contains(&lib.to_str().unwrap().to_string()));
+        assert!(paths.contains_key(out.to_str().unwrap()));
+    }
+
+    #[test]
+    fn a_reference_cycle_between_outputs_is_an_error_naming_both() {
+        let a = PathInfo { references: vec!["/b".into(), "/a".into()], ..PathInfo::new("/a", "") };
+        let b = PathInfo { references: vec!["/a".into()], ..PathInfo::new("/b", "") };
+        let err = topo_sort_outputs(vec![("a".into(), a), ("b".into(), b)]).unwrap_err();
+        assert!(err.contains("/a") && err.contains("/b"), "{err}");
+        let lib = PathInfo { references: vec!["/out".into()], ..PathInfo::new("/lib", "") };
+        let out = PathInfo::new("/out", "");
+        let order: Vec<String> = topo_sort_outputs(vec![("lib".into(), lib), ("out".into(), out)])
+            .unwrap()
+            .into_iter()
+            .map(|(n, _)| n)
+            .collect();
+        assert_eq!(order, vec!["out", "lib"]);
+    }
+
     #[tokio::test]
     async fn build_chain_second_sees_existing() {
         // Use a real store-path-format output so all_outputs_exist works.
@@ -2038,6 +2113,45 @@ pub async fn dry_plan(
     Ok(DryPlan { to_build, to_fetch: plan.to_fetch.into_keys().collect(), download_size, nar_size })
 }
 
+fn topo_sort_outputs(outputs: Vec<(String, PathInfo)>) -> Result<Vec<(String, PathInfo)>, String> {
+    fn visit(
+        i: usize,
+        parent: Option<usize>,
+        outputs: &[(String, PathInfo)],
+        state: &mut [u8],
+        order: &mut Vec<usize>,
+    ) -> Result<(), String> {
+        match state[i] {
+            2 => return Ok(()),
+            1 => {
+                let from = parent.map_or(String::new(), |p| outputs[p].1.path.clone());
+                return Err(format!("cycle detected in the references of '{}' from '{from}'", outputs[i].1.path));
+            }
+            _ => {}
+        }
+        state[i] = 1;
+        let me = &outputs[i].1;
+        for r in &me.references {
+            if *r == me.path {
+                continue;
+            }
+            if let Some(j) = outputs.iter().position(|(_, o)| o.path == *r) {
+                visit(j, Some(i), outputs, state, order)?;
+            }
+        }
+        state[i] = 2;
+        order.push(i);
+        Ok(())
+    }
+    let mut state = vec![0u8; outputs.len()];
+    let mut order = Vec::with_capacity(outputs.len());
+    for i in 0..outputs.len() {
+        visit(i, None, &outputs, &mut state, &mut order)?;
+    }
+    let mut slots: Vec<Option<(String, PathInfo)>> = outputs.into_iter().map(Some).collect();
+    Ok(order.into_iter().filter_map(|i| slots[i].take()).collect())
+}
+
 async fn output_paths_present(store: &dyn Store, paths: &[String]) -> bool {
     for path in paths {
         let Ok(sp) = StorePath::from_absolute_path(path) else {
@@ -2102,7 +2216,7 @@ async fn query_fetches(
         for (path, answer) in answers {
             match answer {
                 Ok(Availability::Present) => {}
-                Ok(Availability::Substitutable { download_size, nar_size, references }) => {
+                Ok(Availability::Substitutable { download_size, nar_size, references, .. }) => {
                     wave.extend(references.into_iter().filter(|r| r != &path));
                     found.push((path, (download_size, nar_size)));
                 }
