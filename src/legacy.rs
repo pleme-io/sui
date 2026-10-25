@@ -177,11 +177,12 @@ fn translate_build(args: &[String]) -> Vec<String> {
 
 /// `nix-store` → `sui store <op>` (op derived from flag).
 fn translate_store(args: &[String]) -> Vec<String> {
-    let (op, rest) = strip_one_op(args, &[
+    let args = expand_short_clusters(args);
+    let (op, rest) = strip_one_op(&args, &[
         ("--realise",   "realise"),
         ("-r",          "realise"),
-        ("--query",     "info"),
-        ("-q",          "info"),
+        ("--query",     "query"),
+        ("-q",          "query"),
         ("--gc",        "gc"),
         ("--optimise",  "optimise"),
         ("--verify",    "verify"),
@@ -197,6 +198,20 @@ fn translate_store(args: &[String]) -> Vec<String> {
     }
     out.extend(rest);
     out
+}
+
+/// cppnix's flag clusters: `-qR` is `-q -R`. A cluster is a single dash and
+/// two or more letters.
+fn expand_short_clusters(args: &[String]) -> Vec<String> {
+    args.iter()
+        .flat_map(|a| {
+            let letters = a.strip_prefix('-').filter(|r| !r.starts_with('-') && r.len() > 1 && r.chars().all(|c| c.is_ascii_alphabetic()));
+            match letters {
+                Some(r) => r.chars().map(|c| ['-', c].iter().collect::<String>()).collect::<Vec<_>>(),
+                None => vec![a.clone()],
+            }
+        })
+        .collect()
 }
 
 /// `nix-env` → `sui profile <op>`.  The set of flags `nixos-rebuild`
@@ -333,6 +348,17 @@ fn prefix_with_subs(head: &[&str], args: &[String]) -> Vec<String> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn nix_store_query_keeps_its_flags_and_splits_clusters_as_cppnix() {
+        let s = |v: &[&str]| v.iter().map(|x| (*x).to_string()).collect::<Vec<_>>();
+        assert_eq!(translate_store(&s(&["-qR", "/nix/store/x"])), s(&["store", "query", "-R", "/nix/store/x"]));
+        assert_eq!(
+            translate_store(&s(&["--store", "daemon", "-q", "--hash", "/nix/store/x"])),
+            s(&["store", "query", "--store", "daemon", "--hash", "/nix/store/x"])
+        );
+        assert_eq!(translate_store(&s(&["--query", "--references", "x"])), s(&["store", "query", "--references", "x"]));
+    }
+
     fn s(v: &[&str]) -> Vec<String> { v.iter().map(|x| (*x).to_string()).collect() }
 
     #[test]
@@ -404,7 +430,7 @@ mod tests {
     #[test]
     fn translate_nix_store_query_requisites() {
         let got = translate_legacy_argv(LegacyCmd::Store, &s(&["--query", "--requisites", "/nix/store/x"]));
-        assert_eq!(got, s(&["store", "info", "--requisites", "/nix/store/x"]));
+        assert_eq!(got, s(&["store", "query", "--requisites", "/nix/store/x"]));
     }
 
     #[test]

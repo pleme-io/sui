@@ -53,6 +53,8 @@ struct Cli {
     #[arg(long, global = true)] no_write_lock_file: bool,
     /// [REFUSED] nix parse-compat: do not use the network.
     #[arg(long, global = true)] offline: bool,
+    /// The store to use: `auto`, `daemon`, `local` or `unix://<socket>` (wins over NIX_REMOTE).
+    #[arg(long = "store", global = true)] store_url: Option<String>,
     /// [REFUSED] nix parse-compat: accept the flake's own nixConfig.
     #[arg(long, global = true)] accept_flake_config: bool,
     /// [REFUSED] nix parse-compat: evaluate impurely.
@@ -406,6 +408,33 @@ enum Commands {
 #[derive(Subcommand)]
 enum StoreCommands {
     PathInfo { path: String, #[arg(long)] json: bool },
+    /// cppnix's `nix-store --query`: one query kind over the named paths.
+    Query {
+        paths: Vec<String>,
+        #[arg(long)] outputs: bool,
+        #[arg(short = 'R', long)] requisites: bool,
+        #[arg(long)] include_outputs: bool,
+        #[arg(long)] references: bool,
+        #[arg(long, alias = "referers")] referrers: bool,
+        #[arg(long, alias = "referers-closure")] referrers_closure: bool,
+        #[arg(short = 'd', long)] deriver: bool,
+        #[arg(long)] valid_derivers: bool,
+        #[arg(short = 'b', long)] binding: Option<String>,
+        #[arg(long)] hash: bool,
+        #[arg(long)] size: bool,
+        #[arg(long)] roots: bool,
+        #[arg(short = 'u', long)] use_output: bool,
+        /// [REFUSED] Print the closure as a tree.
+        #[arg(long)] tree: bool,
+        /// [REFUSED] Print the closure as a Graphviz graph.
+        #[arg(long)] graph: bool,
+        /// [REFUSED] Print the closure as GraphML.
+        #[arg(long)] graphml: bool,
+        /// [REFUSED] Resolve a content-addressed derivation output.
+        #[arg(long)] resolve: bool,
+        /// [REFUSED] Realise a derivation before querying its outputs.
+        #[arg(short = 'f', long, alias = "force-realize")] force_realise: bool,
+    },
     Paths { #[arg(long, default_value = "100")] limit: usize },
     Gc { #[arg(long)] max_age_days: Option<u32>, #[arg(long)] print_roots: bool, #[arg(long)] dry_run: bool },
     Verify,
@@ -2308,11 +2337,11 @@ async fn store_ping() -> Result<(), CliError> {
 /// `NIX_REMOTE=unix://…` and falling back to the standard nix daemon
 /// socket. Returns `None` if `NIX_REMOTE` names a non-unix store.
 fn daemon_socket_path() -> Option<std::path::PathBuf> {
-    match std::env::var("NIX_REMOTE") {
+    match sui_store::store_url().ok_or(()) {
         Ok(v) if v.starts_with("unix://") => {
             Some(std::path::PathBuf::from(v.trim_start_matches("unix://")))
         }
-        Ok(v) if v == "daemon" || v.is_empty() => {
+        Ok(v) if v == "daemon" || v == "auto" || v.is_empty() => {
             Some(std::path::PathBuf::from(sui_daemon::DEFAULT_SOCKET_PATH))
         }
         Ok(_) => None, // e.g. NIX_REMOTE=https://… — not our socket
@@ -6740,6 +6769,9 @@ async fn main() -> Result<(), CliError> {
         Ok(c) => c,
         Err(e) => e.exit(),
     };
+    if let Some(url) = &cli.store_url {
+        sui_store::set_store_url(url);
+    }
 
     // `--show-trace` WAS A DEAD FLAG until 2026-07-20: declared as a global arg
     // and read by nothing. Passing it produced byte-identical output to omitting
@@ -6896,6 +6928,46 @@ async fn main() -> Result<(), CliError> {
                         repairs.iter().map(|r| r.added.len()).sum::<usize>(),
                         repairs.len()
                     );
+                }
+                StoreCommands::Query {
+                    paths, outputs: _, requisites, include_outputs, references, referrers, referrers_closure, deriver,
+                    valid_derivers, binding, hash, size, roots, use_output, tree: _, graph: _, graphml: _, resolve: _,
+                    force_realise: _,
+                } => {
+                    let fail = |message: String| CliError::Orchestrate { operation: "store query", message };
+                    let chosen: Vec<sui_store::query::Query> = [
+                        requisites.then_some(sui_store::query::Query::Requisites { include_outputs }),
+                        references.then_some(sui_store::query::Query::References),
+                        referrers.then_some(sui_store::query::Query::Referrers),
+                        referrers_closure.then_some(sui_store::query::Query::ReferrersClosure),
+                        deriver.then_some(sui_store::query::Query::Deriver),
+                        valid_derivers.then_some(sui_store::query::Query::ValidDerivers),
+                        binding.map(sui_store::query::Query::Binding),
+                        hash.then_some(sui_store::query::Query::Hash),
+                        size.then_some(sui_store::query::Query::Size),
+                        roots.then_some(sui_store::query::Query::Roots),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .collect();
+                    if chosen.len() > 1 {
+                        return Err(fail("query type conflicts with earlier flag".into()));
+                    }
+                    let query = chosen.into_iter().next().unwrap_or(sui_store::query::Query::Outputs);
+                    if matches!(sui_store::store_url().as_deref(), Some(u) if u == "daemon" || u.starts_with("unix://")) {
+                        let socket = daemon_socket_path().ok_or_else(|| fail("no daemon socket for this store".into()))?;
+                        let mut conn = sui_store::worker_client::WorkerConn::connect(&socket, Some(std::time::Duration::from_secs(30)))
+                            .map_err(|e| fail(format!("daemon at {}: {e}", socket.display())))?;
+                        for p in &paths {
+                            let resolved = sui_store::query::follow_links_to_store_path(p, "/nix/store").map_err(|e| fail(e.to_string()))?;
+                            if !conn.is_valid_path(&resolved).map_err(|e| fail(e.to_string()))? {
+                                return Err(fail(format!("path '{resolved}' is not valid")));
+                            }
+                        }
+                    }
+                    for line in store.query(&query, &paths, use_output).await.map_err(|e| fail(e.to_string()))? {
+                        println!("{line}");
+                    }
                 }
                 StoreCommands::Info => {
                     let paths = store.query_all_valid_paths().await?;

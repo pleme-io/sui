@@ -249,7 +249,7 @@ impl LocalStore {
     }
 
     /// Look up a ValidPath row by its full store path string.
-    async fn find_by_path(&self, path: &str) -> StoreResult<Option<valid_path::Model>> {
+    pub(crate) async fn find_by_path(&self, path: &str) -> StoreResult<Option<valid_path::Model>> {
         valid_path::Entity::find()
             .filter(valid_path::Column::Path.eq(path))
             .one(&self.db)
@@ -333,7 +333,7 @@ impl LocalStore {
     }
 
     /// Convert a ValidPath model to our PathInfo type.
-    async fn model_to_path_info(&self, model: &valid_path::Model) -> StoreResult<PathInfo> {
+    pub(crate) async fn model_to_path_info(&self, model: &valid_path::Model) -> StoreResult<PathInfo> {
         let references = self.get_references(model.id).await?;
         let signatures = model
             .sigs

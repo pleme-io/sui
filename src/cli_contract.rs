@@ -174,6 +174,8 @@ pub const CONTRACT: &[(&[&str], &str, Honour)] = &[
                      nowhere, so a fetch or a substituter query happens anyway",
         },
     ),
+    // `--store <url>` names the store for the process (sui_store::set_store_url).
+    (&[], "store_url", H),
     (
         &[],
         "accept_flake_config",
@@ -497,6 +499,25 @@ pub const CONTRACT: &[(&[&str], &str, Honour)] = &[
     (&["store", "delete"], "paths", H),
     // Wired before this pass: `store delete` REFUSES without it.
     (&["store", "delete"], "ignore_liveness", H),
+    (&["store", "query"], "paths", H),
+    (&["store", "query"], "outputs", H),
+    (&["store", "query"], "requisites", H),
+    (&["store", "query"], "include_outputs", H),
+    (&["store", "query"], "references", H),
+    (&["store", "query"], "referrers", H),
+    (&["store", "query"], "referrers_closure", H),
+    (&["store", "query"], "deriver", H),
+    (&["store", "query"], "valid_derivers", H),
+    (&["store", "query"], "binding", H),
+    (&["store", "query"], "hash", H),
+    (&["store", "query"], "size", H),
+    (&["store", "query"], "roots", H),
+    (&["store", "query"], "use_output", H),
+    (&["store", "query"], "tree", Honour::Refused { since: "2026-10-25", reason: "`--tree` prints the closure as a tree; sui's query does not render one yet" }),
+    (&["store", "query"], "graph", Honour::Refused { since: "2026-10-25", reason: "`--graph` prints a Graphviz graph; sui's query does not render one yet" }),
+    (&["store", "query"], "graphml", Honour::Refused { since: "2026-10-25", reason: "`--graphml` prints GraphML; sui's query does not render it yet" }),
+    (&["store", "query"], "resolve", Honour::Refused { since: "2026-10-25", reason: "`--resolve` maps a content-addressed output through realisations, which sui does not serve yet" }),
+    (&["store", "query"], "force_realise", Honour::Refused { since: "2026-10-25", reason: "`--force-realise` builds a derivation before the query; sui's query reads the store only" }),
     (&["store", "ls"], "path", H),
     (&["store", "ls"], "recursive", H),
     (&["store", "ls"], "long", H),
@@ -890,10 +911,16 @@ mod tests {
         }
     }
 
+    fn on_big_stack<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+        std::thread::Builder::new().stack_size(64 << 20).spawn(f).unwrap().join().unwrap()
+    }
+
     fn built() -> clap::Command {
-        let mut cmd = crate::Cli::command();
-        cmd.build();
-        cmd
+        on_big_stack(|| {
+            let mut cmd = crate::Cli::command();
+            cmd.build();
+            cmd
+        })
     }
 
     fn declared() -> BTreeSet<Key> {
@@ -1055,9 +1082,8 @@ mod tests {
     // ── enforce() behaviour ─────────────────────────────────────────────
 
     fn matches_from(argv: &[&str]) -> clap::ArgMatches {
-        built()
-            .try_get_matches_from(argv)
-            .unwrap_or_else(|e| panic!("parse {argv:?}: {e}"))
+        let owned: Vec<String> = argv.iter().map(|s| (*s).to_string()).collect();
+        on_big_stack(move || built().try_get_matches_from(&owned).unwrap_or_else(|e| panic!("parse {owned:?}: {e}")))
     }
 
     #[test]

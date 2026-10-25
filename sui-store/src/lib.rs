@@ -29,13 +29,14 @@ pub mod local;
 pub mod nar;
 pub mod pg;
 pub mod profile;
+pub mod query;
 pub mod substitute;
 pub mod traits;
 pub mod worker_client;
 
 pub use binary_cache::{BinaryCacheError, BinaryCacheStore, BinaryCacheStoreBuilder};
 pub use daemon_realize::{
-    default_daemon_socket, realize_via_daemon, realize_via_daemon_bounded, realize_via_daemon_bounded_observed,
+    default_daemon_socket, realize_via_daemon, set_store_url, store_url, realize_via_daemon_bounded, realize_via_daemon_bounded_observed,
     DaemonRealizeError,
     DaemonStore, Realized, StoreAccess, WritableStore, DEFAULT_DAEMON_SOCKET,
 };

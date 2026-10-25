@@ -180,7 +180,8 @@ impl StoreAccess {
         // NIX_REMOTE forcing the daemon path takes precedence: an operator (or
         // `NIX_REMOTE=daemon`) explicitly asking for the daemon must never be
         // silently routed to a direct write.
-        match std::env::var("NIX_REMOTE") {
+        match store_url().ok_or(()) {
+            Ok(v) if v == "auto" || v == "local" => {}
             Ok(v) if v.starts_with("unix://") => {
                 let sock = PathBuf::from(v.trim_start_matches("unix://"));
                 return DaemonStore::at(sock).map(StoreAccess::Daemon);
@@ -210,11 +211,25 @@ impl StoreAccess {
     }
 }
 
+static STORE_URL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Name the store for this process, as cppnix's `--store <url>` does; it wins
+/// over `NIX_REMOTE`. The first call wins.
+pub fn set_store_url(url: &str) {
+    let _ = STORE_URL.set(url.to_string());
+}
+
+/// The store this process was told to use: `--store`, else `NIX_REMOTE`.
+#[must_use]
+pub fn store_url() -> Option<String> {
+    STORE_URL.get().cloned().or_else(|| std::env::var("NIX_REMOTE").ok())
+}
+
 /// Resolve the daemon socket path from `NIX_REMOTE`, defaulting to the standard
 /// socket.
 #[must_use]
 pub fn default_daemon_socket() -> PathBuf {
-    match std::env::var("NIX_REMOTE") {
+    match store_url().ok_or(()) {
         Ok(v) if v.starts_with("unix://") => PathBuf::from(v.trim_start_matches("unix://")),
         _ => PathBuf::from(DEFAULT_DAEMON_SOCKET),
     }
