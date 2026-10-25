@@ -72,26 +72,52 @@ pub async fn repair_substituted_references(
 ///
 /// When the store cannot be read or written.
 pub async fn repair_references(store: &LocalStore, dry_run: bool) -> StoreResult<Vec<ReferenceRepair>> {
-    let valid: Vec<String> = store.query_all_valid_paths().await?.iter().map(|p| p.to_absolute_path()).collect();
-    let by_hash: std::collections::HashMap<String, String> =
-        valid.iter().map(|p| (hash_of(p), p.clone())).collect();
     let mut repairs = Vec::new();
     for path in store.unsigned_local_builds().await? {
-        let named = named_store_paths(Path::new(&path));
-        let (present, absent): (Vec<String>, Vec<String>) =
-            named.into_iter().partition(|p| by_hash.contains_key(&hash_of(p)));
-        let refs: Vec<String> = present
-            .iter()
-            .map(|p| by_hash[&hash_of(p)].clone())
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect();
+        let Some(drv) = deriver_of(store, &path).await? else { continue };
+        let candidates = crate::local_builder::reference_candidates(store, &drv, None).await;
+        let (refs, absent) = references_by_rule(&named_store_paths(Path::new(&path)), &candidates, |p| Path::new(p).exists());
         let added = store.add_missing_references(&path, &refs, dry_run).await?;
         if !added.is_empty() || !absent.is_empty() {
             repairs.push(ReferenceRepair { path, added, absent });
         }
     }
     Ok(repairs)
+}
+
+async fn deriver_of(store: &LocalStore, path: &str) -> StoreResult<Option<sui_compat::derivation::Derivation>> {
+    let Ok(sp) = sui_compat::store_path::StorePath::from_absolute_path(path) else { return Ok(None) };
+    let recorded = store.query_path_info(&sp).await?.and_then(|i| i.deriver).filter(|d| !d.is_empty());
+    let derivers = match recorded {
+        Some(d) => vec![d],
+        None => store.query_valid_derivers(&sp).await.unwrap_or_default(),
+    };
+    Ok(derivers
+        .iter()
+        .find_map(|d| std::fs::read(d).ok().and_then(|b| sui_compat::derivation::Derivation::parse(&b).ok())))
+}
+
+/// The builder's rule applied to bytes already on disk: a named path is a
+/// reference only when it is one of the build's candidates; a candidate that is
+/// named but no longer present is an absent reference.
+fn references_by_rule(
+    named: &BTreeSet<String>,
+    candidates: &[String],
+    exists: impl Fn(&str) -> bool,
+) -> (Vec<String>, Vec<String>) {
+    let by_hash: std::collections::HashMap<String, &String> = candidates.iter().map(|c| (hash_of(c), c)).collect();
+    let mut refs = BTreeSet::new();
+    let mut absent = BTreeSet::new();
+    for path in named {
+        if let Some(candidate) = by_hash.get(&hash_of(path)) {
+            if exists(candidate.as_str()) {
+                refs.insert((*candidate).clone());
+            } else {
+                absent.insert((*candidate).clone());
+            }
+        }
+    }
+    (refs.into_iter().collect(), absent.into_iter().collect())
 }
 
 fn hash_of(path: &str) -> String {
@@ -148,6 +174,25 @@ fn collect_store_paths(bytes: &[u8], found: &mut BTreeSet<String>, seen: &mut Ha
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_candidate_is_ever_a_reference() {
+        let named: BTreeSet<String> = [
+            "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1-dep",
+            "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa2-mentioned-in-a-doc",
+            "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa3-gone",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
+        let candidates = vec![
+            "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1-dep".to_string(),
+            "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa3-gone".to_string(),
+        ];
+        let (refs, absent) = references_by_rule(&named, &candidates, |p| p.ends_with("-dep"));
+        assert_eq!(refs, vec![candidates[0].clone()]);
+        assert_eq!(absent, vec![candidates[1].clone()]);
+    }
 
     #[test]
     fn store_paths_named_in_bytes_and_symlinks_are_found_once() {

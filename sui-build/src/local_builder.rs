@@ -377,39 +377,50 @@ impl LocalBuilder {
         drv: &Derivation,
         index: Option<&std::collections::HashMap<&str, &Derivation>>,
     ) -> Vec<String> {
-        let mut queue: Vec<String> = drv.input_sources.clone();
-        for (input, wanted) in &drv.input_derivations {
-            let parsed;
-            let input_drv = match index.and_then(|i| i.get(input.as_str()).copied()) {
-                Some(d) => d,
-                None => match std::fs::read(input).ok().and_then(|b| Derivation::parse(&b).ok()) {
-                    Some(d) => {
-                        parsed = d;
-                        &parsed
-                    }
-                    None => continue,
-                },
-            };
-            for name in wanted {
-                if let Some(out) = input_drv.outputs.get(name) {
-                    queue.push(out.path.clone());
-                }
-            }
-        }
-        let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-        while let Some(path) = queue.pop() {
-            if !seen.insert(path.clone()) {
-                continue;
-            }
-            if let Ok(sp) = StorePath::from_absolute_path(&path)
-                && let Ok(Some(info)) = self.store.query_path_info(&sp).await
-            {
-                queue.extend(info.references.into_iter().filter(|r| !seen.contains(r)));
-            }
-        }
-        seen.extend(drv.outputs.values().map(|o| o.path.clone()));
-        seen.into_iter().collect()
+        reference_candidates(self.store.as_ref(), drv, index).await
     }
+}
+
+/// The paths a build's output may reference, as cppnix scans for them: the
+/// input closure (input sources and the wanted outputs of input derivations,
+/// with everything they reference) and the derivation's own outputs.
+pub async fn reference_candidates(
+    store: &dyn Store,
+    drv: &Derivation,
+    index: Option<&std::collections::HashMap<&str, &Derivation>>,
+) -> Vec<String> {
+    let mut queue: Vec<String> = drv.input_sources.clone();
+    for (input, wanted) in &drv.input_derivations {
+        let parsed;
+        let input_drv = match index.and_then(|i| i.get(input.as_str()).copied()) {
+            Some(d) => d,
+            None => match std::fs::read(input).ok().and_then(|b| Derivation::parse(&b).ok()) {
+                Some(d) => {
+                    parsed = d;
+                    &parsed
+                }
+                None => continue,
+            },
+        };
+        for name in wanted {
+            if let Some(out) = input_drv.outputs.get(name) {
+                queue.push(out.path.clone());
+            }
+        }
+    }
+    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    while let Some(path) = queue.pop() {
+        if !seen.insert(path.clone()) {
+            continue;
+        }
+        if let Ok(sp) = StorePath::from_absolute_path(&path)
+            && let Ok(Some(info)) = store.query_path_info(&sp).await
+        {
+            queue.extend(info.references.into_iter().filter(|r| !seen.contains(r)));
+        }
+    }
+    seen.extend(drv.outputs.values().map(|o| o.path.clone()));
+    seen.into_iter().collect()
 }
 
 fn scan_refs(candidates: &[String], output_path: &str) -> Vec<String> {
