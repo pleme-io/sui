@@ -133,13 +133,13 @@ pub fn update_input(flake_dir: &Path, input_name: &str) -> Result<(), FlakeLockU
         .get(&node_name)
         .ok_or_else(|| FlakeLockUpdateError::InputNotFound(node_name.clone()))?;
 
-    let original = node
-        .original
-        .as_ref()
-        .ok_or(FlakeLockUpdateError::InvalidFormat)?;
+    let original = match declared_original(flake_dir, input_name) {
+        Some(declared) => declared,
+        None => node.original.clone().ok_or(FlakeLockUpdateError::InvalidFormat)?,
+    };
 
     // Resolve the latest revision from the original reference.
-    let new_locked = resolve_latest(original)?;
+    let new_locked = resolve_latest(&original)?;
 
     // Mutate the node in place.
     let node_mut = lock
@@ -147,6 +147,7 @@ pub fn update_input(flake_dir: &Path, input_name: &str) -> Result<(), FlakeLockU
         .get_mut(&node_name)
         .ok_or_else(|| FlakeLockUpdateError::InputNotFound(node_name.clone()))?;
     node_mut.locked = Some(new_locked);
+    node_mut.original = Some(original);
 
     // Write back.
     let output = lock
@@ -242,7 +243,7 @@ fn resolve_github(
         .repo
         .as_deref()
         .ok_or(FlakeLockUpdateError::InvalidFormat)?;
-    let ref_name = original.git_ref.as_deref().unwrap_or("HEAD");
+    let ref_name = pinned_rev(original).or(original.git_ref.as_deref()).unwrap_or("HEAD");
 
     let url = format!("https://api.github.com/repos/{owner}/{repo}/commits/{ref_name}");
 
@@ -327,6 +328,42 @@ fn github_locked(
     }
 }
 
+fn declared_original(flake_dir: &Path, input_name: &str) -> Option<OriginalInput> {
+    let flake_nix = flake_dir.join("flake.nix");
+    let source = std::fs::read_to_string(&flake_nix).ok()?;
+    let flake = crate::eval::eval_with_file(&source, Some(flake_nix)).ok()?;
+    let inputs = crate::eval::force_value(flake.to_attrs().ok()?.get("inputs")?).ok()?;
+    let input = crate::eval::force_value(inputs.to_attrs().ok()?.get(input_name)?).ok()?;
+    let url = match &input {
+        crate::Value::Attrs(a) => crate::eval::force_value(a.get("url")?).ok()?.as_string().ok()?.to_string(),
+        other => other.as_string().ok()?.to_string(),
+    };
+    github_original(&url)
+}
+
+fn github_original(url: &str) -> Option<OriginalInput> {
+    let rest = url.strip_prefix("github:")?;
+    let (path, query) = rest.split_once('?').unwrap_or((rest, ""));
+    let mut parts = path.splitn(3, '/');
+    let (owner, repo, third) = (parts.next()?, parts.next()?, parts.next());
+    let mut value = serde_json::json!({ "type": "github", "owner": owner, "repo": repo });
+    if let Some(third) = third.filter(|t| !t.is_empty()) {
+        let key = if third.len() == 40 && third.bytes().all(|b| b.is_ascii_hexdigit()) { "rev" } else { "ref" };
+        value[key] = serde_json::Value::String(third.to_string());
+    }
+    for pair in query.split('&').filter(|p| !p.is_empty()) {
+        let (k, v) = pair.split_once('=')?;
+        if matches!(k, "ref" | "rev" | "dir" | "host") {
+            value[k] = serde_json::Value::String(v.to_string());
+        }
+    }
+    serde_json::from_value(value).ok()
+}
+
+fn pinned_rev(original: &OriginalInput) -> Option<&str> {
+    original.extra.get("rev").and_then(serde_json::Value::as_str)
+}
+
 fn rfc3339_utc_seconds(date: &str) -> Option<u64> {
     let date = date.strip_suffix('Z')?;
     let (day, time) = date.split_once('T')?;
@@ -354,8 +391,11 @@ fn resolve_git(
         .ok_or(FlakeLockUpdateError::InvalidFormat)?;
     let ref_name = original.git_ref.as_deref().unwrap_or("main");
 
-    let sha = crate::git::ls_remote(url, ref_name)
-        .map_err(|e| FlakeLockUpdateError::FetchFailed(format!("git ls-remote: {e}")))?;
+    let sha = match pinned_rev(original) {
+        Some(rev) => rev.to_string(),
+        None => crate::git::ls_remote(url, ref_name)
+            .map_err(|e| FlakeLockUpdateError::FetchFailed(format!("git ls-remote: {e}")))?,
+    };
 
     Ok(sui_compat::flake::LockedInput {
         source_type: "git".to_string(),
@@ -378,6 +418,49 @@ fn resolve_git(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_github_url_reads_as_its_original() {
+        let pinned = github_original("github:nix-community/fenix/e691190ae78c9551d1e6a0cba156555c8f7cceca").unwrap();
+        assert_eq!(pinned_rev(&pinned), Some("e691190ae78c9551d1e6a0cba156555c8f7cceca"));
+        assert_eq!(pinned.git_ref, None);
+        let branch = github_original("github:LnL7/nix-darwin/nix-darwin-25.11").unwrap();
+        assert_eq!(branch.git_ref.as_deref(), Some("nix-darwin-25.11"));
+        assert_eq!(pinned_rev(&branch), None);
+        let dir = github_original("github:pleme-io/blue?dir=bidamas/kirikae").unwrap();
+        assert_eq!(dir.dir.as_deref(), Some("bidamas/kirikae"));
+        assert!(github_original("git+https://example.com/x").is_none());
+    }
+
+    #[test]
+    fn a_changed_url_in_flake_nix_wins_over_the_lock_original() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("flake.nix"),
+            r#"{ inputs.fenix.url = "github:nix-community/fenix/e691190ae78c9551d1e6a0cba156555c8f7cceca"; inputs.plain = { url = "github:pleme-io/sui"; }; outputs = _: { }; }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            declared_original(dir.path(), "fenix").as_ref().and_then(pinned_rev),
+            Some("e691190ae78c9551d1e6a0cba156555c8f7cceca")
+        );
+        assert_eq!(declared_original(dir.path(), "plain").map(|o| o.repo), Some(Some("sui".to_string())));
+        assert!(declared_original(dir.path(), "absent").is_none());
+    }
+
+    #[test]
+    fn a_rev_in_the_input_url_is_the_rev_that_is_locked() {
+        let pinned: OriginalInput = serde_json::from_value(serde_json::json!({
+            "type": "github", "owner": "pleme-io", "repo": "hibiki", "rev": "aecc5a9c014772f0f4006c7f47d362992ad3290f"
+        }))
+        .unwrap();
+        assert_eq!(pinned_rev(&pinned), Some("aecc5a9c014772f0f4006c7f47d362992ad3290f"));
+        let floating: OriginalInput = serde_json::from_value(serde_json::json!({
+            "type": "github", "owner": "pleme-io", "repo": "hibiki", "ref": "main"
+        }))
+        .unwrap();
+        assert_eq!(pinned_rev(&floating), None);
+    }
 
     #[test]
     fn a_locked_github_node_carries_rev_and_never_ref() {
