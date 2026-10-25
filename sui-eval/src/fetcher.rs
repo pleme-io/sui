@@ -828,6 +828,14 @@ fn find_single_subdir_or_self(dir: &Path) -> PathBuf {
     }
 }
 
+pub(crate) fn http_agent() -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .http_status_as_error(false)
+        .redirect_auth_headers(ureq::config::RedirectAuthHeaders::SameHost)
+        .build()
+        .into()
+}
+
 /// Download a URL and return the raw bytes.
 ///
 /// Uses `ureq` (synchronous, no tokio runtime) so this function is safe to
@@ -848,11 +856,7 @@ fn download_bytes(url: &str) -> Result<Vec<u8>, FetchError> {
     // read headers from, and the branch below becomes the live classifier it
     // always looked like. `call()` then errors only on genuine transport
     // failure, which is exactly what `FetchError::Download` should mean.
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .http_status_as_error(false)
-        .redirect_auth_headers(ureq::config::RedirectAuthHeaders::SameHost)
-        .build()
-        .into();
+    let agent = http_agent();
     let mut req = agent.get(url);
 
     // Attach a host-appropriate auth token when one is available.

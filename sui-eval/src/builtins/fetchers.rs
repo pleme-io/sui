@@ -444,7 +444,10 @@ pub(crate) fn fetch_url_bytes(url: &str) -> Result<Vec<u8>, String> {
     if let Some(path) = url.strip_prefix("file://") {
         std::fs::read(path).map_err(|e| format!("{e}"))
     } else {
-        let resp = ureq::get(url).call().map_err(|e| format!("{e}"))?;
+        let resp = crate::fetcher::http_agent().get(url).call().map_err(|e| format!("{e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("{url}: HTTP {}", resp.status().as_u16()));
+        }
         resp.into_body()
             .read_to_vec()
             .map_err(|e| format!("{e}"))

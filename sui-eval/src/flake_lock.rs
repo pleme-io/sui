@@ -246,7 +246,8 @@ fn resolve_github(
 
     let url = format!("https://api.github.com/repos/{owner}/{repo}/commits/{ref_name}");
 
-    let mut request = ureq::get(&url)
+    let mut request = crate::fetcher::http_agent()
+        .get(&url)
         .header("User-Agent", "sui/0.1")
         .header("Accept", "application/vnd.github.v3+json");
 
