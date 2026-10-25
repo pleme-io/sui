@@ -42,7 +42,7 @@ impl FileSystem for RealFileSystem {
     }
 
     fn is_file(&self, path: &Path) -> bool {
-        path.is_file()
+        path.symlink_metadata().is_ok_and(|m| m.is_file())
     }
 
     fn is_symlink(&self, path: &Path) -> bool {
@@ -127,6 +127,10 @@ pub fn scan_directory_with(
     dir: &Path,
     known_hashes: &[&str],
 ) -> std::io::Result<Vec<String>> {
+    if fs.is_symlink(dir) {
+        let target = fs.read_link(dir)?;
+        return Ok(scan_references(target.to_string_lossy().as_bytes(), known_hashes));
+    }
     if fs.is_file(dir) {
         return scan_file_with(fs, dir, known_hashes);
     }
@@ -159,11 +163,11 @@ pub fn scan_directory_with(
 /// Simple recursive directory walker.
 fn walkdir(dir: &std::path::Path) -> std::io::Result<Vec<std::path::PathBuf>> {
     let mut paths = Vec::new();
-    if dir.is_dir() {
+    if dir.symlink_metadata()?.is_dir() {
         for entry in std::fs::read_dir(dir)? {
             let entry = entry?;
             let path = entry.path();
-            if path.is_dir() {
+            if entry.file_type()?.is_dir() {
                 paths.extend(walkdir(&path)?);
             } else {
                 paths.push(path);
@@ -724,6 +728,27 @@ mod tests {
         assert!(fs.is_symlink(&link));
         let read = fs.read_link(&link).unwrap();
         assert_eq!(read, target);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_contributes_only_its_target_never_what_it_points_at() {
+        use std::os::unix::fs::symlink;
+
+        let hidden = "a".repeat(32);
+        let named = "b".repeat(32);
+        let elsewhere = tempfile::tempdir().unwrap();
+        std::fs::create_dir(elsewhere.path().join("share")).unwrap();
+        std::fs::write(elsewhere.path().join("share/f"), format!("/nix/store/{hidden}-x")).unwrap();
+        std::fs::write(elsewhere.path().join("g"), format!("/nix/store/{hidden}-x")).unwrap();
+
+        let out = tempfile::tempdir().unwrap();
+        symlink(elsewhere.path().join("share"), out.path().join("share")).unwrap();
+        symlink(elsewhere.path().join("g"), out.path().join("g")).unwrap();
+        symlink(format!("/nix/store/{named}-y/bin"), out.path().join("bin")).unwrap();
+
+        let refs = scan_directory(out.path(), &[hidden.as_str(), named.as_str()]).unwrap();
+        assert_eq!(refs, vec![named]);
     }
 
     #[test]
