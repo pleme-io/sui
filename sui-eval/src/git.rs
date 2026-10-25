@@ -34,14 +34,13 @@ pub fn clone(
     args.push(url.to_string());
     args.push(dest.to_string_lossy().into_owned());
 
-    let status = std::process::Command::new("git")
+    let first = std::process::Command::new("git")
         .args(&args)
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
+        .output()
         .map_err(|e| format!("git clone {url}: {e}"))?;
 
-    if !status.success() {
+    if !first.status.success() {
         let _ = std::fs::remove_dir_all(dest);
         if shallow {
             // Retry without shallow (some transports don't support it)
@@ -54,14 +53,19 @@ pub fn clone(
             let retry = std::process::Command::new("git")
                 .args(&retry_args)
                 .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status()
+                .output()
                 .map_err(|e| format!("git clone retry: {e}"))?;
-            if !retry.success() {
-                return Err(format!("git clone {url} failed"));
+            if !retry.status.success() {
+                return Err(format!(
+                    "git clone {url} failed: {}",
+                    String::from_utf8_lossy(&retry.stderr).trim()
+                ));
             }
         } else {
-            return Err(format!("git clone {url} failed"));
+            return Err(format!(
+                "git clone {url} failed: {}",
+                String::from_utf8_lossy(&first.stderr).trim()
+            ));
         }
     }
 

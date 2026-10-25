@@ -397,6 +397,7 @@ pub const CONTRACT: &[(&[&str], &str, Honour)] = &[
     (&["collect-garbage"], "delete_older_than", H),
     // ── show-config ─────────────────────────────────────────────────────
     (&["show-config"], "json", H),
+    (&["config", "show"], "name", H),
     // ── why / path-from-hash-part / edit / log / diff-closures ──────────
     (&["why"], "path", H),
     (&["why"], "dependency", H),

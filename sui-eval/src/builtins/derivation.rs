@@ -266,6 +266,7 @@ fn construct_derivation(
             }
             let forced_v = match crate::eval::force_value(v) {
                 Ok(v) => v,
+                Err(e @ EvalError::IoError { .. }) => return Err(e),
                 Err(_e) => {
                     // SUI_PARITY_STRICT: un-blind the structured-attrs drop too.
                     parity_strict::record(
@@ -353,6 +354,7 @@ fn construct_derivation(
             // for diagnosis without changing the result.
             let forced_v = match crate::eval::force_value(v) {
                 Ok(v) => v,
+                Err(e @ EvalError::IoError { .. }) => return Err(e),
                 Err(_e) => {
                     if std::env::var_os("SUI_DEBUG_DRV").is_some() {
                         eprintln!("[SUI_DEBUG_DRV] drv={name} attr={k} FORCE-ERR: {_e:?}");
@@ -617,6 +619,7 @@ fn write_derivation_to_store(
             }
         drv.env.insert(output_name.clone(), output_path.clone());
     }
+    crate::path::ensure_registered_sources(&drv.input_sources)?;
     sui_store::drv_write::write_drv(drv_path, drv).map_err(|e| EvalError::IoError {
         context: format!("instantiating derivation {drv_path}"),
         message: e.to_string(),

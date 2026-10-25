@@ -191,6 +191,7 @@ enum Commands {
     #[command(name = "collect-garbage")] CollectGarbage { #[arg(short = 'd', long)] delete_old: bool, #[arg(long)] delete_older_than: Option<String> },
     Derivation { #[command(subcommand)] command: DerivationCommands },
     #[command(name = "show-config")] ShowConfig { #[arg(long)] json: bool },
+    Config { #[command(subcommand)] command: ConfigCommands },
     Hash { #[command(subcommand)] command: HashCommands },
     Key { #[command(subcommand)] command: KeyCommands },
     Why { path: String, dependency: String },
@@ -893,6 +894,11 @@ enum ProfileCommands {
     History { #[arg(long)] profile: Option<String> },
     #[command(name = "wipe-history")] WipeHistory { #[arg(long)] profile: Option<String>, #[arg(long)] older_than: Option<String> },
     Diff { #[arg(long)] profile: Option<String> },
+}
+
+#[derive(Subcommand)]
+enum ConfigCommands {
+    Show { name: Option<String> },
 }
 
 #[derive(Subcommand)]
@@ -6566,8 +6572,23 @@ fn resolve_real_nix() -> Result<std::path::PathBuf, CliError> {
 /// this process image (inherits stdio + exit code) — the `alias nix=sui`
 /// superset fallthrough. On success `exec` never returns; a returned `Err` means
 /// the `exec` itself failed.
+const CPPNIX_PASSTHROUGH_FILE: &str = "/etc/sui/cppnix-passthrough";
+
+fn cppnix_passthrough_off() -> bool {
+    let off = |v: &str| matches!(v.trim(), "off" | "0" | "false");
+    std::env::var("SUI_CPPNIX_PASSTHROUGH").is_ok_and(|v| off(&v))
+        || std::fs::read_to_string(CPPNIX_PASSTHROUGH_FILE).is_ok_and(|v| off(&v))
+}
+
 fn exec_cppnix_passthrough(argv: Vec<std::ffi::OsString>) -> Result<(), CliError> {
     use std::os::unix::process::CommandExt;
+    if cppnix_passthrough_off() {
+        let shown: Vec<String> = argv.iter().map(|a| a.to_string_lossy().into_owned()).collect();
+        return Err(CliError::NotImplemented(format!(
+            "`nix {}` is not implemented in sui, and cppnix passthrough is off ({CPPNIX_PASSTHROUGH_FILE})",
+            shown.join(" ")
+        )));
+    }
     let nix = resolve_real_nix()?;
     let err = std::process::Command::new(&nix).args(&argv).exec();
     Err(CliError::NotImplemented(format!(
@@ -8205,12 +8226,22 @@ async fn main() -> Result<(), CliError> {
         Commands::Run { installable, args } => {
             let flake_ref = sui_compat::flake_ref::FlakeRef::parse(&installable).map_err(|e| CliError::Orchestrate { operation: "run", message: format!("flake ref parse: {e}") })?;
             let flake_dir = sui_eval::fetcher::resolve_flake_dir(&flake_ref).map_err(|e| CliError::Orchestrate { operation: "run", message: format!("fetch: {e}") })?;
-            let result = sui_eval::builtins::evaluate_flake(&flake_dir).map_err(|e| CliError::Orchestrate { operation: "run", message: format!("eval: {e}") })?;
             let system = current_system();
-            let attr_name = &flake_ref.attribute;
-            let program = try_navigate_program(&result, &system, attr_name).or_else(|| try_navigate_drv_path(&result, &system, attr_name)).ok_or_else(|| CliError::Orchestrate { operation: "run", message: format!("could not find apps.{system}.{attr_name}.program or packages.{system}.{attr_name}") })?;
-            let status = std::process::Command::new(&program).args(&args).status()?;
-            std::process::exit(status.code().unwrap_or(1));
+            let attr_name = flake_ref.attribute.clone();
+            let program = std::thread::Builder::new()
+                .name("sui-run-eval".into())
+                .stack_size(256 * 1024 * 1024)
+                .spawn(move || -> Result<String, CliError> {
+                    let _ifd_guard = install_ifd_hook();
+                    let _vm_bridges = sui_eval::install_vm_bridges();
+                    let result = sui_eval::builtins::evaluate_flake(&flake_dir).map_err(|e| CliError::Orchestrate { operation: "run", message: format!("eval: {e}") })?;
+                    realized_program(&result, &system, &attr_name)
+                })
+                .map_err(|e| CliError::Orchestrate { operation: "run", message: format!("spawn eval thread: {e}") })?
+                .join()
+                .map_err(|_| CliError::Orchestrate { operation: "run", message: "eval thread panicked".into() })??;
+            let err = std::os::unix::process::CommandExt::exec(std::process::Command::new(&program).args(&args));
+            return Err(CliError::Orchestrate { operation: "run", message: format!("exec {program}: {err}") });
         }
         Commands::Search { flake_ref, query } => {
             cmd_search(&flake_ref, &query)?;
@@ -8269,6 +8300,9 @@ async fn main() -> Result<(), CliError> {
             }
         },
         Commands::ShowConfig { json } => { show_config(json); }
+        Commands::Config { command: ConfigCommands::Show { name } } => {
+            config_show(name.as_deref())?;
+        }
         Commands::Hash { command } => match command {
             HashCommands::File { path, r#type, base } => {
                 hash_file(&path, &r#type, &base)?;
@@ -8479,6 +8513,38 @@ async fn main() -> Result<(), CliError> {
 /// config got `key = value` lines. IMPLEMENTED rather than refused: refusing
 /// pushes the caller into parsing that text, which is the failure `--json`
 /// exists to prevent.
+const SECRET_SETTINGS: &[&str] = &["access-tokens", "extra-access-tokens"];
+
+fn redacted_tokens(tokens: &sui_compat::nix_conf::AccessTokens) -> String {
+    tokens.keys().map(|k| format!("{k}=<redacted>")).collect::<Vec<_>>().join(" ")
+}
+
+fn config_show(name: Option<&str>) -> Result<(), CliError> {
+    let cfg = sui_compat::nix_conf::NixConfig::load()
+        .map_err(|e| CliError::Orchestrate { operation: "config show", message: e.to_string() })?;
+    match name {
+        Some(n) if SECRET_SETTINGS.contains(&n) => println!("{}", redacted_tokens(&cfg.access_tokens())),
+        Some(n) => println!("{}", cfg.get(n).unwrap_or_default()),
+        None => {
+            let mut seen = std::collections::BTreeMap::new();
+            for a in cfg.assignments() {
+                if !SECRET_SETTINGS.contains(&a.name.as_str()) {
+                    seen.insert(a.name.as_str(), cfg.get(&a.name).unwrap_or_default());
+                }
+            }
+            seen.insert("access-tokens", "");
+            for (k, v) in seen {
+                if k == "access-tokens" {
+                    println!("{k} = {}", redacted_tokens(&cfg.access_tokens()));
+                } else {
+                    println!("{k} = {v}");
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn show_config(json: bool) {
     let cores = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
     let system = current_system();
@@ -8732,6 +8798,34 @@ fn extract_shell_env(value: &sui_eval::Value) -> std::collections::BTreeMap<Stri
         }
     }
     env
+}
+
+fn store_root(path: &str) -> Option<&str> {
+    let rest = path.strip_prefix("/nix/store/")?;
+    let end = rest.find('/').map_or(path.len(), |i| "/nix/store/".len() + i);
+    Some(&path[..end])
+}
+
+fn realized_program(result: &sui_eval::Value, system: &str, attr: &str) -> Result<String, CliError> {
+    let fail = |message: String| CliError::Orchestrate { operation: "run", message };
+    if let Ok(value) = sui_eval::builtins::navigate_attrs(result, &["apps", system, attr, "program"]) {
+        let value = sui_eval::eval::force_value(&value).map_err(|e| fail(format!("apps.{system}.{attr}.program: {e}")))?;
+        let sui_eval::Value::String(ns) = &value else {
+            return Err(fail(format!("apps.{system}.{attr}.program is not a string")));
+        };
+        let program = ns.chars.to_string();
+        let drv = ns.context.iter().find_map(|elem| match elem {
+            sui_eval::value::ContextElement::Output { drv, .. } => Some(drv.to_string()),
+            _ => None,
+        });
+        if let (Some(drv), Some(root)) = (drv, store_root(&program)) {
+            if !std::path::Path::new(root).exists() {
+                sui_eval::realize::realize_output(&drv, root).map_err(|e| fail(format!("realize {drv} for {program}: {e}")))?;
+            }
+        }
+        return Ok(program);
+    }
+    try_navigate_drv_path(result, system, attr).ok_or_else(|| fail(format!("could not find apps.{system}.{attr}.program or packages.{system}.{attr}")))
 }
 
 fn try_navigate_program(result: &sui_eval::Value, system: &str, attr: &str) -> Option<String> {
@@ -9170,15 +9264,8 @@ fn eval_cache_key_for_installable(
     // verify your own fix — that check read as "the patch did nothing" and
     // nearly got a correct fix reverted.
     //
-    // KNOWN RESIDUAL, stated rather than papered over: this is the crate
-    // VERSION, so two builds of the SAME version with different code — local
-    // evaluator work — still share entries. It covers every PUBLISHED sui,
-    // which is the case that reaches other machines. While working ON the
-    // evaluator, use `--no-eval-cache`. Closing it fully needs a build
-    // identity (git rev / source hash) stamped by build.rs, which does not
-    // exist today.
     h.update(b"\0evalv=");
-    h.update(env!("CARGO_PKG_VERSION").as_bytes());
+    h.update(sui_eval::eval_cache::evaluator_identity().as_bytes());
     let source_hash = format!("{:x}", h.finalize());
     Some(sui_eval::eval_cache::CacheKey { source_hash, lock_hash: Some(lock_hash) })
 }

@@ -45,6 +45,18 @@ use sui_graph_store::{GraphHash, GraphKind, GraphStore};
 /// which does not exist today.
 const EVALUATOR_ID: &str = concat!("sui-eval/", env!("CARGO_PKG_VERSION"));
 
+pub fn evaluator_identity() -> &'static str {
+    static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ID.get_or_init(|| {
+        let exe = std::env::current_exe()
+            .ok()
+            .and_then(|p| std::fs::read(p).ok())
+            .map(|bytes| blake3::hash(&bytes).to_hex().to_string())
+            .unwrap_or_default();
+        format!("{}+{exe}", env!("CARGO_PKG_VERSION"))
+    })
+}
+
 // ── Types ──────────────────────────────────────────────────────
 
 /// Hash of a source file plus its transitive inputs (flake.lock).
@@ -339,15 +351,8 @@ fn graph_hash_for_key(key: &CacheKey) -> GraphHash {
     // is correct: they were written under a scheme that could not say which
     // evaluator produced them, so none of them is trustworthy.
     //
-    // KNOWN RESIDUAL, stated rather than papered over: this keys on the
-    // crate VERSION, so two builds of the SAME version with different code —
-    // i.e. local evaluator development — still share entries. The workspace
-    // releases many times a day so this covers every published sui, but
-    // while you are working ON the evaluator, pass `--no-eval-cache` or bump
-    // the version. Closing that properly needs a build-identity stamp from
-    // build.rs (a git rev or a source hash), which does not exist today.
-    hasher.update(b"evalcache::v2::");
-    hasher.update(env!("CARGO_PKG_VERSION").as_bytes());
+    hasher.update(b"evalcache::v3::");
+    hasher.update(evaluator_identity().as_bytes());
     hasher.update(b"::");
     hasher.update(key.source_hash.as_bytes());
     hasher.update(b"::");
@@ -528,6 +533,14 @@ mod tests {
     /// itself would pass no matter what the hash actually consumed, which is
     /// the vacuous shape this repo keeps rediscovering.
     #[test]
+    fn evaluator_identity_names_the_version_and_this_binary() {
+        let id = evaluator_identity();
+        let (version, exe) = id.split_once('+').expect("version+binary");
+        assert_eq!(version, env!("CARGO_PKG_VERSION"));
+        assert_eq!(exe.len(), 64);
+    }
+
+    #[test]
     fn cache_key_is_scoped_to_the_evaluator_version() {
         let key = CacheKey {
             source_hash: "deadbeef".to_string(),
@@ -536,8 +549,8 @@ mod tests {
         let got = graph_hash_for_key(&key);
 
         let mut expect = blake3::Hasher::new();
-        expect.update(b"evalcache::v2::");
-        expect.update(env!("CARGO_PKG_VERSION").as_bytes());
+        expect.update(b"evalcache::v3::");
+        expect.update(evaluator_identity().as_bytes());
         expect.update(b"::");
         expect.update(b"deadbeef");
         expect.update(b"::");

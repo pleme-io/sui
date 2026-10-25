@@ -34,6 +34,7 @@ in
   config = mkIf cfg.enable {
     nix.package = cfg.package;
     system.tools.darwin-rebuild.enable = false;
+    environment.etc."sui/cppnix-passthrough".text = "off\n";
     environment.systemPackages = [ cppnixAlias ];
     launchd.daemons.nix-daemon.command = mkIf (cfg.daemon == "cppnix") (
       mkForce (lib.getExe' cfg.cppnixPackage "nix-daemon")

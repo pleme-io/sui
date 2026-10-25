@@ -681,6 +681,25 @@ mod tests {
     }
 }
 
+pub(crate) fn ensure_registered_sources(input_sources: &[String]) -> Result<(), crate::value::EvalError> {
+    let pending: Vec<(String, PathBuf)> = INPUT_SOURCE_MAP.with(|m| {
+        let m = m.borrow();
+        input_sources
+            .iter()
+            .filter(|src| !Path::new(src.as_str()).exists())
+            .filter_map(|src| {
+                m.iter()
+                    .find(|(sp, _, _)| sp.as_os_str() == src.as_str())
+                    .map(|(_, read_dir, _)| (src.clone(), read_dir.clone()))
+            })
+            .collect()
+    });
+    for (store_path, read_dir) in pending {
+        ensure_in_store(&store_path, &read_dir)?;
+    }
+    Ok(())
+}
+
 /// Copy a hashed source into the store, as CppNix's `copyPathToStore` does on
 /// every path coercion, so a derivation naming it as an input is accepted.
 pub(crate) fn ensure_in_store(store_path: &str, dir: &Path) -> Result<(), crate::value::EvalError> {

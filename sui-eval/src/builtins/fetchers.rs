@@ -154,18 +154,34 @@ pub(crate) fn fetch_git(arg: &Value) -> Result<Value, EvalError> {
         } else {
             None
         };
-        if let Err(e) = crate::git::clone(&url, &target, branch, shallow, submodules) {
-            let _ = std::fs::remove_dir_all(&target);
-            return Err(EvalError::IoError {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        let staging = target.with_extension(format!("tmp-{}-{nanos}", std::process::id()));
+        let staged = crate::git::clone(&url, &staging, branch, shallow, submodules)
+            .map_err(|e| EvalError::IoError {
                 context: format!("fetchGit: git clone {url}"),
                 message: e,
+            })
+            .and_then(|_| match &rev_opt {
+                Some(rev) => crate::git::checkout_rev(&staging, rev).map_err(|e| EvalError::IoError {
+                    context: format!("fetchGit: git checkout {rev}"),
+                    message: e,
+                }),
+                None => Ok(()),
             });
+        if let Err(e) = staged {
+            let _ = std::fs::remove_dir_all(&staging);
+            return Err(e);
         }
-        if let Some(rev) = &rev_opt {
-            crate::git::checkout_rev(&target, rev).map_err(|e| EvalError::IoError {
-                context: format!("fetchGit: git checkout {rev}"),
-                message: e,
-            })?;
+        if std::fs::rename(&staging, &target).is_err() {
+            let _ = std::fs::remove_dir_all(&staging);
+            if !target.exists() {
+                return Err(EvalError::IoError {
+                    context: format!("fetchGit: {}", target.display()),
+                    message: "could not move the fetched tree into the cache".into(),
+                });
+            }
         }
     }
     git_result_attrs(&target, submodules)
