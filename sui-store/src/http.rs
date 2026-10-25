@@ -121,22 +121,41 @@ impl ReqwestHttpClient {
         Self { inner: builder.build().unwrap_or_default(), policy }
     }
 
-    async fn attempt(&self, url: &str, headers: &[(&str, &str)]) -> Result<(u16, Vec<u8>), HttpError> {
+    async fn attempt(
+        &self,
+        url: &str,
+        headers: &[(&str, &str)],
+        progress: &(dyn Fn(u64, u64) + Send + Sync),
+    ) -> Result<(u16, Vec<u8>), HttpError> {
         let mut req = self.inner.get(url);
         for &(key, value) in headers {
             req = req.header(key, value);
         }
-        let response = req.send().await.map_err(|e| HttpError::Request(e.to_string()))?;
+        let mut response = req.send().await.map_err(|e| HttpError::Request(e.to_string()))?;
         let status = response.status().as_u16();
-        let body = response.bytes().await.map_err(|e| HttpError::Decode(e.to_string()))?.to_vec();
+        let expected = response.content_length().unwrap_or(0);
+        let mut body = Vec::with_capacity(usize::try_from(expected).unwrap_or(0));
+        while let Some(chunk) = response.chunk().await.map_err(|e| HttpError::Decode(e.to_string()))? {
+            body.extend_from_slice(&chunk);
+            progress(body.len() as u64, expected);
+        }
         Ok((status, body))
     }
 
     async fn fetch(&self, url: &str, headers: &[(&str, &str)]) -> Result<(u16, Vec<u8>), HttpError> {
+        self.fetch_observed(url, headers, &|_, _| {}).await
+    }
+
+    async fn fetch_observed(
+        &self,
+        url: &str,
+        headers: &[(&str, &str)],
+        progress: &(dyn Fn(u64, u64) + Send + Sync),
+    ) -> Result<(u16, Vec<u8>), HttpError> {
         let mut attempt = 0;
         loop {
             attempt += 1;
-            let result = self.attempt(url, headers).await;
+            let result = self.attempt(url, headers, progress).await;
             let transient = match &result {
                 Err(_) => true,
                 Ok((status, _)) => *status == 429 || *status >= 500,
@@ -165,10 +184,15 @@ impl HttpClient for ReqwestHttpClient {
     }
 
     async fn get_bytes(&self, url: &str) -> Result<Vec<u8>, HttpError> {
-        let (status, body) = self.fetch(url, &[]).await?;
+        self.get_bytes_observed(url, &|_, _| {}).await
+    }
+
+    async fn get_bytes_observed(&self, url: &str, progress: &(dyn Fn(u64, u64) + Send + Sync)) -> Result<Vec<u8>, HttpError> {
+        let (status, body) = self.fetch_observed(url, &[], progress).await?;
         if !(200..300).contains(&status) {
             return Err(HttpError::Request(format!("HTTP {status}: {url}")));
         }
+        progress(body.len() as u64, body.len() as u64);
         Ok(body)
     }
 }
@@ -200,6 +224,38 @@ mod tests {
         let result = tokio::time::timeout(std::time::Duration::from_secs(10), client.get(&url, &[])).await;
         assert!(matches!(result, Ok(Err(_))), "{result:?}");
         assert_eq!(accepted.load(std::sync::atomic::Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn a_download_reports_its_bytes_as_they_arrive_then_its_total() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (seen_tx, mut seen_rx) = tokio::sync::mpsc::unbounded_channel::<(u64, u64)>();
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut req = [0u8; 1024];
+            let _ = sock.read(&mut req).await.unwrap();
+            sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nhello").await.unwrap();
+            sock.flush().await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            sock.write_all(b"world").await.unwrap();
+            sock.flush().await.unwrap();
+        });
+        let client = ReqwestHttpClient::with_policy(TransferPolicy::default());
+        let url = ["http://", &addr.to_string(), "/nar/x.nar"].concat();
+        let body = client
+            .get_bytes_observed(&url, &move |done, expected| {
+                let _ = seen_tx.send((done, expected));
+            })
+            .await
+            .unwrap();
+        assert_eq!(body, b"helloworld");
+        let mut seen = Vec::new();
+        while let Ok(p) = seen_rx.try_recv() {
+            seen.push(p);
+        }
+        assert_eq!(seen, vec![(5, 10), (10, 10), (10, 10)]);
     }
 
     #[test]
