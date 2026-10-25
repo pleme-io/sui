@@ -101,6 +101,32 @@ will resurface downstream. Fix the load-bearing cause (e.g. the genuine
 module-system fixpoint), never paper over it. This is Operating Principle #0
 (path-of-least-resistance is a cardinal sin) at the evaluator.
 
+## ★★ sui takes the whole space — one binary, full interface compatibility
+
+sui replaces the **whole** nix stack on every node, not just the evaluator: the
+`nix` CLI and its legacy `nix-*` commands, `nix-daemon`, `darwin-rebuild` /
+`nixos-rebuild`, the `home-manager` CLI, and next, activation itself (a typed plan
+in place of the generated `activate` script, with that script kept as the oracle
+until both dry-run effect lists match). One binary owns evaluate → build → store →
+daemon → switch.
+
+**Interface compatibility is total.** Every command, flag, argument form (files vs
+expressions vs installables, `-A`, `-E`, `-f`, `--apply`), stdout/stderr shape,
+JSON field and exit code behaves as **cppnix 2.31.5** (and nix-darwin's /
+home-manager's scripts) does; cppnix is the oracle, read from its source at
+`~/code/github/NixOS/nix`. A script that works against `nix` works against sui
+unchanged. A gap is a **defect** in sui, never a reason to keep cppnix around:
+port the rule (not the case), test it red-first, and check the byte-level answer
+against the oracle. Until a flag is honoured, `src/cli_contract.rs` refuses it with
+a typed reason (exit 2), never accepts-and-ignores it.
+
+Compatibility is the floor, not the ceiling: once the parity gates hold it, sui
+grows past nix (parallel eval, cross-run eval cache, live build face, typed
+activation, a blue front-end to the same `.drv` core), each gain behind the gates
+and off by default when it changes bytes. Doctrine: [`theory/SUI-FLIP.md`](https://github.com/pleme-io/theory/blob/main/SUI-FLIP.md)
+§"The whole stack". Receipts of the gaps closed so far:
+`pleme-io/nix/docs/knowledge/nix/reference_sui_as_nix_on_cid_receipts.md`.
+
 ## Core Philosophy: Construction Guarantees
 
 Sui's architecture makes entire categories of bugs **impossible by construction**.
@@ -129,7 +155,7 @@ carries a comment per non-obvious crate; count there, never here.
 
 | Crate | Purpose |
 |-------|---------|
-| `sui` (root) | CLI binary — nix-compatible interface |
+| `sui` (root) | CLI binary — the full nix / nix-* / darwin-rebuild / home-manager interface (`src/cli_contract.rs`, `src/legacy.rs`, `src/installable.rs`) |
 | `sui-eval` | Tree-walker evaluator + `Lazy<T>` primitives |
 | `sui-bytecode` | Bytecode VM (NanBox 8B, 44+ opcodes, TAILCALL) |
 | `sui-intern` | String interning (Symbol u32, thread-local Interner) |
