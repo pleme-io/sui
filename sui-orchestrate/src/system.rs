@@ -235,6 +235,16 @@ impl ActivationPlan {
 pub struct SystemOrchestrator {
     platform: Platform,
     runner: Box<dyn CommandRunner>,
+    observer: Option<std::sync::Arc<dyn RealizeObserver>>,
+}
+
+/// Watches a realize: the closure once, before anything builds, then every
+/// activity as it happens.
+pub trait RealizeObserver: Send + Sync {
+    /// The closure about to be realized.
+    fn planned(&self, closure: &sui_build::BuildClosure);
+    /// Where the realize reports its activities.
+    fn sink(&self) -> sui_compat::activity::SharedSink;
 }
 
 /// Errors from system operations.
@@ -276,7 +286,15 @@ impl SystemOrchestrator {
         Ok(Self {
             platform,
             runner: Box::new(TokioCommandRunner::new()),
+            observer: None,
         })
+    }
+
+    /// Report every realize to `observer`.
+    #[must_use]
+    pub fn with_observer(mut self, observer: std::sync::Arc<dyn RealizeObserver>) -> Self {
+        self.observer = Some(observer);
+        self
     }
 
     /// Create with an explicit platform.
@@ -285,13 +303,14 @@ impl SystemOrchestrator {
         Self {
             platform,
             runner: Box::new(TokioCommandRunner::new()),
+            observer: None,
         }
     }
 
     /// Create with an explicit platform and command runner.
     #[must_use]
     pub fn with_runner(platform: Platform, runner: Box<dyn CommandRunner>) -> Self {
-        Self { platform, runner }
+        Self { platform, runner, observer: None }
     }
 
     /// Returns the detected platform.
@@ -503,7 +522,10 @@ impl SystemOrchestrator {
         // through the nix daemon (the direct-write path can't open the
         // root-owned db.sqlite). Both produce byte-identical output at the same
         // content-addressed path.
-        let realized = realize_drv(&drv_path).await?;
+        let realized = match &self.observer {
+            Some(observer) => realize_drv_planned(&drv_path, observer.as_ref()).await?,
+            None => realize_drv(&drv_path).await?,
+        };
         realized
             .into_iter()
             .next()
@@ -1126,11 +1148,31 @@ pub async fn realize_drv_observed(
     drv_path: &str,
     sink: sui_compat::activity::SharedSink,
 ) -> Result<Vec<String>, SystemError> {
+    let closure = sui_build::BuildClosure::compute(drv_path)
+        .map_err(|e| SystemError::RebuildFailed(format!("closure {drv_path}: {e}")))?;
+    realize_closure(drv_path, &closure, sink).await
+}
+
+/// [`realize_drv_observed`], handing `observer` the closure before anything
+/// builds.
+///
+/// # Errors
+/// As [`realize_drv`].
+pub async fn realize_drv_planned(drv_path: &str, observer: &dyn RealizeObserver) -> Result<Vec<String>, SystemError> {
+    let closure = sui_build::BuildClosure::compute(drv_path)
+        .map_err(|e| SystemError::RebuildFailed(format!("closure {drv_path}: {e}")))?;
+    observer.planned(&closure);
+    realize_closure(drv_path, &closure, observer.sink()).await
+}
+
+async fn realize_closure(
+    drv_path: &str,
+    closure: &sui_build::BuildClosure,
+    sink: sui_compat::activity::SharedSink,
+) -> Result<Vec<String>, SystemError> {
     use sui_store::StoreAccess;
 
     let bound = realize_bound();
-    let closure = sui_build::BuildClosure::compute(drv_path)
-        .map_err(|e| SystemError::RebuildFailed(format!("closure {drv_path}: {e}")))?;
 
     match StoreAccess::detect() {
         // Single-user / CI store: build directly through the local pipeline.

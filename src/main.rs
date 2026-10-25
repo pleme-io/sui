@@ -5592,9 +5592,10 @@ async fn build_drv(drv_path: &str, request: &BuildRequest) -> Result<(), CliErro
         }
         return Ok(());
     }
-    let outputs = sui_orchestrate::realize_drv(drv_path)
-        .await
-        .map_err(|e| CliError::Orchestrate { operation: "build", message: e.to_string() })?;
+    let face = sui::build_face::BuildFace::start("build", &sui::build_face::display_name(drv_path));
+    let outputs = sui_orchestrate::system::realize_drv_planned(drv_path, face.as_ref()).await;
+    face.finish();
+    let outputs = outputs.map_err(|e| CliError::Orchestrate { operation: "build", message: e.to_string() })?;
     if request.json {
         println!("{}", build_json(drv_path, &drv_outputs(drv_path)?));
     } else {
@@ -7683,7 +7684,14 @@ async fn main() -> Result<(), CliError> {
                         Some(path) => sys.rebuild_toplevel(&path, action).await,
                         None => {
                             let flake_ref = flake.unwrap_or_else(|| ".".to_string());
-                            sys.rebuild_native(&flake_ref, action).await
+                            let target = flake_ref.rsplit_once('#').map_or(flake_ref.as_str(), |(_, a)| a).to_string();
+                            let face = sui::build_face::BuildFace::start("rebuild", &target);
+                            let observed = sui_orchestrate::SystemOrchestrator::new()
+                                .map_err(|e| CliError::Orchestrate { operation: "platform detection", message: e.to_string() })?
+                                .with_observer(face.clone());
+                            let result = observed.rebuild_native(&flake_ref, action).await;
+                            face.finish();
+                            result
                         }
                     };
                     let result = result.map_err(|e| {

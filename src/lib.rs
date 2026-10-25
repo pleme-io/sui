@@ -6,6 +6,7 @@
 //! `sui-daemon`, `sui-orchestrate`).
 
 pub mod api;
+pub mod build_face;
 pub mod child_usage;
 pub mod flip_probe;
 

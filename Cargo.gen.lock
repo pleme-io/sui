@@ -1,8 +1,8 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "4e2583bf25043fddbfd887f2259eb667e3fc6bfd4b8abeaa8eda0ed8f594ad86",
+  "cargo_lock_sha256": "953bfc4dff508aa393838a9e210c233235c720fdace1b490b5ddefeb493e4b51",
   "manifest_sha256": {
-    "Cargo.toml": "68fd1a2e60bcf1aa29e86cac1209c1e17d55dea0afadf9670bef05b715f80037",
+    "Cargo.toml": "e317f8e4d21441e093c70057f62f9fb827f6485823a237ceaa52cf57b0059618",
     "canteiro-types/Cargo.toml": "140edf011d225b89a3a8b8cc15d5212e84c056493e7c8a5b488d1c7e88847388",
     "sui-bigorna/Cargo.toml": "c97c5d91369fe30b894299aaf4baac763f3a1f23d9ad51cb74d30cdeb7b8dc48",
     "sui-build/Cargo.toml": "f2462ec086958f700ab3caf8f711d4ccd5c4b8373270b03514d586e2669598c0",
@@ -8600,7 +8600,7 @@
           },
           {
             "name": "hashbrown",
-            "package_key": "hashbrown-0.15.5",
+            "package_key": "hashbrown-0.17.1",
             "kind": "normal",
             "features": [
               "default-hasher",
@@ -11879,9 +11879,21 @@
         ]
       },
       "hashbrown-0.17.1": {
-        "runtime_dependencies": [],
+        "runtime_dependencies": [
+          {
+            "name": "foldhash",
+            "package_key": "foldhash-0.2.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": false,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          }
+        ],
         "build_dependencies": [],
         "features": [
+          "default-hasher",
           "inline-more"
         ]
       },
@@ -15472,7 +15484,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "pleme-io-kazari-0.2.2": {
+      "pleme-io-kazari-0.2.5": {
         "runtime_dependencies": [
           {
             "name": "anstyle",
@@ -15635,6 +15647,16 @@
             "kind": "normal",
             "features": [],
             "uses_default_features": false,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "kazari",
+            "package_key": "pleme-io-kazari-0.2.5",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
             "optional": false,
             "target": null,
             "tree": "target"
@@ -27336,7 +27358,7 @@
           },
           {
             "name": "kazari",
-            "package_key": "pleme-io-kazari-0.2.2",
+            "package_key": "pleme-io-kazari-0.2.5",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -39265,7 +39287,7 @@
     "pkg-config-0.3.33": {
       "edition": "2018"
     },
-    "pleme-io-kazari-0.2.2": {
+    "pleme-io-kazari-0.2.5": {
       "edition": "2024",
       "lib_target": {
         "name": "kazari",
