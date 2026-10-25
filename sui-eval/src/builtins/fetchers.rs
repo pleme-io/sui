@@ -246,20 +246,25 @@ pub(crate) fn git_result_attrs(target: &std::path::Path, submodules: bool) -> Re
     };
     let short_rev = if rev.len() >= 7 { rev[..7].to_string() } else { rev.clone() };
     let last_modified_date = format_unix_yyyymmddhhmmss(last_modified);
-    use sha2::{Digest, Sha256};
-    let narhash_hex = format!("{:x}", Sha256::digest(rev.as_bytes()));
+    let source = sui_compat::source::nar_hash_source_tree(target, "source").map_err(|e| EvalError::IoError {
+        context: format!("fetchGit: nar-hashing {target_str}"),
+        message: e.to_string(),
+    })?;
+    crate::path::register_input_source(std::path::Path::new(&source.store_path), target);
+    let mut out_context = crate::value::StringContext::new();
+    out_context.add_plain(source.store_path.as_str());
 
     let mut result = NixAttrs::new();
-    result.insert("outPath".into(), Value::path(target_str.as_str()));
+    result.insert(
+        "outPath".into(),
+        Value::String(Rc::new(crate::value::NixString::with_context(source.store_path.as_str(), out_context))),
+    );
     result.insert("rev".into(), Value::string(rev));
     result.insert("shortRev".into(), Value::string(short_rev));
     result.insert("revCount".into(), Value::Int(rev_count));
     result.insert("lastModified".into(), Value::Int(last_modified));
     result.insert("lastModifiedDate".into(), Value::string(last_modified_date));
-    result.insert(
-        "narHash".into(),
-        Value::string(format!("sha256-{}", base64_encode(&hex_to_bytes(&narhash_hex)))),
-    );
+    result.insert("narHash".into(), Value::string(source.nar_hash_sri));
     result.insert("submodules".into(), Value::Bool(submodules));
     Ok(Value::Attrs(Rc::new(result)))
 }
