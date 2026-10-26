@@ -77,6 +77,7 @@ pub async fn push_path(
     deriver: Option<&str>,
     codec: NarCodec,
     universe: &dyn sui_castore::RefUniverse,
+    provenance: Option<&sui_compat::narinfo::Provenance>,
 ) -> Result<PushResult, CacheError> {
     let path = Path::new(store_path);
     if !path.exists() {
@@ -117,6 +118,8 @@ pub async fn push_path(
         deriver: deriver.map(String::from),
         signatures: vec![],
         ca: None,
+        provenance: provenance.cloned(),
+        extra: Vec::new(),
     };
 
     // 6. Sign.
@@ -137,6 +140,17 @@ pub async fn push_path(
         compressed_size,
         nar_size,
     })
+}
+
+/// The provenance this publisher records: `host`, the `engine` that
+/// registered the path there, and this sui as the pusher.
+#[must_use]
+pub fn publisher_provenance(host: &str, engine: sui_compat::narinfo::BuildEngine) -> sui_compat::narinfo::Provenance {
+    sui_compat::narinfo::Provenance {
+        host: host.to_string(),
+        engine,
+        pusher: format!("sui-{}", env!("CARGO_PKG_VERSION")),
+    }
 }
 
 /// Dump a filesystem path to NAR format in memory.
@@ -539,6 +553,7 @@ mod tests {
             None,
             NarCodec::default(),
             &std::collections::BTreeSet::<String>::new(),
+            None,
         )
         .await
         .unwrap();
@@ -569,6 +584,38 @@ mod tests {
         assert!(parsed.url.ends_with(NarCodec::default().url_suffix()));
     }
 
+    /// Provenance is recorded at publish and survives admission and both
+    /// re-sign modes, so a consumer can tell whose bytes it got.
+    #[tokio::test]
+    async fn the_publisher_records_who_built_the_bytes_and_it_survives_resign() {
+        use sui_compat::narinfo::BuildEngine;
+        let cache_dir = tempfile::tempdir().unwrap();
+        let storage = LocalStorage::new(cache_dir.path());
+        let signer = CacheSigner::generate("k".to_string());
+        let store_dir = tempfile::tempdir().unwrap();
+        let path = store_dir.path().join("prv-pkg");
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::write(path.join("f"), b"bytes").unwrap();
+        let provenance = publisher_provenance("cid", BuildEngine::Sui);
+        assert_eq!(provenance.pusher, format!("sui-{}", env!("CARGO_PKG_VERSION")));
+        push_path(
+            &storage, &signer, path.to_str().unwrap(), "prv", &[], None, NarCodec::default(),
+            &std::collections::BTreeSet::<String>::new(), Some(&provenance),
+        )
+        .await
+        .unwrap();
+        let read = || async { NarInfo::parse(&storage.get_narinfo("prv").await.unwrap().unwrap()).unwrap() };
+        assert_eq!(read().await.provenance.as_ref(), Some(&provenance));
+        assert!(storage.get_narinfo("prv").await.unwrap().unwrap().contains("Provenance: host=cid engine=sui pusher=sui-"));
+
+        let other = CacheSigner::generate("k2".to_string());
+        for mode in [crate::resign::ResignMode::Admit, crate::resign::ResignMode::SignaturesOnly] {
+            let r = crate::resign::resign_all(&storage, &other, mode).await.unwrap();
+            assert_eq!(r.failed + r.refused, 0, "{mode:?}: {r:?}");
+            assert_eq!(read().await.provenance.as_ref(), Some(&provenance), "{mode:?} kept it");
+        }
+    }
+
     /// Two builders' bytes for one store path (the cid serde receipt,
     /// 2026-10-26: sui on cid and cppnix on ryn produced different rlibs for
     /// one drv). Each push stores its NAR at its own URL; the first entry's
@@ -586,7 +633,7 @@ mod tests {
             let path = store_dir.path().join("srd-rust_serde_core-lib");
             std::fs::create_dir_all(&path).unwrap();
             std::fs::write(path.join("libserde_core.rlib"), bytes).unwrap();
-            push_path(&storage, &signer, path.to_str().unwrap(), "srd", &[], None, NarCodec::default(), &none)
+            push_path(&storage, &signer, path.to_str().unwrap(), "srd", &[], None, NarCodec::default(), &none, None)
                 .await
                 .unwrap();
             pushed.push(NarInfo::parse(&storage.get_narinfo("srd").await.unwrap().unwrap()).unwrap());
@@ -616,7 +663,7 @@ mod tests {
         std::os::unix::fs::symlink(format!("/nix/store/{dep}-rust-std/lib"), path.join("lib")).unwrap();
         let universe: std::collections::BTreeSet<String> = [dep.to_string()].into_iter().collect();
 
-        let err = push_path(&storage, &signer, path.to_str().unwrap(), "tch", &[], None, NarCodec::default(), &universe)
+        let err = push_path(&storage, &signer, path.to_str().unwrap(), "tch", &[], None, NarCodec::default(), &universe, None)
             .await
             .unwrap_err();
         assert!(
@@ -626,7 +673,7 @@ mod tests {
         assert!(storage.list_narinfos().await.unwrap().is_empty(), "no narinfo stored");
 
         let refs = vec![format!("{dep}-rust-std")];
-        push_path(&storage, &signer, path.to_str().unwrap(), "tch", &refs, None, NarCodec::default(), &universe)
+        push_path(&storage, &signer, path.to_str().unwrap(), "tch", &refs, None, NarCodec::default(), &universe, None)
             .await
             .expect("the same path with its reference listed is admitted");
     }
@@ -646,6 +693,7 @@ mod tests {
             None,
             NarCodec::default(),
             &std::collections::BTreeSet::<String>::new(),
+            None,
         )
         .await;
 
@@ -674,6 +722,7 @@ mod tests {
             Some("builder.drv"),
             NarCodec::default(),
             &std::collections::BTreeSet::<String>::new(),
+            None,
         )
         .await
         .unwrap();
@@ -707,6 +756,7 @@ mod tests {
             None,
             NarCodec::default(),
             &std::collections::BTreeSet::<String>::new(),
+            None,
         )
         .await
         .unwrap();
@@ -975,6 +1025,7 @@ mod tests {
                 None,
                 codec,
                 &std::collections::BTreeSet::<String>::new(),
+                None,
             )
             .await
             .unwrap();
@@ -1064,6 +1115,7 @@ mod tests {
             None,
             configured,
             &std::collections::BTreeSet::<String>::new(),
+            None,
         )
         .await
         .unwrap();

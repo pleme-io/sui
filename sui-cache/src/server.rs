@@ -1400,6 +1400,24 @@ mod tests {
         assert_eq!(body_bytes(get(&app, &format!("/{}", e.url)).await).await, e.nar_file);
     }
 
+    /// An uploaded narinfo passes through admission and signing with every
+    /// field it carried: provenance and fields sui does not know are served
+    /// back as they arrived.
+    #[tokio::test]
+    async fn put_then_get_keeps_provenance_and_unknown_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage: Arc<dyn StorageBackend> = Arc::new(LocalStorage::new(dir.path()));
+        let signer = Arc::new(CacheSigner::generate("origin".to_string()));
+        let app = build_router(AppState { storage, config: CacheConfig::default(), signer: Some(signer) });
+        let text = upload_nar(&app, &entry("abc", &[])).await;
+        let text = format!("{text}Provenance: host=ryn engine=cppnix pusher=nix-2.31.5\nSystem: aarch64-darwin\n");
+        assert_eq!(put(&app, "/abc.narinfo", text).await, StatusCode::OK);
+        let served = body_string(get(&app, "/abc.narinfo").await).await;
+        assert!(served.contains("Provenance: host=ryn engine=cppnix pusher=nix-2.31.5\n"), "{served}");
+        assert!(served.contains("System: aarch64-darwin\n"), "{served}");
+        assert!(served.contains("Sig: origin:"), "{served}");
+    }
+
     /// The old layout stays readable: an entry whose NAR sui stored under
     /// `nar/<store-hash>.nar.zst` before content keying is still admitted
     /// and served end to end.

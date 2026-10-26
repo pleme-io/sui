@@ -465,6 +465,7 @@ mod tests {
             deriver: None,
             signatures: vec![],
             ca: Some(ca.to_nix_string()),
+            provenance: None, extra: Vec::new(),
         };
 
         let serialized = narinfo.serialize();
@@ -528,6 +529,7 @@ mod tests {
             deriver: None,
             signatures: vec![],
             ca: Some(ca.to_nix_string()),
+            provenance: None, extra: Vec::new(),
         };
 
         let serialized = narinfo.serialize();
@@ -557,6 +559,7 @@ mod tests {
             deriver: None,
             signatures: vec![],
             ca: Some(ca.to_nix_string()),
+            provenance: None, extra: Vec::new(),
         };
 
         let serialized = narinfo.serialize();

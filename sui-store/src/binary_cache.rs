@@ -487,6 +487,7 @@ mod tests {
             deriver: Some("abc.drv".to_string()),
             signatures: vec!["key:sig".to_string()],
             ca: None,
+            provenance: None, extra: Vec::new(),
         };
         let info = BinaryCacheStore::narinfo_to_path_info(&narinfo);
         assert_eq!(info.path, "/nix/store/abc-hello");
@@ -761,6 +762,7 @@ Sig: cache.nixos.org-1:sig==
             deriver: None,
             signatures: vec![],
             ca: Some("fixed:out:r:sha256:deadbeef".to_string()),
+            provenance: None, extra: Vec::new(),
         };
         let info = BinaryCacheStore::narinfo_to_path_info(&narinfo);
         assert_eq!(
@@ -1846,6 +1848,7 @@ Sig: cache.nixos.org-1:sig==
             deriver: None,
             signatures: vec![],
             ca: None,
+            provenance: None, extra: Vec::new(),
         };
         let mock = MockStore {
             info: PathInfo::from(&narinfo),
@@ -1923,6 +1926,7 @@ References:
             deriver: None,
             signatures: vec![],
             ca: None,
+            provenance: None, extra: Vec::new(),
         };
 
         let fingerprint = compute_fingerprint(
@@ -2019,6 +2023,7 @@ References:
             deriver: None,
             signatures: vec![],
             ca: None,
+            provenance: None, extra: Vec::new(),
         };
         let result = BinaryCacheStore::verify_narinfo_signatures(
             &narinfo,
@@ -2089,6 +2094,7 @@ References:
             deriver: None,
             signatures: vec![],
             ca: None,
+            provenance: None, extra: Vec::new(),
         };
 
         // …but nix (and now `verify_narinfo_signatures`) signs/verifies the
@@ -2156,6 +2162,7 @@ References:
             deriver: None,
             signatures: vec![],
             ca: None,
+            provenance: None, extra: Vec::new(),
         };
 
         // Sign the fingerprint of the UNSORTED references exactly as the
@@ -2211,6 +2218,7 @@ References:
             deriver: None,
             signatures: vec![],
             ca: None,
+            provenance: None, extra: Vec::new(),
         }
     }
 

@@ -193,6 +193,7 @@ mod tests {
             deriver: Some("abc.drv".to_string()),
             signatures: vec![],
             ca: None,
+            provenance: None, extra: Vec::new(),
         }
     }
 

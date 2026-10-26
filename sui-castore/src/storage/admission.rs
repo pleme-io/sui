@@ -342,6 +342,7 @@ impl AdmittedNarInfo {
             deriver: None,
             signatures: Vec::new(),
             ca: None,
+            provenance: None, extra: Vec::new(),
         });
         Self { key: key.to_string(), info, text: text.to_string() }
     }

@@ -8385,6 +8385,7 @@ async fn main() -> Result<(), CliError> {
                     .iter()
                     .map(sui_compat::store_path::StorePath::hash)
                     .collect();
+                let origin = BuildOrigin::read(&local).await;
 
                 for sp in &targets {
                     let path = sp.to_absolute_path();
@@ -8431,6 +8432,7 @@ async fn main() -> Result<(), CliError> {
                     let references: Vec<String> =
                         info.references.iter().map(|r| basename(r)).collect();
                     let deriver = info.deriver.as_deref().map(basename);
+                    let provenance = origin.provenance(&info);
 
                     if let Some(remote) = &remote {
                         match sui_cache::remote::push_path_remote(
@@ -8442,6 +8444,7 @@ async fn main() -> Result<(), CliError> {
                             deriver.as_deref(),
                             nar_codec,
                             &universe,
+                            Some(&provenance),
                         )
                         .await
                         {
@@ -8470,6 +8473,7 @@ async fn main() -> Result<(), CliError> {
                         deriver.as_deref(),
                         nar_codec,
                         &universe,
+                        Some(&provenance),
                     )
                     .await
                     {
@@ -8590,6 +8594,7 @@ async fn main() -> Result<(), CliError> {
                         .collect();
                     let valid_hashes: Vec<String> = by_hash.keys().cloned().collect();
                     let universe: std::collections::HashSet<String> = valid_hashes.iter().cloned().collect();
+                    let origin = BuildOrigin::read(&local).await;
 
                     let cached: std::collections::HashSet<String> = storage
                         .list_narinfos()
@@ -8627,8 +8632,10 @@ async fn main() -> Result<(), CliError> {
                         let references: Vec<String> =
                             info.references.iter().map(|r| basename(r)).collect();
                         let deriver = info.deriver.as_deref().map(basename);
+                        let provenance = origin.provenance(&info);
                         match sui_cache::push::push_path(
                             &storage, &signer, &path, h, &references, deriver.as_deref(), codec, &universe,
+                            Some(&provenance),
                         )
                         .await
                         {
@@ -9212,6 +9219,35 @@ async fn doctor() -> Result<(), CliError> {
     }
     println!("{} checks passed", checks.len());
     Ok(())
+}
+
+/// Which engine registered each path in this store, as the store records it:
+/// a signature means substituted; an unsigned path with `ultimate = 0` is what
+/// sui's builder registers; any other unsigned path was registered by cppnix.
+struct BuildOrigin {
+    host: String,
+    sui_built: std::collections::HashSet<String>,
+}
+
+impl BuildOrigin {
+    async fn read(local: &LocalStore) -> Self {
+        Self {
+            host: sui_orchestrate::fleet::gethostname().unwrap_or_else(|| "unknown".to_string()),
+            sui_built: local.unsigned_local_builds().await.unwrap_or_default().into_iter().collect(),
+        }
+    }
+
+    fn provenance(&self, info: &sui_store::traits::PathInfo) -> sui_compat::narinfo::Provenance {
+        use sui_compat::narinfo::BuildEngine;
+        let engine = if !info.signatures.is_empty() {
+            BuildEngine::Substituted
+        } else if self.sui_built.contains(&info.path) {
+            BuildEngine::Sui
+        } else {
+            BuildEngine::CppNix
+        };
+        sui_cache::push::publisher_provenance(&self.host, engine)
+    }
 }
 
 fn cppnix_oracle() -> std::path::PathBuf {

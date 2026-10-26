@@ -40,6 +40,89 @@ pub struct NarInfo {
     pub signatures: Vec<String>,
     /// Content-address assertion (if applicable).
     pub ca: Option<String>,
+    /// Who built the bytes, when the publisher recorded it (`Provenance:`).
+    pub provenance: Option<Provenance>,
+    /// Fields this parser does not know, in order, kept so a narinfo that
+    /// passes through sui (admission, resign, a mirror) loses nothing.
+    pub extra: Vec<(String, String)>,
+}
+
+/// The narinfo field that records who built a NAR's bytes.
+///
+/// Written as `Provenance: host=<host> engine=<engine> pusher=<pusher>`.
+/// cppnix ignores fields it does not know, and the field is outside the
+/// signed fingerprint, so it is a statement by the publisher, not by a
+/// signer. It exists because two builders can produce different bytes for
+/// one derivation (cid 2026-10-26: sui vs cppnix rlibs), and a consumer
+/// reading a mixed closure needs to know whose bytes it got.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Provenance {
+    /// The host whose store held the bytes when they were published.
+    pub host: String,
+    /// What registered the path in that store.
+    pub engine: BuildEngine,
+    /// The tool and version that published the entry (`sui-0.1.228`).
+    pub pusher: String,
+}
+
+/// What registered a store path in the store it was published from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BuildEngine {
+    /// Built by sui's builder.
+    Sui,
+    /// Built by cppnix's builder.
+    CppNix,
+    /// Substituted from a binary cache (it carries a signature).
+    Substituted,
+    /// A value this version does not know, kept verbatim.
+    Other(String),
+}
+
+impl BuildEngine {
+    /// The wire word.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Sui => "sui",
+            Self::CppNix => "cppnix",
+            Self::Substituted => "substituted",
+            Self::Other(s) => s,
+        }
+    }
+
+    /// Parse the wire word; an unknown word is [`BuildEngine::Other`].
+    #[must_use]
+    pub fn parse(s: &str) -> Self {
+        match s {
+            "sui" => Self::Sui,
+            "cppnix" => Self::CppNix,
+            "substituted" => Self::Substituted,
+            other => Self::Other(other.to_string()),
+        }
+    }
+}
+
+impl Provenance {
+    /// Parse the value of a `Provenance:` line; `None` when a key is missing.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        let (mut host, mut engine, mut pusher) = (None, None, None);
+        for kv in value.split_whitespace() {
+            match kv.split_once('=')? {
+                ("host", v) => host = Some(v.to_string()),
+                ("engine", v) => engine = Some(BuildEngine::parse(v)),
+                ("pusher", v) => pusher = Some(v.to_string()),
+                _ => {}
+            }
+        }
+        Some(Self { host: host?, engine: engine?, pusher: pusher? })
+    }
+}
+
+impl std::fmt::Display for Provenance {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "host={} engine={} pusher={}", self.host, self.engine.as_str(), self.pusher)
+    }
 }
 
 impl std::fmt::Display for NarInfo {
@@ -70,6 +153,8 @@ impl NarInfo {
         let mut deriver = None;
         let mut signatures = Vec::new();
         let mut ca = None;
+        let mut provenance = None;
+        let mut extra = Vec::new();
 
         for line in input.lines() {
             let line = line.trim();
@@ -113,7 +198,11 @@ impl NarInfo {
                 }
                 "Sig" => signatures.push(value.to_string()),
                 "CA" => ca = Some(value.to_string()),
-                _ => {} // Ignore unknown fields
+                "Provenance" => match Provenance::parse(value) {
+                    Some(p) => provenance = Some(p),
+                    None => extra.push((key.to_string(), value.to_string())),
+                },
+                _ => extra.push((key.to_string(), value.to_string())),
             }
         }
 
@@ -129,6 +218,8 @@ impl NarInfo {
             deriver,
             signatures,
             ca,
+            provenance,
+            extra,
         })
     }
 
@@ -153,6 +244,12 @@ impl NarInfo {
         }
         if let Some(ref ca) = self.ca {
             let _ = writeln!(out, "CA: {ca}");
+        }
+        if let Some(ref p) = self.provenance {
+            let _ = writeln!(out, "Provenance: {p}");
+        }
+        for (k, v) in &self.extra {
+            let _ = writeln!(out, "{k}: {v}");
         }
         out
     }
@@ -305,7 +402,39 @@ FutureField: some-value
 AnotherUnknown: 42\n";
         let info = NarInfo::parse(input).unwrap();
         assert_eq!(info.store_path, "/nix/store/abc-foo");
-        // Unknown fields should not cause errors
+        // Unknown fields cause no error, and they round-trip in order: a
+        // narinfo that passes through sui (admission, resign, a mirror)
+        // loses nothing it did not understand.
+        assert_eq!(
+            info.extra,
+            vec![("FutureField".to_string(), "some-value".to_string()), ("AnotherUnknown".to_string(), "42".to_string())]
+        );
+        let again = NarInfo::parse(&info.serialize()).unwrap();
+        assert_eq!(again, info);
+        assert!(info.serialize().ends_with("FutureField: some-value\nAnotherUnknown: 42\n"));
+    }
+
+    #[test]
+    fn provenance_round_trips_and_an_unreadable_one_is_kept_verbatim() {
+        let base = "StorePath: /nix/store/abc-foo\nURL: nar/foo.nar\nCompression: none\nFileHash: sha256:abc\n\
+                    FileSize: 100\nNarHash: sha256:def\nNarSize: 200\nReferences: \n";
+        let info = NarInfo::parse(&format!("{base}Provenance: host=cid engine=sui pusher=sui-0.1.228\n")).unwrap();
+        assert_eq!(
+            info.provenance,
+            Some(Provenance { host: "cid".into(), engine: BuildEngine::Sui, pusher: "sui-0.1.228".into() })
+        );
+        assert!(info.extra.is_empty());
+        assert_eq!(NarInfo::parse(&info.serialize()).unwrap(), info);
+        for (word, engine) in [("cppnix", BuildEngine::CppNix), ("substituted", BuildEngine::Substituted), ("lix", BuildEngine::Other("lix".into()))] {
+            assert_eq!(BuildEngine::parse(word), engine);
+            assert_eq!(engine.as_str(), word);
+        }
+        let odd = NarInfo::parse(&format!("{base}Provenance: whoever\n")).unwrap();
+        assert_eq!(odd.provenance, None);
+        assert_eq!(odd.extra, vec![("Provenance".to_string(), "whoever".to_string())]);
+        assert!(odd.serialize().contains("Provenance: whoever\n"));
+        assert_eq!(Provenance::parse("host=a engine=sui"), None, "pusher missing");
+        assert_eq!(Provenance::parse("host=a engine=sui pusher=p junk"), None, "not k=v");
     }
 
     #[test]
@@ -401,6 +530,7 @@ References: \n";
             deriver: Some("def-pkg.drv".to_string()),
             signatures: vec!["k1:s1".to_string(), "k2:s2".to_string()],
             ca: Some("fixed:out:r:sha256:cafe".to_string()),
+            provenance: None, extra: Vec::new(),
         }
     }
 

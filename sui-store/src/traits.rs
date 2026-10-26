@@ -1226,6 +1226,7 @@ mod tests {
             deriver: Some("abc.drv".to_string()),
             signatures: vec!["k:s".to_string()],
             ca: Some("fixed:out:r:sha256:cafe".to_string()),
+            provenance: None, extra: Vec::new(),
         };
         let info = PathInfo::from(&narinfo);
         assert_eq!(info.path, "/nix/store/abc-hello");
@@ -1253,6 +1254,7 @@ mod tests {
             deriver: None,
             signatures: vec![],
             ca: None,
+            provenance: None, extra: Vec::new(),
         };
         let info = PathInfo::from(&narinfo);
         assert!(info.references.is_empty());

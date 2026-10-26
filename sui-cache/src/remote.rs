@@ -122,6 +122,7 @@ pub async fn push_path_remote(
     deriver: Option<&str>,
     codec: NarCodec,
     universe: &dyn sui_castore::RefUniverse,
+    provenance: Option<&sui_compat::narinfo::Provenance>,
 ) -> Result<RemoteOutcome, RemoteError> {
     if remote.has_narinfo(hash).await? {
         return Ok(RemoteOutcome::Present);
@@ -138,7 +139,7 @@ pub async fn push_path_remote(
     let stage = tempfile::tempdir().map_err(|e| stage_err(CacheError::Io(e)))?;
     let storage = LocalStorage::new(stage.path());
     let result = push_path(
-        &storage, signer, store_path, hash, references, deriver, codec, universe,
+        &storage, signer, store_path, hash, references, deriver, codec, universe, provenance,
     )
     .await
     .map_err(stage_err)?;
@@ -224,6 +225,7 @@ mod tests {
             None,
             NarCodec::default(),
             &std::collections::BTreeSet::<String>::new(),
+            None,
         )
         .await
         .unwrap();
@@ -239,6 +241,7 @@ mod tests {
             None,
             NarCodec::default(),
             &std::collections::BTreeSet::<String>::new(),
+            None,
         )
         .await
         .unwrap();
@@ -290,6 +293,7 @@ mod tests {
 
         let err = push_path_remote(
             &remote, &signer, path.to_str().unwrap(), "rmt1", &[], None, NarCodec::default(), &universe,
+            None,
         )
         .await
         .unwrap_err();
@@ -321,6 +325,7 @@ mod tests {
             None,
             NarCodec::default(),
             &std::collections::BTreeSet::<String>::new(),
+            None,
         )
         .await
         .expect_err("a non-upload key must be refused");

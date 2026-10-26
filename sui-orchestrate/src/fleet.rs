@@ -592,7 +592,8 @@ pub(crate) fn is_local_hostname(hostname: &str) -> bool {
         || gethostname().is_some_and(|h| h == hostname)
 }
 
-pub(crate) fn gethostname() -> Option<String> {
+/// This machine's hostname.
+pub fn gethostname() -> Option<String> {
     let mut buf = [0u8; 256];
     #[cfg(unix)]
     {
