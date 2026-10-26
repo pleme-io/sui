@@ -29,66 +29,27 @@ pub fn navigate_attrs(value: &Value, path: &[&str]) -> Result<Value, EvalError> 
     Ok(current)
 }
 
-/// Parse a `NIX_PATH` env var value into `(prefix, path)` pairs.
-///
-/// The format is `prefix1=path1:prefix2=path2:...`. An entry with
-/// no `=` is treated as having an empty prefix (CppNix-compatible).
-/// Empty entries are skipped.
-#[must_use]
-pub fn parse_nix_path(s: &str) -> Vec<(String, String)> {
-    if s.is_empty() {
-        return Vec::new();
-    }
-    s.split(':')
-        .filter(|e| !e.is_empty())
-        .map(|entry| match entry.split_once('=') {
-            Some((prefix, path)) => (prefix.to_string(), path.to_string()),
-            None => (String::new(), entry.to_string()),
-        })
-        .collect()
-}
+pub use sui_compat::search_path::parse_nix_path;
 
-/// Resolve a `<name>` search-path token to an absolute filesystem
-/// path by walking the entries parsed from `NIX_PATH`.
-///
-/// Also handles `<nix/...>` paths by resolving them to sui's embedded
-/// corepkgs (matching CppNix's built-in corepkgs behavior).
+/// Resolve a `<name>` search-path token: `<nix/...>` to sui's embedded
+/// corepkgs, everything else through the one NIX_PATH resolver in
+/// `sui_compat::search_path`, with `flake:` entries fetched by the flake
+/// fetcher.
 #[must_use]
 pub fn resolve_search_path(name: &str) -> Option<String> {
-    // Built-in corepkgs: <nix/fetchurl.nix> etc.
     if let Some(sub) = name.strip_prefix("nix/") {
         return resolve_corepkg(sub);
     }
+    register_flake_source_fetcher();
+    sui_compat::search_path::resolve(name)
+}
 
-    let nix_path = std::env::var("NIX_PATH").unwrap_or_default();
-    if nix_path.is_empty() {
-        return None;
-    }
-    for (prefix, path) in parse_nix_path(&nix_path) {
-        if !prefix.is_empty() && name == prefix {
-            if std::path::Path::new(&path).exists() {
-                return Some(path);
-            }
-            continue;
-        }
-        if !prefix.is_empty() {
-            let needle = format!("{prefix}/");
-            if let Some(rest) = name.strip_prefix(&needle) {
-                let full = format!("{path}/{rest}");
-                if std::path::Path::new(&full).exists() {
-                    return Some(full);
-                }
-                continue;
-            }
-        }
-        if prefix.is_empty() {
-            let full = format!("{path}/{name}");
-            if std::path::Path::new(&full).exists() {
-                return Some(full);
-            }
-        }
-    }
-    None
+pub fn register_flake_source_fetcher() {
+    sui_compat::search_path::set_flake_source_fetcher(|flake_ref| {
+        let parsed = sui_compat::flake_ref::FlakeRef::parse(&format!("{flake_ref}#")).ok()?;
+        let dir = crate::fetcher::resolve_flake_dir(&parsed).ok()?;
+        Some(crate::path::dematerialize(&dir).to_string_lossy().into_owned())
+    });
 }
 
 /// Resolve a `<nix/sub>` path to an embedded corepkg file.

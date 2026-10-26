@@ -206,6 +206,10 @@ pub fn current_eval_dir() -> Option<PathBuf> {
         .and_then(|p| p.parent().map(PathBuf::from))
 }
 
+fn relative_path_base() -> Option<PathBuf> {
+    sui_compat::path_literal::relative_base(current_eval_dir())
+}
+
 /// Push a file onto the eval stack. Returns an RAII guard that pops
 /// it on drop. Use when entering an `import <file>` so subsequent
 /// relative path literals resolve against the right directory.
@@ -1365,7 +1369,7 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
                 return eval_interpol_path_parts(&parts, PathKind::Rel, env);
             }
             let text = p.syntax().text().to_string();
-            let resolved = if let Some(dir) = current_eval_dir() {
+            let resolved = if let Some(dir) = relative_path_base() {
                 let joined = dir.join(&text);
                 // Use normalize_path instead of canonicalize so that
                 // paths with ./  and .. are cleaned without requiring
@@ -1394,7 +1398,7 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
                 return eval_interpol_path_parts(&parts, PathKind::Home, env);
             }
             let text = p.syntax().text().to_string();
-            return Ok(Value::path(text.as_str()));
+            return Ok(Value::path(crate::path::canon_abs(&sui_compat::path_literal::expand_home(&text)).as_str()));
         }
         ast::Expr::PathSearch(p) => {
             // `<name>` or `<name/sub/path>` — resolve via NIX_PATH
@@ -1425,7 +1429,7 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
                 "null" => Ok(Value::Null),
                 _ => {
                     env.lookup(&name)
-                        .ok_or_else(|| EvalError::UndefinedVar(
+                        .ok_or_else(|| env.undefined_var(
                             format!("'{name}'{}", eval_file_ctx()),
                         ))
                 }
@@ -1850,9 +1854,7 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
                             for attr in inherit.attrs() {
                                 let name = eval_attr(&attr, env)?;
                                 let value = env.lookup(&name).ok_or_else(|| {
-                                    EvalError::UndefinedVar(
-                                        format!("'{name}'{}", eval_file_ctx()),
-                                    )
+                                    env.undefined_var(format!("'{name}'{}", eval_file_ctx()))
                                 })?;
                                 if cluster {
                                     all_bound.push((name.clone(), value.clone()));
@@ -2405,7 +2407,7 @@ fn eval_interpol_path_parts(
         // Relative path: resolve against the defining file's directory,
         // mirroring the plain `PathRel` branch.
         PathKind::Rel => {
-            if let Some(dir) = current_eval_dir() {
+            if let Some(dir) = relative_path_base() {
                 let norm = normalize_path(&dir.join(&text));
                 // Lift cache→store exactly like the plain `PathRel` branch (the
                 // store↔cache seam value-half). Without this, an interpolated
@@ -2433,9 +2435,7 @@ fn eval_interpol_path_parts(
         PathKind::Abs => crate::path::canon_abs(&text),
         // Home paths (`~/…`) carry a leading `~` component, so they are
         // not absolute-rooted; keep the pre-existing normalization.
-        PathKind::Home => normalize_path(std::path::Path::new(&text))
-            .to_string_lossy()
-            .into_owned(),
+        PathKind::Home => crate::path::canon_abs(&sui_compat::path_literal::expand_home(&text)),
     };
     Ok(Value::path(resolved.as_str()))
 }
@@ -3444,7 +3444,7 @@ fn eval_entries<N: HasEntry + AstNode>(node: &N, env: &mut Env) -> Result<(), Ev
                         let name = eval_attr(&attr, env)?;
                         let value = env
                             .lookup(&name)
-                            .ok_or_else(|| EvalError::UndefinedVar(
+                            .ok_or_else(|| env.undefined_var(
                                 format!("'{name}'{}", eval_file_ctx()),
                             ))?;
                         env.bind(name, value);
@@ -4757,14 +4757,22 @@ mod tests {
         );
     }
 
+    fn cwd_join(rest: &str) -> String {
+        std::env::current_dir().unwrap().join(rest).to_string_lossy().into_owned()
+    }
+
+    fn home_join(rest: &str) -> String {
+        format!("{}/{rest}", std::env::var("HOME").unwrap())
+    }
+
     #[test]
     fn literal_paths() {
         // Relative path
-        assert_eq!(ev("./foo"), Value::path("./foo"));
+        assert_eq!(ev("./foo"), Value::path(&cwd_join("foo")));
         // Absolute path
         assert_eq!(ev("/nix/store/abc"), Value::path("/nix/store/abc"));
         // Home path
-        assert_eq!(ev("~/myfile"), Value::path("~/myfile"));
+        assert_eq!(ev("~/myfile"), Value::path(&home_join("myfile")));
     }
 
     // ── Interpolated path literals (cid-marquee root, 2026-07-12) ──
@@ -4815,23 +4823,18 @@ mod tests {
     }
 
     #[test]
-    fn interp_path_rel_no_eval_dir_keeps_relative_text() {
-        // With no eval-file context the plain branch keeps the raw relative
-        // text; the interpolated branch splices then does the same.
+    fn interp_path_rel_no_eval_dir_resolves_against_the_working_directory() {
         assert_eq!(
             ev(r#"let x = "foo"; in ./${x}.nix"#),
-            Value::path("./foo.nix"),
+            Value::path(&cwd_join("foo.nix")),
         );
     }
 
     #[test]
-    fn interp_path_home_splices_leading_tilde_preserved() {
-        // Home paths splice their `${e}`; the leading `~` is carried as-is
-        // (matching sui's plain `~/foo` behavior — `~`-expansion is a
-        // separate, pre-existing concern, not introduced here).
+    fn interp_path_home_splices_then_starts_at_home() {
         assert_eq!(
             ev(r#"let x = "foo"; in ~/${x}/bar"#),
-            Value::path("~/foo/bar"),
+            Value::path(&home_join("foo/bar")),
         );
     }
 
@@ -4840,7 +4843,7 @@ mod tests {
         // A path with no `${…}` must keep the trivial raw-text shortcut
         // (byte-for-byte identical to the plain branch).
         assert_eq!(ev("/a/b/c"), Value::path("/a/b/c"));
-        assert_eq!(ev("~/plain"), Value::path("~/plain"));
+        assert_eq!(ev("~/plain"), Value::path(&home_join("plain")));
     }
 
     #[test]
@@ -4891,9 +4894,8 @@ mod tests {
     #[test]
     fn op_path_concat() {
         // path + string
-        assert_eq!(ev(r#"./foo + "/bar""#), Value::path("./foo/bar"));
-        // path + path (should join with /)
-        assert_eq!(ev("./a + ./b"), Value::path("./a/./b"));
+        assert_eq!(ev(r#"./foo + "/bar""#), Value::path(&cwd_join("foo/bar")));
+        assert_eq!(ev("./a + ./b"), Value::path(&format!("{}{}", cwd_join("a"), cwd_join("b"))));
     }
 
     #[test]
@@ -7738,8 +7740,41 @@ mod tests {
 
     // ── search path miss ──────────────────────────────────
 
+    static NIX_PATH_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn a_flake_search_path_entry_resolves_like_cppnix() {
+        let _env = NIX_PATH_ENV.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (root, child) = std::fs::read_dir("/nix/store")
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.is_dir() && p.to_string_lossy().ends_with("-source"))
+            .find_map(|p| {
+                let child = std::fs::read_dir(&p).ok()?.flatten().next()?.file_name();
+                Some((p.to_string_lossy().into_owned(), child.to_string_lossy().into_owned()))
+            })
+            .expect("a /nix/store/*-source directory with an entry");
+        let saved = std::env::var("NIX_PATH").ok();
+        unsafe { std::env::set_var("NIX_PATH", format!("/nonexistent:suiflake=flake:{root}")) };
+        let whole = eval("<suiflake>");
+        let sub = eval(&format!("<suiflake/{child}>"));
+        let entries = eval("map (e: e.path) builtins.nixPath");
+        match saved {
+            Some(v) => unsafe { std::env::set_var("NIX_PATH", v) },
+            None => unsafe { std::env::remove_var("NIX_PATH") },
+        }
+        assert_eq!(whole.unwrap(), Value::path(root.as_str()));
+        assert_eq!(sub.unwrap(), Value::path(format!("{root}/{child}").as_str()));
+        let entries = force_value(&entries.unwrap()).unwrap();
+        let Value::List(list) = entries else { panic!("nixPath is a list") };
+        let paths: Vec<String> = list.iter().map(|v| force_value(v).unwrap().as_string().unwrap().to_string()).collect();
+        assert_eq!(paths, vec!["/nonexistent".to_string(), format!("flake:{root}")]);
+    }
+
     #[test]
     fn path_search_unmatched_errors() {
+        let _env = NIX_PATH_ENV.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         // Without NIX_PATH entries matching, <nonexistent> errors out.
         // We unset NIX_PATH locally to ensure no entries match.
         let saved = std::env::var("NIX_PATH").ok();
@@ -9091,7 +9126,7 @@ fn bind_plan_group(
             // self-reference, and why it can never merge.
             Binding::Inherit => env
                 .lookup(&name)
-                .ok_or_else(|| EvalError::UndefinedVar(format!("'{name}'")))?,
+                .ok_or_else(|| env.undefined_var(format!("'{name}'")))?,
             Binding::InheritFrom { from } => {
                 let t = Thunk::new_inherit_select(from_thunks[*from].clone(), &name);
                 thunks.push(t.clone());
@@ -9140,7 +9175,7 @@ fn bind_plan_group(
             }
             sui_normalize::Binding::Inherit => env
                 .lookup(&name)
-                .ok_or_else(|| EvalError::UndefinedVar(format!("'{name}'")))?,
+                .ok_or_else(|| env.undefined_var(format!("'{name}'")))?,
             sui_normalize::Binding::InheritFrom { from } => {
                 Value::Thunk(Thunk::new_inherit_select(from_thunks[*from].clone(), &name))
             }

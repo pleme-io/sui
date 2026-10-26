@@ -2111,7 +2111,9 @@ impl Thunk {
                     None => match env.lookup_fresh(&name) {
                         Some(v) => v,
                         None if in_promise_eval() => Value::Null,
-                        None => return Err(EvalError::UndefinedVar(format!("'{name}'"))),
+                        None => {
+                            return Err(env.undefined_var(format!("'{name}'")))
+                        }
                     },
                 };
                 unsafe { self.store_evaluated(&result) };
@@ -3201,6 +3203,28 @@ impl Env {
                     *scope.cached.borrow_mut() = Some(attrs.clone());
                     return Some(v.clone());
                 }
+            }
+        }
+        None
+    }
+
+    #[must_use]
+    pub fn undefined_var(&self, name: String) -> EvalError {
+        self.with_scope_error().unwrap_or(EvalError::UndefinedVar(name))
+    }
+
+    pub fn with_scope_error(&self) -> Option<EvalError> {
+        for scope in with_iter(&self.0.with_scopes) {
+            match crate::eval::force_value(&scope.value) {
+                Ok(Value::Attrs(_)) => {}
+                Ok(other) => {
+                    return Some(EvalError::TypeError(format!(
+                        "expected a set but found {}",
+                        other.type_name()
+                    )))
+                }
+                Err(EvalError::InfiniteRecursion(_) | EvalError::RecursionLimit(_)) => {}
+                Err(e) => return Some(e),
             }
         }
         None

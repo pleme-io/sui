@@ -188,6 +188,7 @@ pub fn register(env: &mut Env) {
 
     builtins_set.insert("storeDir".to_string(), Value::string("/nix/store"));
 
+    nav::register_flake_source_fetcher();
     // Populate `builtins.nixPath` from the NIX_PATH environment variable.
     let nix_path_value: Value = {
         let entries = parse_nix_path(&std::env::var("NIX_PATH").unwrap_or_default());

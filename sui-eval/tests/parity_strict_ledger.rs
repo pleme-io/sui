@@ -51,6 +51,7 @@ fn a_structured_attrs_json_encode_failure_is_recorded() {
     // SAFETY: `#[test]` bodies run on their own thread and this test drains
     // its own thread-local ledger; no other test reads this variable.
     unsafe { std::env::set_var("SUI_PARITY_STRICT", "1") };
+    unsafe { std::env::set_var("SUI_DROP_ATTR_ON_FORCE_ERROR", "1") };
     let _ = parity_strict::drain(); // start from a known-empty ledger
 
     let result = sui_eval::eval_with_file(DROPS_AN_ATTR, None);

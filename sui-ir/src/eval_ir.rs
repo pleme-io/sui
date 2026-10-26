@@ -1238,16 +1238,14 @@ fn eval_str_parts_ctx(
 /// interpolations splice with PLAIN coercion (a path-typed splice inserts
 /// the raw path), then the concatenated text resolves by kind —
 /// absolute → `canon_abs`; relative → joined + normalized against the
-/// current eval dir (raw text when there is none, e.g. top-level
-/// expression eval); home → raw text when plain, `normalize` when
-/// interpolated (the walker's exact asymmetry).
+/// current eval dir, else the working directory (cppnix's base path);
+/// home → `$HOME` + the rest, canonicalized.
 fn eval_path_parts(
     prog: &Rc<Program>,
     kind: PathKind,
     parts: &[PathPart],
     env: &IrEnv,
 ) -> Result<IrValue, IrEvalError> {
-    let has_interp = parts.iter().any(|p| matches!(p, PathPart::Interp(_)));
     let mut text = String::new();
     for part in parts {
         match part {
@@ -1260,21 +1258,13 @@ fn eval_path_parts(
     }
     let resolved = match kind {
         PathKind::Abs => crate::path::canon_abs(&text),
-        PathKind::Rel => match current_eval_dir() {
+        PathKind::Rel => match sui_compat::path_literal::relative_base(current_eval_dir()) {
             Some(dir) => crate::path::normalize(&dir.join(&text))
                 .to_string_lossy()
                 .into_owned(),
             None => text,
         },
-        PathKind::Home => {
-            if has_interp {
-                crate::path::normalize(std::path::Path::new(&text))
-                    .to_string_lossy()
-                    .into_owned()
-            } else {
-                text
-            }
-        }
+        PathKind::Home => crate::path::canon_abs(&sui_compat::path_literal::expand_home(&text)),
     };
     Ok(IrValue::Path(Rc::new(resolved)))
 }
@@ -1707,11 +1697,7 @@ fn eval_binop(
                 Ok(IrValue::Path(Rc::new(format_concat(a, b))))
             }
             (IrValue::Path(a), IrValue::Path(b)) => {
-                let mut s = String::with_capacity(a.len() + b.len() + 1);
-                s.push_str(a);
-                s.push('/');
-                s.push_str(b);
-                Ok(IrValue::Path(Rc::new(s)))
+                Ok(IrValue::Path(Rc::new(crate::path::canon_abs(&format!("{a}/{b}")))))
             }
             // Walker: attrsets coerce (outPath / __toString) on either
             // side, PLAIN mode.
@@ -2682,10 +2668,9 @@ mod tests {
 
     #[test]
     fn paths_evaluate_like_the_walker() {
-        // No eval-file context: relative + home stay raw; absolute
-        // canonicalizes CppNix-style.
-        assert!(matches!(ev("./x"), Ok(IrValue::Path(p)) if *p == "./x"));
-        assert!(matches!(ev("~/dir/file"), Ok(IrValue::Path(p)) if *p == "~/dir/file"));
+        let cwd_x = std::env::current_dir().unwrap().join("x").to_string_lossy().into_owned();
+        assert!(matches!(ev("./x"), Ok(IrValue::Path(p)) if *p == cwd_x));
+        assert!(matches!(ev("~/dir/file"), Ok(IrValue::Path(p)) if *p == format!("{}/dir/file", std::env::var("HOME").unwrap())));
         assert!(matches!(ev("/foo/../bar"), Ok(IrValue::Path(p)) if *p == "/bar"));
         assert!(matches!(ev("/.."), Ok(IrValue::Path(p)) if *p == "/"));
         // Interpolation splices with PLAIN coercion; `//` seams collapse.
@@ -2694,8 +2679,8 @@ mod tests {
         );
         assert_eq!(ev_str(r#"let x = "foo"; in toString /a/${x}/b"#), "/a/foo/b");
         // Path arithmetic mirrors the walker's Add arms.
-        assert!(matches!(ev(r#"./x + "/y""#), Ok(IrValue::Path(p)) if *p == "./x/y"));
-        assert!(matches!(ev("/a + /b"), Ok(IrValue::Path(p)) if *p == "/a//b"));
+        assert!(matches!(ev(r#"./x + "/y""#), Ok(IrValue::Path(p)) if *p == format!("{cwd_x}/y")));
+        assert!(matches!(ev("/a + /b"), Ok(IrValue::Path(p)) if *p == "/a/b"));
         assert!(matches!(ev(r#""s" + /a"#), Err(IrEvalError::TypeError(_))));
         // typeOf + equality.
         assert_eq!(ev_str("builtins.typeOf ./x"), "path");

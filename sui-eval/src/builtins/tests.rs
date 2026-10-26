@@ -2693,6 +2693,29 @@ fn builtins_find_file_not_found() {
     }
 }
 
+#[test] fn a_with_scope_that_fails_raises_its_own_error_not_an_undefined_variable() {
+    for (expr, want) in [
+        (r#"with (throw "boom"); x"#, "boom"),
+        (r#"let f = s: with s; x; in f (throw "boom")"#, "boom"),
+        (r#"with { y = 1; }; with (throw "boom"); x"#, "boom"),
+        (r#"let s = abort "boom"; in with s; x"#, "boom"),
+        (r#"with (assert false; { }); x"#, "assert"),
+        (r#"with { a = with (throw "boom"); x; }; a"#, "boom"),
+        (r#"with 1; x"#, "set"),
+    ] {
+        let err = eval(expr).expect_err(expr).to_string();
+        assert!(!err.contains("undefined variable") && !err.contains("UndefinedVar"), "{expr}: {err}");
+        assert!(err.to_lowercase().contains(want), "{expr}: want {want:?} in {err}");
+    }
+    assert_eq!(ev(r#"with { x = 1; }; with { }; x"#), Value::Int(1));
+}
+
+#[test] fn a_relative_path_outside_any_file_resolves_against_the_working_directory() {
+    let cwd = std::env::current_dir().unwrap();
+    assert_eq!(ev("./lib"), Value::path(cwd.join("lib").to_string_lossy().as_ref()));
+    assert_eq!(ev(r#"let n = "lib"; in ./${n}"#), Value::path(cwd.join("lib").to_string_lossy().as_ref()));
+}
+
 #[test] fn builtins_to_xml_int() {
     let v = ev("builtins.toXML 42");
     let s = v.as_string().unwrap();
