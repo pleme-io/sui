@@ -33,7 +33,7 @@ use std::path::PathBuf;
 /// Resolve `<nixpkgs>` via real nix so both sides use the same path.
 /// Returns `None` if real nix can't resolve it.
 fn resolve_nixpkgs_path() -> Option<PathBuf> {
-    let out = std::process::Command::new("nix-instantiate")
+    let out = sui_compat::cppnix::command("nix-instantiate")
         .args(["--eval", "--expr", "<nixpkgs>"])
         .output()
         .ok()?;

@@ -28,6 +28,14 @@ pub fn locate(tool: &str) -> Option<PathBuf> {
     locate_in(tool, &dirs)
 }
 
+/// A command for the cppnix oracle's `tool`. With no oracle it names a path
+/// that does not exist, so a test's "no usable nix" skip still fires and sui is
+/// never run as its own oracle.
+#[must_use]
+pub fn command(tool: &str) -> std::process::Command {
+    std::process::Command::new(locate(tool).unwrap_or_else(|| PathBuf::from(format!("/cppnix-oracle-not-found/{tool}"))))
+}
+
 fn is_sui(path: &Path) -> bool {
     std::fs::canonicalize(path).is_ok_and(|real| real.file_name().is_some_and(|n| n == "sui"))
 }

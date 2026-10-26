@@ -47,19 +47,57 @@ where
     }
 
     pub(super) async fn handle_collect_garbage(&mut self) -> Result<(), ConnectionError> {
-        let _action = read_u64(&mut self.reader).await?;
-        let _paths = self.read_path_set().await?;
+        let action = read_u64(&mut self.reader).await?;
+        let paths: Vec<String> = self.read_path_set().await?.iter().map(StorePath::to_absolute_path).collect();
         let ignore_liveness = read_u64(&mut self.reader).await? != 0;
-        let _max_freed = read_u64(&mut self.reader).await?;
+        let max_freed = read_u64(&mut self.reader).await?;
         for _ in 0..3 {
             read_u64(&mut self.reader).await?;
         }
         if ignore_liveness {
             return Err(op_err("you are not allowed to ignore liveness"));
         }
-        Err(op_err(
-            "sui-daemon does not collect garbage: it does not record temporary roots, so it cannot prove a path dead",
-        ))
+        let extra = super::temp_roots::all(&self.state_dir);
+        let basename = |p: &str| p.rsplit('/').next().unwrap_or_default().to_string();
+        let (results, freed): (Vec<String>, u64) = match action {
+            0 | 1 | 2 => {
+                let (all, reachable) = self.store.gc_liveness(&extra).await?;
+                let (live, dead): (Vec<String>, Vec<String>) = all.into_iter().partition(|p| reachable.contains(&basename(p)));
+                match action {
+                    0 => (live, 0),
+                    1 => (dead, 0),
+                    _ if max_freed == 0 => self.store.gc_delete(&dead, true, &extra).await?,
+                    _ => {
+                        let (mut deleted, mut freed) = (Vec::new(), 0u64);
+                        for p in dead {
+                            if freed >= max_freed {
+                                break;
+                            }
+                            if deleted.contains(&p) {
+                                continue;
+                            }
+                            let (gone, bytes) = self.store.gc_delete(std::slice::from_ref(&p), true, &extra).await?;
+                            deleted.extend(gone);
+                            freed += bytes;
+                        }
+                        (deleted, freed)
+                    }
+                }
+            }
+            3 => self.store.gc_delete(&paths, false, &extra).await?,
+            other => return Err(op_err(format!("unknown garbage collector action {other}"))),
+        };
+        let mut results = results;
+        results.sort();
+        results.dedup();
+        self.finish().await?;
+        write_u64(&mut self.writer, results.len() as u64).await?;
+        for path in &results {
+            write_string(&mut self.writer, path).await?;
+        }
+        write_u64(&mut self.writer, freed).await?;
+        write_u64(&mut self.writer, 0).await?;
+        Ok(())
     }
 
     pub(super) async fn handle_optimise_store(&mut self) -> Result<(), ConnectionError> {

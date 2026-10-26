@@ -12,7 +12,6 @@
 mod common;
 
 use std::path::Path;
-use std::process::Command;
 
 // ── Real nix oracle ────────────────────────────────────────────────────
 
@@ -21,7 +20,7 @@ use std::process::Command;
 /// exit, non-JSON output).
 fn nix_eval_at(flake_dir: &Path, attr: &str) -> Option<serde_json::Value> {
     let ref_str = format!("path:{}#{attr}", flake_dir.display());
-    let out = Command::new("nix")
+    let out = sui_compat::cppnix::command("nix")
         .args([
             "eval",
             "--json",

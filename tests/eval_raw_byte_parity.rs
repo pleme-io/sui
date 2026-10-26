@@ -39,7 +39,7 @@ const DRV: &str = "(derivation { name = \"t\"; system = \"aarch64-darwin\"; \
                    builder = \"/bin/sh\"; }).drvPath";
 
 fn nix_raw(expr: &str) -> Option<Vec<u8>> {
-    let out = std::process::Command::new("nix")
+    let out = sui_compat::cppnix::command("nix")
         .args(["eval", "--impure", "--raw", "--expr", expr])
         .output()
         .ok()?;

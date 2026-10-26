@@ -682,6 +682,14 @@ impl Store for LocalStore {
         Ok(row.map(|m| m.path).filter(|p| p.starts_with(&format!("{prefix}-"))))
     }
 
+    async fn gc_liveness(&self, extra_roots: &[String]) -> StoreResult<(Vec<String>, std::collections::HashSet<String>)> {
+        self.liveness_with(extra_roots).await
+    }
+
+    async fn gc_delete(&self, paths: &[String], ignore_liveness: bool, extra_roots: &[String]) -> StoreResult<(Vec<String>, u64)> {
+        self.delete_specific_with(paths, ignore_liveness, extra_roots).await
+    }
+
     async fn collect_garbage(
         &self,
         options: &crate::traits::GcOptions,
@@ -1009,12 +1017,22 @@ impl LocalStore {
     ///
     /// When the database cannot be read.
     pub async fn liveness(&self) -> StoreResult<(Vec<String>, std::collections::HashSet<String>)> {
+        self.liveness_with(&[]).await
+    }
+
+    /// [`Self::liveness`] with `extra_roots` counted as roots.
+    ///
+    /// # Errors
+    ///
+    /// When the database cannot be read.
+    pub async fn liveness_with(&self, extra_roots: &[String]) -> StoreResult<(Vec<String>, std::collections::HashSet<String>)> {
         use sea_orm::QueryOrder;
         let basename_of = |p: &str| -> Option<String> { p.rsplit('/').next().filter(|b| !b.is_empty()).map(str::to_string) };
         let state_dir = std::path::PathBuf::from(state_dir_for_store(&self.store_dir));
         let mut roots = find_gc_roots(&self.store_dir);
         roots.extend(find_runtime_roots(&self.store_dir).into_iter().map(|(path, _)| path));
         roots.extend(find_temp_roots(&state_dir, &self.store_dir).into_iter().map(|(path, _)| path));
+        roots.extend(extra_roots.iter().cloned());
         let all_path_strings: Vec<String> = valid_path::Entity::find()
             .order_by_asc(valid_path::Column::Path)
             .all(&self.db)
@@ -1053,7 +1071,23 @@ impl LocalStore {
     ///
     /// When a named path is alive, or the store cannot be read or written.
     pub async fn delete_specific(&self, paths: &[String], ignore_liveness: bool) -> StoreResult<u64> {
-        let (_, reachable) = if ignore_liveness { (Vec::new(), std::collections::HashSet::new()) } else { self.liveness().await? };
+        Ok(self.delete_specific_with(paths, ignore_liveness, &[]).await?.1)
+    }
+
+    /// [`Self::delete_specific`] with `extra_roots` counted as roots; returns
+    /// the deleted paths and the bytes freed.
+    ///
+    /// # Errors
+    ///
+    /// When a named path is alive, or the store cannot be read or written.
+    pub async fn delete_specific_with(
+        &self,
+        paths: &[String],
+        ignore_liveness: bool,
+        extra_roots: &[String],
+    ) -> StoreResult<(Vec<String>, u64)> {
+        let (_, reachable) =
+            if ignore_liveness { (Vec::new(), std::collections::HashSet::new()) } else { self.liveness_with(extra_roots).await? };
         let basename = |p: &str| p.rsplit('/').next().unwrap_or_default().to_string();
         for p in paths {
             if reachable.contains(&basename(p)) {
@@ -1078,7 +1112,7 @@ impl LocalStore {
         for p in &order {
             freed += self.delete_path_by_string(p).await?;
         }
-        Ok(freed)
+        Ok((order, freed))
     }
 }
 

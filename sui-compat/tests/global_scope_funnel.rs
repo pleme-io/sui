@@ -142,7 +142,7 @@ fn the_global_scope_matches_real_nix() {
 
     let mut wrong = Vec::new();
     for name in sui_compat::scope::CALLABLE_GLOBALS {
-        let out = std::process::Command::new("nix")
+        let out = sui_compat::cppnix::command("nix")
             .args(["eval", "--impure", "--raw", "--expr"])
             .arg(format!("builtins.typeOf {name}"))
             .output();
@@ -161,7 +161,7 @@ fn the_global_scope_matches_real_nix() {
 
     // Calibration: a real builtin that is NOT bare must stay unresolvable, or
     // a nix that resolved everything would make the loop above vacuous.
-    let probe = std::process::Command::new("nix")
+    let probe = sui_compat::cppnix::command("nix")
         .args(["eval", "--impure", "--raw", "--expr", "builtins.typeOf attrNames"])
         .output();
     if let Ok(p) = probe {

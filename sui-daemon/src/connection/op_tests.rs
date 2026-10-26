@@ -67,6 +67,29 @@ impl TestStore {
 
 #[async_trait::async_trait]
 impl Store for TestStore {
+    async fn gc_liveness(&self, extra_roots: &[String]) -> StoreResult<(Vec<String>, std::collections::HashSet<String>)> {
+        let paths = self.paths.lock().unwrap();
+        let mut reachable = std::collections::HashSet::new();
+        let mut todo: Vec<String> = extra_roots.to_vec();
+        while let Some(p) = todo.pop() {
+            if reachable.insert(p.rsplit('/').next().unwrap_or_default().to_string()) {
+                todo.extend(paths.get(&p).map(|i| i.references.clone()).unwrap_or_default());
+            }
+        }
+        Ok((paths.keys().cloned().collect(), reachable))
+    }
+
+    async fn gc_delete(&self, targets: &[String], ignore_liveness: bool, extra_roots: &[String]) -> StoreResult<(Vec<String>, u64)> {
+        let (_, reachable) = self.gc_liveness(extra_roots).await?;
+        for t in targets {
+            if !ignore_liveness && reachable.contains(t.rsplit('/').next().unwrap_or_default()) {
+                return Err(sui_store::traits::StoreError::StillAlive(t.clone()));
+            }
+        }
+        let mut paths = self.paths.lock().unwrap();
+        Ok((targets.iter().filter(|t| paths.remove(*t).is_some()).cloned().collect(), targets.len() as u64))
+    }
+
     async fn query_path_info(&self, path: &StorePath) -> StoreResult<Option<PathInfo>> {
         Ok(self.paths.lock().unwrap().get(&path.to_absolute_path()).cloned())
     }
@@ -949,8 +972,10 @@ async fn roots_are_registered_and_found_as_cppnix_lays_them_out() {
     r.last();
     assert_eq!(r.u64(), 1);
     r.last();
-    assert_eq!(r.u64(), 1);
+    assert_eq!(r.u64(), 2);
     assert_eq!(r.string(), result.to_str().unwrap());
+    assert_eq!(r.string(), A_OUT);
+    assert_eq!(r.string(), format!("{{temp:{}}}", std::process::id()));
     assert_eq!(r.string(), A_OUT);
     r.end();
     assert_eq!(std::fs::read_link(&result).unwrap().to_str().unwrap(), A_OUT);
@@ -966,26 +991,17 @@ async fn roots_are_registered_and_found_as_cppnix_lays_them_out() {
 }
 
 #[tokio::test]
-async fn garbage_collection_is_refused_and_optimise_and_verify_answer() {
+async fn optimise_and_verify_answer() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join(A_OUT.rsplit('/').next().unwrap()), b"").unwrap();
     let session = Session::new(TestStore::default().with(A_OUT)).dirs(dir.path(), dir.path());
-    let mut input = op(WorkerOp::CollectGarbage);
-    n(&mut input, 2);
-    list(&mut input, &[]);
-    n(&mut input, 0);
-    n(&mut input, 0);
-    for _ in 0..3 {
-        n(&mut input, 0);
-    }
-    input.extend(op(WorkerOp::OptimiseStore));
+    let mut input = op(WorkerOp::OptimiseStore);
     for (contents, repair) in [(0, 0), (1, 0), (0, 1)] {
         input.extend(op(WorkerOp::VerifyStore));
         n(&mut input, contents);
         n(&mut input, repair);
     }
     let mut r = session.run(input).await;
-    assert!(r.error().contains("does not collect garbage"));
     r.last();
     assert_eq!(r.u64(), 1);
     r.last();
@@ -1226,4 +1242,83 @@ async fn the_client_receives_a_build_event_while_the_build_still_runs() {
     .unwrap();
     daemon.await.unwrap();
     built.unwrap();
+}
+
+fn gc_op(input: &mut Vec<u8>, action: u64, paths: &[&str], max_freed: u64) {
+    input.extend(op(WorkerOp::CollectGarbage));
+    n(input, action);
+    list(input, paths);
+    n(input, 0);
+    n(input, max_freed);
+    for _ in 0..3 {
+        n(input, 0);
+    }
+}
+
+fn gc_reply(r: &mut Reply) -> (Vec<String>, u64) {
+    r.last();
+    let count = r.u64();
+    let paths = (0..count).map(|_| r.string()).collect();
+    let freed = r.u64();
+    assert_eq!(r.u64(), 0);
+    (paths, freed)
+}
+
+#[tokio::test]
+async fn a_temp_root_keeps_a_path_alive_until_its_connection_closes_and_every_gc_action_answers() {
+    let state = tempfile::tempdir().unwrap();
+    let session = Session::new(TestStore::default().with(A_OUT).with(B_OUT)).dirs(state.path(), state.path());
+    let mut input = op(WorkerOp::AddTempRoot);
+    s(&mut input, A_OUT);
+    gc_op(&mut input, 0, &[], 0);
+    gc_op(&mut input, 1, &[], 0);
+    gc_op(&mut input, 3, &[A_OUT], 0);
+    gc_op(&mut input, 2, &[], 0);
+    gc_op(&mut input, 7, &[], 0);
+    let mut r = session.run(input).await;
+    r.last();
+    assert_eq!(r.u64(), 1);
+    assert_eq!(gc_reply(&mut r), (vec![A_OUT.to_string()], 0));
+    assert_eq!(gc_reply(&mut r), (vec![B_OUT.to_string()], 0));
+    assert!(r.error().contains("still alive"));
+    assert_eq!(gc_reply(&mut r).0, vec![B_OUT.to_string()]);
+    assert!(r.error().contains("unknown garbage collector action 7"));
+    r.end();
+
+    let mut input = Vec::new();
+    gc_op(&mut input, 3, &[A_OUT], 0);
+    let mut r = session.run(input).await;
+    assert_eq!(gc_reply(&mut r).0, vec![A_OUT.to_string()], "the closed connection's temp root was released");
+    r.end();
+
+    let mut input = Vec::new();
+    gc_op(&mut input, 2, &[], 0);
+    input.extend(op(WorkerOp::CollectGarbage));
+    n(&mut input, 1);
+    list(&mut input, &[]);
+    n(&mut input, 1);
+    n(&mut input, 0);
+    for _ in 0..3 {
+        n(&mut input, 0);
+    }
+    let mut r = session.run(input).await;
+    assert_eq!(gc_reply(&mut r), (Vec::new(), 0));
+    assert!(r.error().contains("not allowed to ignore liveness"));
+    r.end();
+}
+
+#[tokio::test]
+async fn delete_dead_stops_once_max_freed_is_reached() {
+    let state = tempfile::tempdir().unwrap();
+    let session = Session::new(TestStore::default().with(A_OUT).with(B_OUT)).dirs(state.path(), state.path());
+    let mut input = Vec::new();
+    gc_op(&mut input, 2, &[], 1);
+    gc_op(&mut input, 2, &[], 5);
+    let mut r = session.run(input).await;
+    let (first, freed) = gc_reply(&mut r);
+    assert_eq!((first.len(), freed), (1, 1));
+    let (second, freed) = gc_reply(&mut r);
+    assert_eq!((second.len(), freed), (1, 1));
+    assert_ne!(first, second);
+    r.end();
 }

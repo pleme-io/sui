@@ -181,7 +181,7 @@ fn time_cppnix(src: &str) -> Option<Duration> {
         src
     };
     let start = Instant::now();
-    let output = Command::new("nix-instantiate")
+    let output = sui_compat::cppnix::command("nix-instantiate")
         .args(["--eval", "--json", "--strict", "-E", passed])
         .output()
         .ok()?;
@@ -265,7 +265,7 @@ fn geomean(ratios: &[f64]) -> f64 {
 }
 
 fn nix_version() -> String {
-    Command::new("nix-instantiate")
+    sui_compat::cppnix::command("nix-instantiate")
         .arg("--version")
         .output()
         .ok()
@@ -328,7 +328,7 @@ fn sui_drv_subprocess(expr: &str) -> Option<String> {
 
 /// Eval a `.drvPath` expr through real `nix eval --raw`.
 fn nix_drv_subprocess(expr: &str) -> Option<String> {
-    let out = Command::new("nix")
+    let out = sui_compat::cppnix::command("nix")
         .args([
             "eval",
             "--raw",

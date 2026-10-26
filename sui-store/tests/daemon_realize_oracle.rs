@@ -27,7 +27,6 @@
 //! C2 external-observation ceiling).
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use sui_store::daemon_realize::{
     realize_via_daemon, DaemonRealizeError, DaemonStore, StoreAccess,
@@ -46,7 +45,7 @@ const HELLO_FLAKE: &str = r#"{
 }"#;
 
 fn have_nix() -> bool {
-    Command::new("nix").arg("--version").output().map(|o| o.status.success()).unwrap_or(false)
+    sui_compat::cppnix::command("nix").arg("--version").output().map(|o| o.status.success()).unwrap_or(false)
 }
 
 fn daemon() -> Option<DaemonStore> {
@@ -57,7 +56,7 @@ fn daemon() -> Option<DaemonStore> {
 fn hello_paths(dir: &Path) -> Option<(String, String)> {
     std::fs::write(dir.join("flake.nix"), HELLO_FLAKE).ok()?;
     let eval = |attr: &str| -> Option<String> {
-        let out = Command::new("nix")
+        let out = sui_compat::cppnix::command("nix")
             .args(["eval", "--raw", &format!("{}#{attr}", dir.display())])
             .output()
             .ok()?;

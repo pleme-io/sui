@@ -21,12 +21,11 @@
 //!   faked green here.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 /// True if a real `nix` binary is on PATH. Tests skip (not fail) when absent so
 /// CI without nix stays green; on a box with nix the assertions are mandatory.
 fn have_nix() -> bool {
-    Command::new("nix")
+    sui_compat::cppnix::command("nix")
         .arg("--version")
         .output()
         .map(|o| o.status.success())
@@ -50,7 +49,7 @@ fn make_fixture(td: &Path) -> PathBuf {
 /// Run the real `nix store add-path` against a temp physical store and return
 /// the resulting **logical** store path string (`/nix/store/<hash>-<name>`).
 fn nix_add_path(phys_store: &Path, src: &Path, name: &str) -> Option<String> {
-    let out = Command::new("nix")
+    let out = sui_compat::cppnix::command("nix")
         .args([
             "--extra-experimental-features",
             "nix-command flakes",
@@ -76,7 +75,7 @@ fn nix_add_path(phys_store: &Path, src: &Path, name: &str) -> Option<String> {
 /// Dump the NAR of a path from nix's temp store and return the sha256 hex of
 /// the NAR bytes — the exact quantity nix folds into the store-path fingerprint.
 fn nix_nar_hex(phys_store: &Path, logical_path: &str) -> Option<String> {
-    let out = Command::new("nix")
+    let out = sui_compat::cppnix::command("nix")
         .args([
             "--extra-experimental-features",
             "nix-command flakes",

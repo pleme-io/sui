@@ -300,7 +300,8 @@ where
     }
 
     async fn handle_add_temp_root(&mut self) -> Result<(), ConnectionError> {
-        let _sp = self.read_path().await?;
+        let sp = self.read_path().await?;
+        super::temp_roots::add(&self.state_dir, self.connection_id.id(), &sp.to_absolute_path()).map_err(op_err)?;
         self.finish().await?;
         write_u64(&mut self.writer, 1).await?;
         Ok(())

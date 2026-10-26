@@ -34,7 +34,6 @@
 
 use std::env;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use serde::{Deserialize, Serialize};
 use tatara_lisp::DeriveTataraDomain;
@@ -137,14 +136,14 @@ pub fn online_mode() -> bool {
         .unwrap_or(false)
 }
 
-/// Returns `true` when `nix-instantiate` is discoverable on `PATH`.
+/// Returns `true` when the cppnix oracle's `nix-instantiate` is found (never sui).
 pub fn nix_available() -> bool {
-    which("nix-instantiate").is_some()
+    sui_compat::cppnix::locate("nix-instantiate").is_some()
 }
 
-/// Returns `true` when `nix-store` is discoverable on `PATH`.
+/// Returns `true` when the cppnix oracle's `nix-store` is found (never sui).
 pub fn nix_store_available() -> bool {
-    which("nix-store").is_some()
+    sui_compat::cppnix::locate("nix-store").is_some()
 }
 
 /// If the oracle is not available, emit a skip note and return `true`
@@ -204,7 +203,7 @@ pub fn nix_eval_json_file(path: &Path) -> serde_json::Value {
 }
 
 fn run_nix_instantiate(args: &[&str]) -> serde_json::Value {
-    let output = match Command::new("nix-instantiate").args(args).output() {
+    let output = match sui_compat::cppnix::command("nix-instantiate").args(args).output() {
         Ok(o) => o,
         Err(e) => return error_json(format!("spawn nix-instantiate failed: {e}")),
     };

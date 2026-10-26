@@ -330,6 +330,26 @@ pub trait Store: Send + Sync {
         ))
     }
 
+    /// Every valid path, and the basenames reachable from the roots, with
+    /// `extra_roots` (a daemon's temp roots) counted as roots.
+    async fn gc_liveness(
+        &self,
+        _extra_roots: &[String],
+    ) -> StoreResult<(Vec<String>, std::collections::HashSet<String>)> {
+        Err(StoreError::NotSupported("garbage collection not implemented for this backend".to_string()))
+    }
+
+    /// cppnix's `nix-store --delete`: the named paths and the dead paths that
+    /// refer to them; returns what was deleted and the bytes freed.
+    async fn gc_delete(
+        &self,
+        _paths: &[String],
+        _ignore_liveness: bool,
+        _extra_roots: &[String],
+    ) -> StoreResult<(Vec<String>, u64)> {
+        Err(StoreError::NotSupported("garbage collection not implemented for this backend".to_string()))
+    }
+
     /// Add a store path with its NAR content. Returns the registered PathInfo.
     async fn add_to_store(
         &self,

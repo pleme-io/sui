@@ -19,12 +19,11 @@
 
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
-use std::process::Command;
 
 use sui_store::traits::Store;
 
 fn have_nix() -> bool {
-    Command::new("nix")
+    sui_compat::cppnix::command("nix")
         .arg("--version")
         .output()
         .map(|o| o.status.success())
@@ -47,7 +46,7 @@ fn nix_optimise_outcome(base: &Path) {
         std::fs::create_dir_all(&src).unwrap();
         std::fs::write(src.join("dup.txt"), b"shared content xyz\n").unwrap();
         std::fs::write(src.join("uniq.txt"), uniq).unwrap();
-        let out = Command::new("nix")
+        let out = sui_compat::cppnix::command("nix")
             .args([
                 "--extra-experimental-features",
                 "nix-command flakes",
@@ -77,7 +76,7 @@ fn nix_optimise_outcome(base: &Path) {
         "nix pre-optimise: dup inodes differ"
     );
 
-    let out = Command::new("nix-store")
+    let out = sui_compat::cppnix::command("nix-store")
         .args(["--store"])
         .arg(&store)
         .arg("--optimise")

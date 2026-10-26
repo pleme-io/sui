@@ -23,7 +23,6 @@
 mod common;
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 fn fixture_dir() -> PathBuf {
     let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -35,7 +34,7 @@ fn fixture_dir() -> PathBuf {
 /// Returns an `__error` JSON wrapper on failure.
 fn nix_flake_eval(fixture: &Path, selector: &str) -> serde_json::Value {
     let ref_str = format!("path:{}#{selector}", fixture.display());
-    let out = Command::new("nix")
+    let out = sui_compat::cppnix::command("nix")
         .args([
             "eval",
             "--json",
@@ -134,7 +133,7 @@ fn minimal_flake_description_matches() {
 
     // Real nix: `nix flake metadata --json`
     let ref_str = format!("path:{}", dir.display());
-    let out = Command::new("nix")
+    let out = sui_compat::cppnix::command("nix")
         .args([
             "flake",
             "metadata",

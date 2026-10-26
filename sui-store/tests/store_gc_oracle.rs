@@ -22,12 +22,11 @@
 //! touches it. See `store_gc_root_notes`.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use sui_store::traits::Store;
 
 fn have_nix() -> bool {
-    Command::new("nix")
+    sui_compat::cppnix::command("nix")
         .arg("--version")
         .output()
         .map(|o| o.status.success())
@@ -54,7 +53,7 @@ fn nix_gc_partition(td: &Path) -> Option<(Vec<String>, Vec<String>)> {
     std::fs::write(b_src.join("f"), b"beta\n").ok()?;
 
     let add = |src: &Path, name: &str| -> Option<String> {
-        let out = Command::new("nix")
+        let out = sui_compat::cppnix::command("nix")
             .args([
                 "--extra-experimental-features",
                 "nix-command flakes",
@@ -84,7 +83,7 @@ fn nix_gc_partition(td: &Path) -> Option<(Vec<String>, Vec<String>)> {
     let _ = std::fs::remove_file(gcroots.join("rootA"));
     std::os::unix::fs::symlink(&pa, gcroots.join("rootA")).ok()?;
 
-    let out = Command::new("nix-store")
+    let out = sui_compat::cppnix::command("nix-store")
         .args(["--store"])
         .arg(&store)
         .args(["--gc", "--print-dead"])
@@ -242,7 +241,7 @@ async fn store_gc_partition_matches_nix_no_roots() {
         let src = base.join(format!("src_{name}"));
         std::fs::create_dir_all(&src).unwrap();
         std::fs::write(src.join("f"), content).unwrap();
-        let ok = Command::new("nix")
+        let ok = sui_compat::cppnix::command("nix")
             .args([
                 "--extra-experimental-features",
                 "nix-command flakes",
@@ -258,7 +257,7 @@ async fn store_gc_partition_matches_nix_no_roots() {
             .unwrap_or(false);
         assert!(ok, "nix add-path for {name}");
     }
-    let out = Command::new("nix-store")
+    let out = sui_compat::cppnix::command("nix-store")
         .args(["--store"])
         .arg(&store)
         .args(["--gc", "--print-dead"])
@@ -348,7 +347,7 @@ fn nix_gc_partition_indirect(td: &Path) -> Option<(Vec<String>, Vec<String>)> {
     std::fs::write(b_src.join("f"), b"beta\n").ok()?;
 
     let add = |src: &Path, name: &str| -> Option<String> {
-        let out = Command::new("nix")
+        let out = sui_compat::cppnix::command("nix")
             .args([
                 "--extra-experimental-features",
                 "nix-command flakes",
@@ -383,7 +382,7 @@ fn nix_gc_partition_indirect(td: &Path) -> Option<(Vec<String>, Vec<String>)> {
     let _ = std::fs::remove_file(auto.join("testauto"));
     std::os::unix::fs::symlink(&result, auto.join("testauto")).ok()?;
 
-    let out = Command::new("nix-store")
+    let out = sui_compat::cppnix::command("nix-store")
         .args(["--store"])
         .arg(&store)
         .args(["--gc", "--print-dead"])

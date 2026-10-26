@@ -62,7 +62,7 @@ fn skip_reason() -> Option<&'static str> {
     if !online_mode() {
         return Some("SUI_TEST_ONLINE not set");
     }
-    if which("nix-store").is_none() {
+    if sui_compat::cppnix::locate("nix-store").is_none() {
         return Some("nix-store not on PATH");
     }
     if !Path::new("/nix/var/nix/db/db.sqlite").exists() {
@@ -138,7 +138,7 @@ impl Drop for DaemonFixture {
 /// a realistic path even on fresh systems.
 fn pick_valid_store_path() -> Option<String> {
     // Preferred: something guaranteed to be a derivation output
-    let out = Command::new("nix-store")
+    let out = sui_compat::cppnix::command("nix-store")
         .args(["--query", "--requisites", "/run/current-system"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -177,7 +177,7 @@ fn run_nix_store_against(socket_remote: &str, args: &[&str]) -> Result<String, S
         // No `timeout` on PATH — call nix-store directly and rely on
         // tokio's test timeout to kill us. Less informative but the
         // test still works.
-        Command::new("nix-store")
+        sui_compat::cppnix::command("nix-store")
     };
     let out = cmd
         .env("NIX_REMOTE", socket_remote)

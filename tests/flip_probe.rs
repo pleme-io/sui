@@ -45,7 +45,7 @@ fn nonce() -> String {
 
 fn fixture_flake(dir: &Path, body: &str) -> String {
     std::fs::write(dir.join("flake.nix"), format!("{{ outputs = {{ self }}: {{ probe = {body}; }}; }}\n")).unwrap();
-    format!("path:{}#probe", dir.display())
+    format!("path:{}#probe", std::fs::canonicalize(dir).unwrap().display())
 }
 
 #[test]

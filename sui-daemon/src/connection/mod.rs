@@ -17,6 +17,7 @@ mod gc;
 mod handshake;
 mod query;
 mod realize;
+mod temp_roots;
 pub(crate) mod wire;
 
 #[cfg(test)]
@@ -132,6 +133,7 @@ pub struct Connection<S, R, W> {
     state_dir: std::path::PathBuf,
     verbosity: sui_compat::activity::Verbosity,
     drvs: Arc<dyn DrvRealizer>,
+    connection_id: temp_roots::ConnectionRoots,
 }
 
 impl<S, R, W> Connection<S, R, W>
@@ -156,6 +158,7 @@ where
             state_dir: std::path::PathBuf::from("/nix/var/nix"),
             verbosity: sui_compat::activity::Verbosity::Info,
             drvs: Arc::new(OrchestrateRealizer),
+            connection_id: temp_roots::ConnectionRoots::new(),
         }
     }
 

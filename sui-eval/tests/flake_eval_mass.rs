@@ -11,7 +11,6 @@ mod common;
 
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::process::Command;
 
 // ── Layer 11a: Mass Flake Eval Smoke ────────────────────────────────────
 
@@ -141,7 +140,7 @@ fn extract_description(v: &sui_eval::Value) -> String {
 /// Run `nix flake metadata --json` to get the description from real nix.
 fn nix_flake_description(dir: &Path) -> String {
     let ref_str = format!("path:{}", dir.display());
-    let out = Command::new("nix")
+    let out = sui_compat::cppnix::command("nix")
         .args([
             "flake",
             "metadata",

@@ -21,7 +21,7 @@
 
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use sui_compat::nar::{NarReader, NarWriter};
 use sui_compat::store_path::nix_base32_encode;
 
@@ -96,7 +96,7 @@ fn sample_store_paths(n: usize) -> Vec<PathBuf> {
 /// Run `nix-store --dump <path>` and return the NAR bytes.
 /// Returns `None` on any error so the caller can collect a failure.
 fn nix_store_dump(path: &PathBuf) -> Option<Vec<u8>> {
-    let out = Command::new("nix-store")
+    let out = sui_compat::cppnix::command("nix-store")
         .args(["--dump", &path.to_string_lossy()])
         .stderr(Stdio::piped())
         .output()
@@ -112,7 +112,7 @@ fn nix_store_dump(path: &PathBuf) -> Option<Vec<u8>> {
 /// anything goes wrong. Handles the json-format deprecation warning
 /// and both `--json-format 1` and `--json-format 2` shapes.
 fn nix_path_info_narhash(path: &PathBuf) -> Option<String> {
-    let out = Command::new("nix")
+    let out = sui_compat::cppnix::command("nix")
         .args([
             "path-info",
             "--json",

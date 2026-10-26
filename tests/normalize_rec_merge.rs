@@ -33,7 +33,7 @@ use assert_cmd::Command;
 
 /// The oracle's answer, or `None` when nix is unavailable.
 fn nix_eval(expr: &str) -> Option<String> {
-    let out = std::process::Command::new("nix")
+    let out = sui_compat::cppnix::command("nix")
         .args(["eval", "--impure", "--expr", expr])
         .output()
         .ok()?;

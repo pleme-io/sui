@@ -288,8 +288,8 @@ enum Commands {
     /// matrix.  Exits non-zero on any divergence so CI/operators
     /// can react.  Sui-native — no nix equivalent.
     Parity {
-        /// Path to the cppnix binary (the oracle).  Default: `nix` on PATH.
-        #[arg(long, default_value = "nix")]
+        /// Path to the cppnix binary (the oracle).  Default: `sui_compat::cppnix::locate`, never sui.
+        #[arg(long, default_value_os_t = cppnix_oracle())]
         nix: std::path::PathBuf,
         /// Emit machine-readable JSON instead of the Nord table.
         #[arg(long)]
@@ -310,8 +310,8 @@ enum Commands {
     /// non-zero on any divergence — a red gate to root-cause at the eval/build core.
     #[command(name = "build-parity")]
     BuildParity {
-        /// Path to the cppnix binary (the oracle).  Default: `nix` on PATH.
-        #[arg(long, default_value = "nix")]
+        /// Path to the cppnix binary (the oracle).  Default: `sui_compat::cppnix::locate`, never sui.
+        #[arg(long, default_value_os_t = cppnix_oracle())]
         nix: std::path::PathBuf,
     },
     /// Bisect a diverging `<expr>.drvPath` to the structural leaf: recurse the
@@ -324,8 +324,8 @@ enum Commands {
         /// `(import <nixpkgs> {}).hello`). `.drvPath` is appended automatically.
         #[arg(long)]
         expr: String,
-        /// Path to the cppnix binary (the oracle).  Default: `nix` on PATH.
-        #[arg(long, default_value = "nix")]
+        /// Path to the cppnix binary (the oracle).  Default: `sui_compat::cppnix::locate`, never sui.
+        #[arg(long, default_value_os_t = cppnix_oracle())]
         nix: std::path::PathBuf,
     },
     /// Perf-seal: the SPEED peer of `parity`. Runs the eval-shape corpus
@@ -376,7 +376,7 @@ enum Commands {
         /// --flakes-root for every direct child containing flake.nix.
         flakes: Vec<std::path::PathBuf>,
         /// Path to the cppnix binary (the oracle).
-        #[arg(long, default_value = "nix")]
+        #[arg(long, default_value_os_t = cppnix_oracle())]
         nix: std::path::PathBuf,
         /// Root directory to walk for flake.nix files.  Default:
         /// `$HOME/code/github/pleme-io`.
@@ -9170,6 +9170,10 @@ async fn doctor() -> Result<(), CliError> {
     }
     println!("{} checks passed", checks.len());
     Ok(())
+}
+
+fn cppnix_oracle() -> std::path::PathBuf {
+    sui_compat::cppnix::locate("nix").unwrap_or_else(|| std::path::PathBuf::from("cppnix-oracle-not-found"))
 }
 
 fn current_system() -> String {

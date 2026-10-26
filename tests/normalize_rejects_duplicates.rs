@@ -42,7 +42,7 @@ use assert_cmd::Command;
 /// nix's verdict: `Some(true)` accepted, `Some(false)` refused, `None` if nix
 /// is unavailable.
 fn nix_accepts(expr: &str) -> Option<bool> {
-    let out = std::process::Command::new("nix")
+    let out = sui_compat::cppnix::command("nix")
         .args(["eval", "--impure", "--expr", expr])
         .output()
         .ok()?;

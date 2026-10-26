@@ -122,7 +122,7 @@ fn sui_registry() -> BTreeSet<String> {
 /// experimental probes below deliberately re-query with the flags on, which is
 /// what separates a feature-gated builtin from an invented one.
 fn nix_builtin_names() -> BTreeSet<String> {
-    let out = std::process::Command::new("nix")
+    let out = sui_compat::cppnix::command("nix")
         .args([
             "eval",
             "--json",
@@ -368,7 +368,7 @@ fn classification_holds_against_real_nix() {
     // checking it without the flags would conflate the two.
     let mut misclassified = Vec::new();
     for name in &leaks {
-        let out = std::process::Command::new("nix")
+        let out = sui_compat::cppnix::command("nix")
             .args([
                 "eval",
                 "--impure",
@@ -395,7 +395,7 @@ fn classification_holds_against_real_nix() {
     // longer has it at all, sui is inventing it and it is really a leak.
     let mut vanished = Vec::new();
     for name in &experimental {
-        let out = std::process::Command::new("nix")
+        let out = sui_compat::cppnix::command("nix")
             .args([
                 "eval",
                 "--impure",

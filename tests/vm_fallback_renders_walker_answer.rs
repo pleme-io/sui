@@ -37,7 +37,7 @@ use assert_cmd::Command;
 const REFUSED_WITH_DEPTH: &str = "{ a = rec { b = c + 1; d = 2; }; a.c = d + 3; }";
 
 fn nix(args: &[&str]) -> Option<(String, bool)> {
-    let out = std::process::Command::new("nix").args(args).output().ok()?;
+    let out = sui_compat::cppnix::command("nix").args(args).output().ok()?;
     Some((
         String::from_utf8_lossy(&out.stdout).trim().to_string(),
         out.status.success(),

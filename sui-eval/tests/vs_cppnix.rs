@@ -40,7 +40,6 @@ mod common;
 
 use common::load_corpus;
 use std::fmt::Write as _;
-use std::process::Command;
 use std::time::{Duration, Instant};
 
 const ITERATIONS: usize = 5;
@@ -58,7 +57,7 @@ fn time_cppnix(src: &str) -> Option<Duration> {
         src
     };
     let start = Instant::now();
-    let output = Command::new("nix-instantiate")
+    let output = sui_compat::cppnix::command("nix-instantiate")
         .args(["--eval", "--json", "--strict", "-E", passed])
         .output()
         .ok()?;

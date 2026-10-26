@@ -11,7 +11,6 @@
 //! nix-instantiate is not on PATH.
 
 use assert_cmd::Command;
-use std::process::Command as StdCommand;
 
 // ── Env/oracle helpers (duplicated from sui-eval/tests/common to
 // avoid cross-crate `mod` sharing — this file lives at the repo root,
@@ -24,9 +23,7 @@ fn online_mode() -> bool {
 }
 
 fn nix_available() -> bool {
-    std::env::var_os("PATH")
-        .map(|p| std::env::split_paths(&p).any(|d| d.join("nix-instantiate").is_file()))
-        .unwrap_or(false)
+    sui_compat::cppnix::locate("nix-instantiate").is_some()
 }
 
 fn skip_if_offline(test: &str) -> bool {
@@ -50,7 +47,7 @@ fn nix_eval_json(expr: &str) -> serde_json::Value {
     } else {
         expr.to_string()
     };
-    let out = StdCommand::new("nix-instantiate")
+    let out = sui_compat::cppnix::command("nix-instantiate")
         .args(["--eval", "--json", "--strict", "-E", &expr_arg])
         .output()
         .expect("spawn nix-instantiate");
