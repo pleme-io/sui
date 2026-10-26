@@ -181,7 +181,10 @@ impl LocalBuilder {
         let candidates = self.reference_candidates(drv, index).await;
         std::fs::create_dir_all(&build_dir)?;
         let build_dir = std::fs::canonicalize(&build_dir)?.to_string_lossy().into_owned();
-        for (path, value) in SandboxConfig::attr_files(&built, &build_dir) {
+        for (path, value) in crate::export_graph::attr_files(self.store.as_ref(), &built, &build_dir)
+            .await
+            .map_err(|e| BuildError::Failed(format!("preparing the build directory: {e}")))?
+        {
             std::fs::write(path, value)?;
         }
 
@@ -913,6 +916,7 @@ fn verify_fixed_output(output: &DerivationOutput, output_path: &str) -> Result<(
 
 #[cfg(test)]
 mod tests {
+    use crate::test_store::MockStore;
     use super::*;
     use std::collections::BTreeMap;
     use std::sync::Mutex;
@@ -924,66 +928,6 @@ mod tests {
     use crate::traits::BuildOutcome;
 
     // ── MockStore ─────────────────────────────────────────────
-
-    /// A simple in-memory store for testing.
-    struct MockStore {
-        paths: Mutex<BTreeMap<String, PathInfo>>,
-    }
-
-    impl MockStore {
-        fn new() -> Self {
-            Self {
-                paths: Mutex::new(BTreeMap::new()),
-            }
-        }
-
-        fn with_path(self, info: PathInfo) -> Self {
-            self.paths.lock().unwrap().insert(info.path.clone(), info);
-            self
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl Store for MockStore {
-        async fn query_path_info(
-            &self,
-            path: &StorePath,
-        ) -> sui_store::traits::StoreResult<Option<PathInfo>> {
-            let abs = path.to_absolute_path();
-            Ok(self.paths.lock().unwrap().get(&abs).cloned())
-        }
-
-        async fn is_valid_path(
-            &self,
-            path: &StorePath,
-        ) -> sui_store::traits::StoreResult<bool> {
-            let abs = path.to_absolute_path();
-            Ok(self.paths.lock().unwrap().contains_key(&abs))
-        }
-
-        async fn query_all_valid_paths(
-            &self,
-        ) -> sui_store::traits::StoreResult<Vec<StorePath>> {
-            Ok(self
-                .paths
-                .lock()
-                .unwrap()
-                .keys()
-                .filter_map(|p| StorePath::from_absolute_path(p).ok())
-                .collect())
-        }
-
-        async fn register_path(
-            &self,
-            info: &PathInfo,
-        ) -> sui_store::traits::StoreResult<()> {
-            self.paths
-                .lock()
-                .unwrap()
-                .insert(info.path.clone(), info.clone());
-            Ok(())
-        }
-    }
 
     // ── Helper ────────────────────────────────────────────────
 

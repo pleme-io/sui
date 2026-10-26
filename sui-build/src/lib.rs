@@ -13,11 +13,14 @@
 
 pub mod closure;
 pub mod convergence_builder;
+pub mod export_graph;
 pub mod local_builder;
 pub mod reference_scan;
 pub mod repair;
 pub mod sandbox;
 pub mod traits;
+#[cfg(test)]
+mod test_store;
 
 pub use closure::BuildClosure;
 pub use convergence_builder::{ConvergenceBuilder, ConvergenceMetadata};
