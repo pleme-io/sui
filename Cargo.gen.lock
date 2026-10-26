@@ -5,7 +5,7 @@
     "Cargo.toml": "b211edee90a4cb19e5bc94ccf5fa07d60b06753fa23af5d35ccfe224a43853c4",
     "canteiro-types/Cargo.toml": "140edf011d225b89a3a8b8cc15d5212e84c056493e7c8a5b488d1c7e88847388",
     "sui-bigorna/Cargo.toml": "c97c5d91369fe30b894299aaf4baac763f3a1f23d9ad51cb74d30cdeb7b8dc48",
-    "sui-build/Cargo.toml": "f2462ec086958f700ab3caf8f711d4ccd5c4b8373270b03514d586e2669598c0",
+    "sui-build/Cargo.toml": "159000b5e22f33e13b171da0e07f11c1e23204ac63fc5f93a44d0f1427a8d286",
     "sui-bytecode/Cargo.toml": "fea40d7d2b922a8987a8dcb3d35bb4072641f0d1fe95f6c6b6b9449c6659ee4b",
     "sui-cache-eval/Cargo.toml": "f16c2a3764aebcbc7d0583a9618dfadd596883dd4842c32b65843999034e5589",
     "sui-cache/Cargo.toml": "850c76ff1e7e4f20964245c633e176df5b44c0c70698e36dd3e8d8398c0b7472",
@@ -24244,6 +24244,16 @@
           {
             "name": "futures",
             "package_key": "futures-0.3.32",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "serde_json",
+            "package_key": "serde_json-1.0.150",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
