@@ -408,6 +408,21 @@ enum Commands {
 #[derive(Subcommand)]
 enum StoreCommands {
     PathInfo { path: String, #[arg(long)] json: bool },
+    /// cppnix's `nix-store --realise`: ensure store paths, build derivations,
+    /// print what results (or the permanent roots made for it).
+    Realise {
+        paths: Vec<String>,
+        /// Register each result as a permanent GC root at this link.
+        #[arg(long)] add_root: Option<String>,
+        /// Report only; realise nothing.
+        #[arg(long)] dry_run: bool,
+        /// Skip paths that are neither valid nor buildable.
+        #[arg(long)] ignore_unknown: bool,
+        /// [REFUSED] Rebuild and replace corrupt outputs.
+        #[arg(long)] repair: bool,
+        /// [REFUSED] Rebuild to check determinism.
+        #[arg(long)] check: bool,
+    },
     /// cppnix's `nix-store --query`: one query kind over the named paths.
     Query {
         paths: Vec<String>,
@@ -960,6 +975,8 @@ enum ProfileCommands {
     History { #[arg(long)] profile: Option<String> },
     #[command(name = "wipe-history")] WipeHistory { #[arg(long)] profile: Option<String>, #[arg(long)] older_than: Option<String> },
     Diff { #[arg(long)] profile: Option<String> },
+    /// cppnix's `nix-env --set`: a new generation pointing at `path`, switched to.
+    Set { path: String, #[arg(long)] profile: Option<String> },
 }
 
 #[derive(Subcommand)]
@@ -1439,6 +1456,88 @@ fn profile_dirs_to_clean() -> Vec<std::path::PathBuf> {
     dirs.sort();
     dirs.dedup();
     dirs
+}
+
+/// cppnix's `opRealise` + `realisePath`.
+async fn store_realise(
+    args: &[String],
+    add_root: Option<&str>,
+    dry_run: bool,
+    ignore_unknown: bool,
+) -> Result<Vec<String>, CliError> {
+    let fail = |message: String| CliError::Orchestrate { operation: "store realise", message };
+    let mut wanted: Vec<(String, Vec<String>)> = Vec::new();
+    for a in args {
+        let (path, outputs) = a.split_once('!').map_or((a.as_str(), None), |(p, o)| (p, Some(o)));
+        let path = sui_store::query::follow_links_to_store_path(path, "/nix/store").map_err(|e| fail(e.to_string()))?;
+        wanted.push((path, outputs.map(|o| o.split(',').map(str::to_string).collect()).unwrap_or_default()));
+    }
+    if ignore_unknown {
+        let mut kept = Vec::new();
+        for (p, o) in wanted {
+            if p.ends_with(".drv") || std::path::Path::new(&p).exists() {
+                kept.push((p, o));
+            }
+        }
+        wanted = kept;
+    }
+    if dry_run {
+        return Ok(Vec::new());
+    }
+    match sui_store::StoreAccess::detect() {
+        Some(sui_store::StoreAccess::Daemon(_)) | None => {
+            let socket = sui_store::default_daemon_socket();
+            let derived: Vec<String> = wanted
+                .iter()
+                .map(|(p, o)| if p.ends_with(".drv") { [p.as_str(), "!", &if o.is_empty() { "*".to_string() } else { o.join(",") }].concat() } else { p.clone() })
+                .collect();
+            let mut conn = sui_store::worker_client::WorkerConn::connect(&socket, None).map_err(|e| fail(e.to_string()))?;
+            conn.build_derived(&derived).map_err(|e| fail(e.to_string()))?;
+        }
+        Some(sui_store::StoreAccess::Direct(_)) => {
+            for (p, _) in &wanted {
+                if p.ends_with(".drv") {
+                    sui_orchestrate::realize_drv(p).await.map_err(|e| fail(e.to_string()))?;
+                } else if !std::path::Path::new(p).exists() {
+                    return Err(fail(format!("path '{p}' does not exist and cannot be created")));
+                }
+            }
+        }
+    }
+    let mut results = Vec::new();
+    let mut root_nr = 0usize;
+    for (p, outputs) in &wanted {
+        let mut produced: Vec<(String, String)> = Vec::new();
+        if p.ends_with(".drv") {
+            let drv = sui_compat::derivation::Derivation::parse(&std::fs::read(p).map_err(|e| fail(format!("{p}: {e}")))?)
+                .map_err(|e| fail(format!("{p}: {e}")))?;
+            let names: Vec<String> = if outputs.is_empty() { drv.outputs.keys().cloned().collect() } else { outputs.clone() };
+            for name in names {
+                let out = drv.outputs.get(&name).ok_or_else(|| fail(format!("derivation '{p}' does not have an output named '{name}'")))?;
+                produced.push((name, out.path.clone()));
+            }
+        } else {
+            produced.push(("out".into(), p.clone()));
+        }
+        root_nr += 1;
+        for (name, out) in produced {
+            match add_root {
+                None => results.push(out),
+                Some(root) => {
+                    let mut link = root.to_string();
+                    if root_nr > 1 {
+                        link = [link.as_str(), "-", &root_nr.to_string()].concat();
+                    }
+                    if name != "out" {
+                        link = [link.as_str(), "-", &name].concat();
+                    }
+                    let made = sui_store::gc_roots::add_perm_root(&out, std::path::Path::new(&link)).map_err(|e| fail(e.to_string()))?;
+                    results.push(made.to_string_lossy().into_owned());
+                }
+            }
+        }
+    }
+    Ok(results)
 }
 
 async fn store_delete(paths: &[String], ignore_liveness: bool) -> Result<(), CliError> {
@@ -6690,12 +6789,20 @@ async fn main() -> Result<(), CliError> {
     #[cfg(feature = "dhat-heap")]
     let _dhat_profiler = dhat::Profiler::new_heap();
 
+    let raw_args: Vec<String> = std::env::args().skip(1).collect();
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(legacy::log_level(&raw_args))),
         )
         .init();
+    let invoked_as = std::env::args().next().and_then(|a| std::path::Path::new(&a).file_name().map(|f| f.to_string_lossy().into_owned()));
+    if raw_args.iter().any(|a| a == "--version") {
+        if let Some(name) = invoked_as.as_deref().filter(|n| *n == "nix" || n.starts_with("nix-")) {
+            println!("{name} (Nix) {}", legacy::NIX_COMPAT_VERSION);
+            return Ok(());
+        }
+    }
 
     // LIVE-OBJECT CENSUS (SUI_LIVE_CENSUS=1). Zero-cost when off. Spawns a
     // thread that dumps live/made counts + RSS to stderr every 2s so a 30s+
@@ -6966,6 +7073,11 @@ async fn main() -> Result<(), CliError> {
                         }
                     }
                     for line in store.query(&query, &paths, use_output).await.map_err(|e| fail(e.to_string()))? {
+                        println!("{line}");
+                    }
+                }
+                StoreCommands::Realise { paths, add_root, dry_run, ignore_unknown, repair: _, check: _ } => {
+                    for line in store_realise(&paths, add_root.as_deref(), dry_run, ignore_unknown).await? {
                         println!("{line}");
                     }
                 }
@@ -8433,6 +8545,14 @@ async fn main() -> Result<(), CliError> {
         // eight and read by none, so the operator who named a profile got the
         // same silent default as the one who did not.
         Commands::Profile { command } => match command {
+            ProfileCommands::Set { path, profile } => {
+                let p = ProfilePath::resolve(profile.as_deref())?;
+                let store_path = sui_store::query::follow_links_to_store_path(&path, "/nix/store")
+                    .map_err(|e| CliError::Orchestrate { operation: "profile set", message: e.to_string() })?;
+                sui_store::ProfileManager::new(&p.dir, &p.stem)
+                    .set(std::path::Path::new(&store_path))
+                    .map_err(|e| CliError::Orchestrate { operation: "profile set", message: e.to_string() })?;
+            }
             ProfileCommands::List { profile, json } => {
                 profile_list(&ProfilePath::resolve(profile.as_deref())?, json)?;
             }

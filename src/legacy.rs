@@ -205,7 +205,7 @@ fn translate_store(args: &[String]) -> Vec<String> {
 fn expand_short_clusters(args: &[String]) -> Vec<String> {
     args.iter()
         .flat_map(|a| {
-            let letters = a.strip_prefix('-').filter(|r| !r.starts_with('-') && r.len() > 1 && r.chars().all(|c| c.is_ascii_alphabetic()));
+            let letters = a.strip_prefix('-').filter(|r| !r.is_empty() && !r.starts_with('-') && r.chars().all(|c| c.is_ascii_alphabetic()));
             match letters {
                 Some(r) => r.chars().map(|c| ['-', c].iter().collect::<String>()).collect::<Vec<_>>(),
                 None => vec![a.clone()],
@@ -238,8 +238,34 @@ fn translate_env(args: &[String]) -> Vec<String> {
     if let Some(op_name) = op {
         out.push(op_name.into());
     }
-    out.extend(rest);
+    out.extend(rest.into_iter().map(|a| if a == "-p" { "--profile".to_string() } else { a }));
     out
+}
+
+/// The nix version sui answers for: the version the `sui-as-nix` module
+/// declares to nix-darwin, and the one `--version` prints in cppnix's format.
+pub const NIX_COMPAT_VERSION: &str = "2.31.5";
+
+/// cppnix's verbosity flags read from the raw argv, before parsing: `--quiet`
+/// lowers the level, each `-v`/`--verbose` raises it (clusters count each v).
+#[must_use]
+pub fn log_level(args: &[String]) -> &'static str {
+    let quiet = args.iter().any(|a| a == "--quiet");
+    let verbose: usize = args
+        .iter()
+        .map(|a| match a.as_str() {
+            "--verbose" => 1,
+            s if s.starts_with('-') && !s.starts_with("--") && s.len() > 1 && s[1..].chars().all(|c| c == 'v') => s.len() - 1,
+            _ => 0,
+        })
+        .sum();
+    match (quiet, verbose) {
+        (true, 0) => "error",
+        (_, 0) => "warn",
+        (_, 1) => "info",
+        (_, 2) => "debug",
+        _ => "trace",
+    }
 }
 
 /// `nix-shell` → `sui develop`.  `-p PKG` becomes part of the
@@ -347,6 +373,32 @@ fn prefix_with_subs(head: &[&str], args: &[String]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_run_of_letters_after_one_dash_is_a_cluster() {
+        let s = |v: &[&str]| v.iter().map(|x| (*x).to_string()).collect::<Vec<_>>();
+        assert_eq!(expand_short_clusters(&s(&["-qR"])), s(&["-q", "-R"]));
+        for kept in ["--hash", "-v2", "-", "/nix/store/x", "-q"] {
+            assert_eq!(expand_short_clusters(&s(&[kept])), s(&[kept]), "{kept}");
+        }
+    }
+
+    #[test]
+    fn verbosity_follows_cppnixs_flags() {
+        let s = |v: &[&str]| v.iter().map(|x| (*x).to_string()).collect::<Vec<_>>();
+        assert_eq!(log_level(&s(&["build", "x"])), "warn");
+        assert_eq!(log_level(&s(&["--quiet", "x"])), "error");
+        assert_eq!(log_level(&s(&["-v", "x"])), "info");
+        assert_eq!(log_level(&s(&["-vv"])), "debug");
+        assert_eq!(log_level(&s(&["--verbose", "-v", "-v"])), "trace");
+        assert_eq!(log_level(&s(&["-vR"])), "warn", "a cluster with other letters is not verbosity");
+    }
+
+    #[test]
+    fn nix_env_profile_short_flag_is_the_long_one() {
+        let s = |v: &[&str]| v.iter().map(|x| (*x).to_string()).collect::<Vec<_>>();
+        assert_eq!(translate_env(&s(&["-p", "/p", "--set", "/nix/store/x"])), s(&["profile", "set", "--profile", "/p", "/nix/store/x"]));
+    }
 
     #[test]
     fn nix_store_query_keeps_its_flags_and_splits_clusters_as_cppnix() {

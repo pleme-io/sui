@@ -250,24 +250,12 @@ pub const CONTRACT: &[(&[&str], &str, Honour)] = &[
                      run from a keep-going run",
         },
     ),
-    (
-        &[],
-        "verbose",
-        Honour::Refused {
-            since: NOW,
-            reason: "asks for more diagnostic output; sui reads it nowhere, so the operator \
-                     reads a quiet run as a clean one",
-        },
-    ),
-    (
-        &[],
-        "quiet",
-        Honour::Refused {
-            since: NOW,
-            reason: "asks for less output; sui reads it nowhere, so a caller capturing stdout \
-                     gets noise it explicitly suppressed",
-        },
-    ),
+    // Read from the raw argv before parsing (legacy::log_level) to set the
+    // log level, as cppnix's verbosity flags do.
+    (&[], "verbose", H),
+    // Read from the raw argv before parsing (legacy::log_level) to set the
+    // log level, as cppnix's verbosity flags do.
+    (&[], "quiet", H),
     // ── serve ───────────────────────────────────────────────────────────
     (&["serve"], "listen", H),
     (&["serve"], "grpc_listen", H),
@@ -493,6 +481,14 @@ pub const CONTRACT: &[(&[&str], &str, Honour)] = &[
     (&["store", "delete"], "paths", H),
     // Wired before this pass: `store delete` REFUSES without it.
     (&["store", "delete"], "ignore_liveness", H),
+    (&["store", "realise"], "paths", H),
+    (&["store", "realise"], "add_root", H),
+    (&["store", "realise"], "dry_run", H),
+    (&["store", "realise"], "ignore_unknown", H),
+    (&["store", "realise"], "repair", Honour::Refused { since: "2026-10-25", reason: "`--repair` rebuilds and replaces corrupt outputs; sui's realise does not repair yet" }),
+    (&["store", "realise"], "check", Honour::Refused { since: "2026-10-25", reason: "`--check` rebuilds to compare outputs; sui's realise does not check determinism yet" }),
+    (&["profile", "set"], "path", H),
+    (&["profile", "set"], "profile", H),
     (&["store", "query"], "paths", H),
     (&["store", "query"], "outputs", H),
     (&["store", "query"], "requisites", H),
@@ -1207,7 +1203,7 @@ mod tests {
             assert!(err.to_string().contains("option"), "{argv:?}: {err}");
         }
         // …and a two-level subcommand, where propagation has one more hop.
-        let m = matches_from(&["sui", "cache", "info", "--quiet"]);
+        let m = matches_from(&["sui", "cache", "info", "--keep-going"]);
         enforce(&m).expect_err("a global must refuse under a nested subcommand too");
     }
 

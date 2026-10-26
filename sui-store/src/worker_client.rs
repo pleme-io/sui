@@ -395,6 +395,17 @@ impl WorkerConn {
         Ok(())
     }
 
+    /// `BuildPaths` over derived paths exactly as given: a store path is
+    /// ensured (substituted if missing), `<drv>!<outputs>` is built.
+    pub fn build_derived(&mut self, derived: &[String]) -> Result<(), WorkerError> {
+        self.call(WorkerOp::BuildPaths, |c| {
+            wire::write_string_list(&mut c.writer, derived)?;
+            c.u64(0)
+        })?;
+        let _ok = self.read_u64()?;
+        Ok(())
+    }
+
     /// `AddTempRoot` — keep `path` alive against GC for as long as this
     /// connection stays open (CppNix's temp-root semantics).
     ///

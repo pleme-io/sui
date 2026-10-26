@@ -311,7 +311,12 @@ impl ProfileManager {
         // Remove stale tmp if present from a previous crash.
         let _ = std::fs::remove_file(&tmp);
 
-        std::os::unix::fs::symlink(target, &tmp)?;
+        let relative = target
+            .parent()
+            .filter(|d| *d == self.profile_dir.as_path())
+            .and(target.file_name())
+            .map_or_else(|| target.to_path_buf(), PathBuf::from);
+        std::os::unix::fs::symlink(relative, &tmp)?;
         std::fs::rename(&tmp, &profile)?; // atomic on same filesystem
         Ok(())
     }
@@ -338,6 +343,15 @@ fn parse_generation_number(filename: &str, profile_name: &str) -> Result<u32, Pr
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_profile_points_at_its_generation_by_name_as_cppnix_switchlink_does() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pm = ProfileManager::new(tmp.path(), "prof");
+        pm.set(Path::new("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-x")).unwrap();
+        assert_eq!(std::fs::read_link(tmp.path().join("prof")).unwrap(), PathBuf::from("prof-1-link"));
+        assert_eq!(pm.current_generation().unwrap(), Some(1));
+    }
 
     fn generation(number: u32, days_old: u64, current: bool) -> Generation {
         let created = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000 * 86_400 - days_old * 86_400);
