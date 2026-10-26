@@ -843,6 +843,10 @@ pub(crate) fn http_agent() -> ureq::Agent {
 ///
 /// Body limit raised to 512 MiB to accommodate large inputs like nixpkgs tarballs.
 fn download_bytes(url: &str) -> Result<Vec<u8>, FetchError> {
+    download_with_accept(url, None)
+}
+
+fn download_with_accept(url: &str, accept: Option<&str>) -> Result<Vec<u8>, FetchError> {
     // `http_status_as_error(false)` is load-bearing, not a preference.
     //
     // ureq 3 defaults it to TRUE, which turns every non-2xx into
@@ -868,6 +872,10 @@ fn download_bytes(url: &str) -> Result<Vec<u8>, FetchError> {
     if let Some(token) = github_token_for_url(url)? {
         req = req.header("Authorization", &format!("token {token}"));
     }
+    if let Some(accept) = accept {
+        req = req.header("Accept", accept);
+    }
+    req = req.header("User-Agent", concat!("sui/", env!("CARGO_PKG_VERSION")));
 
     let mut response = req
         .call()
@@ -1090,17 +1098,105 @@ pub fn resolve_indirect(
     id: &str,
     reference: Option<&str>,
 ) -> Result<String, FetchError> {
+    resolve_indirect_with(registries, id, reference, &global_registry_lookup)
+}
+
+fn resolve_indirect_with(
+    registries: &sui_spec::registry::Registries,
+    id: &str,
+    reference: Option<&str>,
+    global: &dyn Fn(&str) -> Option<String>,
+) -> Result<String, FetchError> {
     if let Some(r) = reference {
         return Err(FetchError::UnsupportedType(format!(
             "`{id}/{r}`: a ref override on a registry name is not resolved yet"
         )));
     }
-    let entry = sui_spec::registry::resolve(registries, id).map_err(|_| {
-        FetchError::UnsupportedType(format!(
-            "`{id}` is in neither the user nor the system flake registry; the global registry is not consulted yet"
-        ))
-    })?;
-    Ok(entry.to.strip_prefix("path:").map_or(entry.to.clone(), |p| p.to_string()))
+    let target = match sui_spec::registry::resolve(registries, id) {
+        Ok(entry) => entry.to.clone(),
+        Err(_) => global(id).ok_or_else(|| {
+            FetchError::UnsupportedType(format!("`{id}` is in no flake registry (user, system or global)"))
+        })?,
+    };
+    Ok(target.strip_prefix("path:").map_or(target.clone(), |p| p.to_string()))
+}
+
+const TARBALL_TTL: std::time::Duration = std::time::Duration::from_secs(3600);
+
+/// `url`'s body, cached under `name` for cppnix's tarball TTL; a failed
+/// download falls back to a stale copy, as cppnix does.
+fn cached_download(name: &str, url: &str, accept: Option<&str>) -> Result<Vec<u8>, FetchError> {
+    let path = sui_cache_dir("http").join(name);
+    let fresh = std::fs::metadata(&path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .is_some_and(|age| age < TARBALL_TTL);
+    if fresh {
+        if let Ok(bytes) = std::fs::read(&path) {
+            return Ok(bytes);
+        }
+    }
+    match download_with_accept(url, accept) {
+        Ok(bytes) => {
+            if let Some(dir) = path.parent() {
+                let _ = std::fs::create_dir_all(dir);
+                let tmp = path.with_extension(format!("tmp{}", std::process::id()));
+                if std::fs::write(&tmp, &bytes).is_ok() {
+                    let _ = std::fs::rename(&tmp, &path);
+                }
+            }
+            Ok(bytes)
+        }
+        Err(e) => std::fs::read(&path).map_err(|_| e),
+    }
+}
+
+/// cppnix's global registry: nix.conf `flake-registry`, fetched and cached;
+/// the embedded copy when it cannot be had.
+fn global_registry_lookup(id: &str) -> Option<String> {
+    let url = sui_compat::nix_conf::NixConfig::load()
+        .ok()
+        .and_then(|c| c.get("flake-registry").map(str::to_owned))
+        .unwrap_or_else(|| "https://channels.nixos.org/flake-registry.json".to_string());
+    let fetched = if url.starts_with("http://") || url.starts_with("https://") {
+        cached_download("flake-registry.json", &url, None).ok().map(|b| String::from_utf8_lossy(&b).into_owned())
+    } else {
+        std::fs::read_to_string(url.strip_prefix("file://").unwrap_or(&url)).ok()
+    };
+    fetched
+        .and_then(|body| crate::builtins::flake_registry::parse_registry_json(&body).lookup(id).map(str::to_owned))
+        .or_else(|| crate::builtins::flake_registry::Registry::global().lookup(id).map(str::to_owned))
+}
+
+/// A registry target `github:owner/repo` follows the default branch, as
+/// cppnix resolves it; a typed ref without a rev stays refused.
+fn default_branch(target: String) -> String {
+    match target.strip_prefix("github:") {
+        Some(spec) if !spec.contains('?') && spec.split('/').count() == 2 => format!("{target}/HEAD"),
+        _ => target,
+    }
+}
+
+fn is_commit(rev: &str) -> bool {
+    rev.len() == 40 && rev.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// The commit a GitHub branch or tag names now, as cppnix asks the API for
+/// it (`Accept: application/vnd.github.sha`), cached for the tarball TTL.
+fn github_commit(owner: &str, repo: &str, reference: &str) -> Result<String, FetchError> {
+    if is_commit(reference) {
+        return Ok(reference.to_string());
+    }
+    let url = format!("https://api.github.com/repos/{owner}/{repo}/commits/{reference}");
+    let name = format!("github-ref-{owner}-{repo}-{}", url_to_safe_name(reference));
+    let body = cached_download(&name, &url, Some("application/vnd.github.sha"))?;
+    let sha = String::from_utf8_lossy(&body).trim().to_string();
+    if is_commit(&sha) {
+        Ok(sha)
+    } else {
+        Err(FetchError::Download(format!("{url}: not a commit: {}", sha.chars().take(80).collect::<String>())))
+    }
 }
 
 pub fn cached_input_dir(nar_hash: &str) -> Option<PathBuf> {
@@ -1421,8 +1517,36 @@ mod tests {
             (RegistryScope::User, vec![entry("nixpkgs", "path:/nix/store/user-source")]),
         ];
         assert_eq!(resolve_indirect(&registries, "nixpkgs", None).unwrap(), "/nix/store/user-source");
-        assert!(resolve_indirect(&registries, "absent", None).is_err());
+        let none = |_: &str| None;
+        assert!(resolve_indirect_with(&registries, "absent", None, &none).is_err());
         assert!(resolve_indirect(&registries, "nixpkgs", Some("nixos-25.11")).is_err());
+    }
+
+    #[test]
+    fn a_name_in_no_local_registry_comes_from_the_global_one() {
+        let global = |id: &str| (id == "home-manager").then(|| "github:nix-community/home-manager".to_string());
+        assert_eq!(resolve_indirect_with(&Vec::new(), "home-manager", None, &global).unwrap(), "github:nix-community/home-manager");
+        assert!(resolve_indirect_with(&Vec::new(), "absent", None, &global).is_err());
+        assert_eq!(
+            crate::builtins::flake_registry::Registry::global().lookup("nixpkgs"),
+            Some("github:NixOS/nixpkgs/nixpkgs-unstable")
+        );
+    }
+
+    #[test]
+    fn a_two_part_registry_target_follows_the_default_branch() {
+        assert_eq!(default_branch("github:numtide/flake-utils".into()), "github:numtide/flake-utils/HEAD");
+        assert_eq!(default_branch("github:NixOS/nixpkgs/nixpkgs-unstable".into()), "github:NixOS/nixpkgs/nixpkgs-unstable");
+        assert_eq!(default_branch("/nix/store/x-source".into()), "/nix/store/x-source");
+        assert_eq!(default_branch("github:o/r?dir=x".into()), "github:o/r?dir=x");
+    }
+
+    #[test]
+    fn only_a_full_hex_sha_is_a_commit() {
+        assert!(is_commit("0123456789abcdef0123456789abcdef01234567"));
+        assert!(!is_commit("nixpkgs-unstable"));
+        assert!(!is_commit("0123456789abcdef0123456789abcdef0123456"));
+        assert!(!is_commit("0123456789abcdef0123456789abcdef0123456g"));
     }
     use std::collections::BTreeMap;
 
@@ -2081,7 +2205,7 @@ pub fn resolve_flake_dir(flake_ref: &FlakeRef) -> Result<std::path::PathBuf, Fet
     if let sui_compat::flake_ref::FlakeSource::Indirect { id, reference } = &flake_ref.source {
         let registries = sui_spec::registry::discover_disk_registries()
             .map_err(|e| FetchError::UnsupportedType(format!("flake registry: {e:?}")))?;
-        let target = resolve_indirect(&registries, id, reference.as_deref())?;
+        let target = default_branch(resolve_indirect(&registries, id, reference.as_deref())?);
         let resolved = FlakeRef::parse(&[target.as_str(), "#", &flake_ref.attribute].concat())
             .map_err(|e| FetchError::UnsupportedType(format!("registry target `{target}` for `{id}`: {e}")))?;
         if matches!(resolved.source, sui_compat::flake_ref::FlakeSource::Indirect { .. }) {
@@ -2092,10 +2216,16 @@ pub fn resolve_flake_dir(flake_ref: &FlakeRef) -> Result<std::path::PathBuf, Fet
     match flake_ref.local_dir() {
         Some(p) => Ok(p.to_path_buf()),
         None => {
-            let locked = flake_ref
+            let mut locked = flake_ref
                 .source
                 .locked_input()
                 .ok_or_else(|| FetchError::UnsupportedType("non-fetchable flake source".into()))?;
+            if locked.source_type == "github"
+                && let (Some(owner), Some(repo), Some(rev)) = (&locked.owner, &locked.repo, &locked.rev)
+                && !is_commit(rev)
+            {
+                locked.rev = Some(github_commit(owner, repo, rev)?);
+            }
             InputFetcher::new().fetch(&locked)
         }
     }
