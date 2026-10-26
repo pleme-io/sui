@@ -21,7 +21,7 @@ pub mod storage;
 pub use config::BackendConfig;
 pub use env_expand::{expand_env_vars, ExpandEnvError};
 pub use storage::{
-    admit, admit_bytes, admit_stored, is_servable_under, resign_stored, AdmissionError, AdmittedNarInfo,
+    admit, admit_bytes, admit_stored, content_keyed_nar_path, is_servable_under, nar_content_key, resign_stored, AdmissionError, AdmittedNarInfo,
     CacheUniverse, RecordWrite, RefUniverse, Refusal,
     advertised_nar_url, advertised_url_line, build_backend, bytes_stream, collect_nar,
     empty_stream, file_stream, is_addressable_nar_path, is_servable_narinfo, referrer_of,

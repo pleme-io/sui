@@ -410,6 +410,18 @@ async fn get_nar(State(state): State<AppState>, Path(path): Path<String>) -> imp
     }
 }
 
+/// sha256 of a staged upload, read once more in bounded chunks.
+async fn sha256_of(src: &dyn sui_castore::NarSource) -> Result<[u8; 32], crate::CacheError> {
+    use futures::StreamExt;
+    use sha2::Digest;
+    let mut stream = src.open().await?;
+    let mut sha = sha2::Sha256::new();
+    while let Some(chunk) = stream.next().await {
+        sha.update(&chunk?);
+    }
+    Ok(sha.finalize().into())
+}
+
 /// `PUT /nar/{path}` — **streams** a compressed NAR blob into storage.
 ///
 /// The request body is spooled in bounded chunks (see
@@ -463,6 +475,32 @@ async fn put_nar(
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
     };
+
+    // A content-keyed name (`nar/<nix32 sha256>.nar…`, the layout cppnix and
+    // sui's push write) is a claim about the bytes; an upload that does not
+    // hash to its own name is refused, so no name can ever hold two
+    // builders' bytes. Other names (the old store-hash layout) pass as before.
+    if let Some(want) = sui_castore::nar_content_key(&nar_path) {
+        match sha256_of(src.as_ref()).await {
+            Ok(got) if got == want => {}
+            Ok(got) => {
+                let actual = sui_compat::store_path::nix_base32_encode(&got);
+                tracing::warn!(
+                    nar_path = %nar_path, actual = %actual,
+                    "put_nar: refusing bytes that do not hash to their content-keyed name",
+                );
+                return (
+                    StatusCode::BAD_REQUEST,
+                    format!("{nar_path} names other bytes; the upload hashes to sha256:{actual}"),
+                )
+                    .into_response();
+            }
+            Err(e) => {
+                tracing::error!(nar_path = %nar_path, error = %e, "put_nar: could not re-read the staged upload");
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            }
+        }
+    }
 
     // See `put_narinfo` for the write-path policy and why it is deliberately
     // asymmetric with the read path.
@@ -1341,14 +1379,42 @@ mod tests {
         let e = entry("abc", &[]);
         assert_eq!(put(&app, "/abc.narinfo", e.text.clone()).await, StatusCode::BAD_REQUEST, "NAR missing");
 
-        let req = axum::http::Request::builder()
-            .method("PUT")
-            .uri(format!("/{}", e.url))
-            .body(Body::from(b"other builder's bytes".to_vec()))
-            .unwrap();
-        assert_eq!(app.clone().oneshot(req).await.unwrap().status(), StatusCode::OK);
-        assert_eq!(put(&app, "/abc.narinfo", e.text.clone()).await, StatusCode::BAD_REQUEST, "bytes differ");
+        let old_layout = "nar/abcabcabcabcabcabcabcabcabcabcab.nar";
+        assert_eq!(put(&app, &format!("/{old_layout}"), b"other builder's bytes".to_vec()).await, StatusCode::OK);
+        let lie = e.text.replace(&e.url, old_layout);
+        assert_eq!(put(&app, "/abc.narinfo", lie).await, StatusCode::BAD_REQUEST, "bytes differ");
         assert_eq!(get(&app, "/abc.narinfo").await.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// A content-keyed NAR name is a claim about the bytes: an upload that
+    /// does not hash to its name is refused, so one name never holds two
+    /// builders' bytes. The right bytes are accepted.
+    #[tokio::test]
+    async fn put_nar_refuses_bytes_that_do_not_hash_to_their_content_keyed_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = test_app(dir.path());
+        let e = entry("abc", &[]);
+        assert_eq!(put(&app, &format!("/{}", e.url), b"other builder's bytes".to_vec()).await, StatusCode::BAD_REQUEST);
+        assert_eq!(get(&app, &format!("/{}", e.url)).await.status(), StatusCode::NOT_FOUND, "nothing stored");
+        assert_eq!(put(&app, &format!("/{}", e.url), e.nar_file.clone()).await, StatusCode::OK);
+        assert_eq!(body_bytes(get(&app, &format!("/{}", e.url)).await).await, e.nar_file);
+    }
+
+    /// The old layout stays readable: an entry whose NAR sui stored under
+    /// `nar/<store-hash>.nar.zst` before content keying is still admitted
+    /// and served end to end.
+    #[tokio::test]
+    async fn an_entry_in_the_old_store_hash_layout_is_still_admitted_and_served() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = test_app(dir.path());
+        let e = entry("abc", &[]);
+        let old_url = "nar/abc.nar";
+        assert_eq!(put(&app, &format!("/{old_url}"), e.nar_file.clone()).await, StatusCode::OK);
+        let text = e.text.replace(&e.url, old_url);
+        assert_eq!(put(&app, "/abc.narinfo", text).await, StatusCode::OK);
+        let served = NarInfo::parse(&body_string(get(&app, "/abc.narinfo").await).await).unwrap();
+        assert_eq!(served.url, old_url);
+        assert_eq!(body_bytes(get(&app, &format!("/{old_url}")).await).await, e.nar_file);
     }
 
     /// Serve-time admission: a stored entry that names another store path

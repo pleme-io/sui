@@ -98,8 +98,13 @@ pub async fn push_path(
     // 4. Hash compressed NAR.
     let file_hash = sha256_hex(&compressed);
 
-    // 5. Build narinfo.
-    let nar_url = format!("nar/{hash}{suffix}", suffix = codec.url_suffix());
+    // 5. Build narinfo. The NAR is keyed by its own content (FileHash), as
+    //    cppnix keys it, never by the store hash: two builders' bytes for one
+    //    store path then live at two URLs and cannot overwrite each other
+    //    under a narinfo that describes the other. Entries written under the
+    //    old `nar/<store-hash>` layout stay readable; their URL is theirs.
+    let file_digest: [u8; 32] = Sha256::digest(&compressed).into();
+    let nar_url = sui_castore::content_keyed_nar_path(&file_digest, codec.url_suffix());
     let narinfo = NarInfo {
         store_path: store_path.to_string(),
         url: nar_url.clone(),
@@ -553,9 +558,47 @@ mod tests {
         assert!(parsed.signatures[0].starts_with("test-cache:"));
 
         // Verify NAR blob was uploaded.
-        let nar_key = format!("nar/abc{}", NarCodec::default().url_suffix());
-        let nar = storage.get_nar(&nar_key).await.unwrap().unwrap();
+        let nar = storage.get_nar(&parsed.url).await.unwrap().unwrap();
         assert!(!nar.is_empty());
+        let digest: [u8; 32] = Sha256::digest(&nar).into();
+        assert_eq!(
+            sui_castore::nar_content_key(&parsed.url),
+            Some(digest),
+            "the NAR is keyed by its own bytes"
+        );
+        assert!(parsed.url.ends_with(NarCodec::default().url_suffix()));
+    }
+
+    /// Two builders' bytes for one store path (the cid serde receipt,
+    /// 2026-10-26: sui on cid and cppnix on ryn produced different rlibs for
+    /// one drv). Each push stores its NAR at its own URL; the first entry's
+    /// NAR is untouched by the second, so a narinfo can never be served over
+    /// another builder's bytes.
+    #[tokio::test]
+    async fn two_builders_bytes_for_one_store_path_never_alias() {
+        let cache_dir = tempfile::tempdir().unwrap();
+        let storage = LocalStorage::new(cache_dir.path());
+        let signer = CacheSigner::generate("k".to_string());
+        let none = std::collections::BTreeSet::<String>::new();
+        let mut pushed = Vec::new();
+        for bytes in [b"rlib by builder A".as_slice(), b"rlib by builder B".as_slice()] {
+            let store_dir = tempfile::tempdir().unwrap();
+            let path = store_dir.path().join("srd-rust_serde_core-lib");
+            std::fs::create_dir_all(&path).unwrap();
+            std::fs::write(path.join("libserde_core.rlib"), bytes).unwrap();
+            push_path(&storage, &signer, path.to_str().unwrap(), "srd", &[], None, NarCodec::default(), &none)
+                .await
+                .unwrap();
+            pushed.push(NarInfo::parse(&storage.get_narinfo("srd").await.unwrap().unwrap()).unwrap());
+        }
+        assert_ne!(pushed[0].url, pushed[1].url, "each builder's bytes get their own URL");
+        let first = storage.get_nar(&pushed[0].url).await.unwrap().unwrap();
+        let digest: [u8; 32] = Sha256::digest(&first).into();
+        assert_eq!(
+            sui_compat::hash::NixHash::parse_any(sui_compat::hash::HashAlgorithm::Sha256, &pushed[0].file_hash).unwrap().digest,
+            digest.to_vec(),
+            "the first entry's NAR still matches the first entry's FileHash"
+        );
     }
 
     /// The push and watch mode of the cid receipt: the local store's own
@@ -1027,7 +1070,8 @@ mod tests {
 
         let parsed = NarInfo::parse(&storage.get_narinfo("cfgd").await.unwrap().unwrap()).unwrap();
         assert_eq!(parsed.compression, "xz");
-        assert_eq!(parsed.url, "nar/cfgd.nar.xz");
+        assert!(parsed.url.ends_with(".nar.xz"), "{}", parsed.url);
+        assert!(sui_castore::nar_content_key(&parsed.url).is_some(), "content-keyed: {}", parsed.url);
         // And it is NOT the default — otherwise this test would pass while the
         // configuration was being ignored entirely.
         assert_ne!(configured, NarCodec::default());

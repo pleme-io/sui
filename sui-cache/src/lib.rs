@@ -53,7 +53,7 @@ pub use signing::{CacheSigner, verify_narinfo_signature};
 // Storage primitives — all moved to sui-castore, re-exported here.
 pub use sui_castore::{
     AdmissionError, AdmittedNarInfo, CacheUniverse, RecordWrite, RefUniverse,
-    Refusal, admit, admit_bytes, admit_stored, is_servable_under,
+    Refusal, admit, admit_bytes, admit_stored, content_keyed_nar_path, is_servable_under, nar_content_key,
     BytesNarSource, DEFAULT_INGEST_MEMORY_CAP, FileNarSource, LocalStorage, MemNarRefIndex,
     NAR_CHUNK_BYTES, NAR_REF_PREFIX, NarRefIndex, NarRefKey, NarRefScan, NarResidency, NarSource,
     NarStream, PgCacheConn, PgStorageBackend, PgTable, RedisBackend, RedisConn, S3Storage,

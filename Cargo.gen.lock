@@ -8,7 +8,7 @@
     "sui-build/Cargo.toml": "159000b5e22f33e13b171da0e07f11c1e23204ac63fc5f93a44d0f1427a8d286",
     "sui-bytecode/Cargo.toml": "fea40d7d2b922a8987a8dcb3d35bb4072641f0d1fe95f6c6b6b9449c6659ee4b",
     "sui-cache-eval/Cargo.toml": "f16c2a3764aebcbc7d0583a9618dfadd596883dd4842c32b65843999034e5589",
-    "sui-cache/Cargo.toml": "d1ceee54a2da23f0cdf67ba5d3fd6eecac7b4ae1a2d8af1ede2b7a7a45645063",
+    "sui-cache/Cargo.toml": "7358ff05d58115c06f9063987189e6ac798a588def010f41b76bb7b936533c55",
     "sui-castore/Cargo.toml": "2274386008eaea9cc08b74a3010b70d3822f99e8f44d5faed22d74606f5712ca",
     "sui-compat/Cargo.toml": "42be3547d7d5570928c71813e12b482da16331a967a65f182d02ac21e7a9cda9",
     "sui-daemon-client/Cargo.toml": "d8acc61441eadccaf9bb426aa83dfdb71bc628ac13eb23bd2e73ac5fdfb0e477",
@@ -24486,6 +24486,16 @@
               "rand_core",
               "std"
             ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "futures",
+            "package_key": "futures-0.3.32",
+            "kind": "normal",
+            "features": [],
             "uses_default_features": true,
             "optional": false,
             "target": null,

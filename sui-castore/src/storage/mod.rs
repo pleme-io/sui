@@ -29,7 +29,7 @@ pub mod tiered;
 use std::sync::Arc;
 
 pub use admission::{
-    admit, admit_bytes, admit_stored, is_servable_under, resign_stored, AdmissionError, AdmittedNarInfo,
+    admit, admit_bytes, admit_stored, content_keyed_nar_path, is_servable_under, nar_content_key, resign_stored, AdmissionError, AdmittedNarInfo,
     CacheUniverse, RecordWrite, RefUniverse, Refusal,
 };
 pub use index::StorageIndex;

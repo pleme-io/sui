@@ -119,6 +119,14 @@ pub enum Refusal {
         /// As measured (nix32).
         actual: String,
     },
+    /// `URL:` is content-keyed (`nar/<nix32 sha256>.nar…`) but names other
+    /// bytes than the NAR file: two builders' bytes would alias.
+    NarKeyMismatch {
+        /// The advertised URL.
+        url: String,
+        /// The compressed bytes' sha256 (nix32).
+        actual: String,
+    },
     /// The NAR names real store paths `References:` does not list.
     OmittedReferences {
         /// The store hashes named and not listed.
@@ -142,6 +150,7 @@ impl Refusal {
             Self::FileHashMismatch { .. } => "file-hash-mismatch",
             Self::NarSizeMismatch { .. } => "nar-size-mismatch",
             Self::NarHashMismatch { .. } => "nar-hash-mismatch",
+            Self::NarKeyMismatch { .. } => "nar-key-mismatch",
             Self::OmittedReferences { .. } => "omitted-references",
         }
     }
@@ -170,6 +179,9 @@ impl fmt::Display for Refusal {
             }
             Self::NarHashMismatch { declared, actual } => {
                 write!(f, "NarHash {declared} but the NAR hashes to sha256:{actual}")
+            }
+            Self::NarKeyMismatch { url, actual } => {
+                write!(f, "URL {url} names other bytes than the NAR file, which hashes to sha256:{actual}")
             }
             Self::OmittedReferences { hashes } => write!(
                 f,
@@ -333,6 +345,31 @@ impl AdmittedNarInfo {
         });
         Self { key: key.to_string(), info, text: text.to_string() }
     }
+}
+
+/// The sha256 a content-keyed NAR path names: `nar/<52 nix32 chars>.nar…`,
+/// the layout cppnix writes (`nar/<FileHash>.nar.xz`). `None` for any other
+/// name, such as the store-hash-keyed `nar/<32 chars>.nar.zst` sui wrote
+/// before, which stays readable.
+///
+/// A content-keyed name cannot be reused for other bytes, so two builders'
+/// NARs for one store path never overwrite or alias each other.
+#[must_use]
+pub fn nar_content_key(nar_path: &str) -> Option<[u8; 32]> {
+    let file = nar_path.strip_prefix("nar/")?;
+    let (stem, ext) = file.split_once('.')?;
+    if stem.len() != 52 || !ext.starts_with("nar") {
+        return None;
+    }
+    let digest = sui_compat::hash::decode_hash_any(HashAlgorithm::Sha256, stem).ok()?;
+    digest.try_into().ok()
+}
+
+/// The content-keyed NAR path for compressed bytes with sha256 `file_sha256`
+/// and URL suffix `suffix` (`.nar`, `.nar.xz`, `.nar.zst`).
+#[must_use]
+pub fn content_keyed_nar_path(file_sha256: &[u8; 32], suffix: &str) -> String {
+    format!("nar/{}{suffix}", sui_compat::store_path::nix_base32_encode(file_sha256))
 }
 
 /// Whether a stored narinfo is fit to serve under `key` without reading its
@@ -510,6 +547,9 @@ async fn judge(
     if info.file_size != file_size {
         return Err(Refusal::FileSizeMismatch { declared: info.file_size, actual: file_size }.into());
     }
+    if nar_content_key(&info.url).is_some_and(|k| k != *file_sha) {
+        return Err(Refusal::NarKeyMismatch { url: info.url.clone(), actual: nix32(file_sha) }.into());
+    }
     if declared_sha256("FileHash", &info.file_hash)? != file_sha {
         return Err(Refusal::FileHashMismatch { declared: info.file_hash.clone(), actual: nix32(file_sha) }.into());
     }
@@ -633,13 +673,16 @@ mod tests {
         let refs: Vec<&str> = refs.iter().map(String::as_str).collect();
         let good = narinfo(&nar, &nar, "none", &refs);
         let other = nar_of(tempfile::tempdir().unwrap().path());
-        let wrong_nar_hash = good.replace(
-            &NixHash::of(HashAlgorithm::Sha256, &nar).to_nix32(),
-            &NixHash::of(HashAlgorithm::Sha256, &other).to_nix32(),
+        let (mine, theirs) = (
+            NixHash::of(HashAlgorithm::Sha256, &nar).to_nix32(),
+            NixHash::of(HashAlgorithm::Sha256, &other).to_nix32(),
         );
         let cases: Vec<(String, &str)> = vec![
             (good.replace(&format!("FileSize: {}", nar.len()), "FileSize: 1"), "file-size-mismatch"),
-            (wrong_nar_hash, "file-hash-mismatch"),
+            (good.replace(&format!("FileHash: sha256:{mine}"), &format!("FileHash: sha256:{theirs}")), "file-hash-mismatch"),
+            (good.replace(&format!("URL: nar/{mine}"), &format!("URL: nar/{theirs}")), "nar-key-mismatch"),
+            (good.replace(&format!("NarHash: sha256:{mine}"), &format!("NarHash: sha256:{theirs}")), "nar-hash-mismatch"),
+            (good.replace(&format!("URL: nar/{mine}"), "URL: nar/old-store-hash-layout"), "ok"),
             (good.replace("Compression: none", "Compression: bzip2"), "unsupported-compression"),
             (good.replace(&format!("/nix/store/{SELF}"), &format!("/nix/store/{STD}")), "key-mismatch"),
             (good.replace("URL: nar/", "URL: ../"), "unaddressable-url"),
@@ -704,6 +747,23 @@ mod tests {
         assert!(u.is_real(STD).await.unwrap(), "a servable narinfo makes a hash real");
         assert!(!u.is_real(DOC).await.unwrap(), "a non-narinfo value does not");
         assert!(!u.is_real(SELF).await.unwrap(), "an absent key does not");
+    }
+
+    #[test]
+    fn a_content_key_is_the_nix32_file_hash_and_nothing_else_is() {
+        let digest: [u8; 32] = sha2::Sha256::digest(b"bytes").into();
+        for suffix in [".nar", ".nar.xz", ".nar.zst"] {
+            let path = content_keyed_nar_path(&digest, suffix);
+            assert_eq!(nar_content_key(&path), Some(digest), "{path}");
+        }
+        assert_eq!(nar_content_key(&format!("nar/{SELF}.nar.zst")), None, "store-hash layout");
+        assert_eq!(nar_content_key("nar/x.nar"), None);
+        assert_eq!(nar_content_key("other/aaaa.nar"), None);
+        let path = content_keyed_nar_path(&digest, ".tar");
+        assert_eq!(nar_content_key(&path), None, "not a NAR suffix");
+        let mut bad = content_keyed_nar_path(&digest, ".nar");
+        bad.replace_range(4..5, "e");
+        assert_eq!(nar_content_key(&bad), None, "not nix32");
     }
 
     #[test]
