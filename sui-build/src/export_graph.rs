@@ -10,7 +10,7 @@ use crate::sandbox::SandboxConfig;
 struct Infos<'a> {
     store: &'a dyn Store,
     known: BTreeMap<String, PathInfo>,
-    read_drv: &'a dyn Fn(&str) -> std::io::Result<Vec<u8>>,
+    read_drv: &'a (dyn Fn(&str) -> std::io::Result<Vec<u8>> + Sync),
 }
 
 impl Infos<'_> {
@@ -132,7 +132,7 @@ async fn attr_files_with(
     store: &dyn Store,
     drv: &Derivation,
     build_dir: &str,
-    read_drv: &dyn Fn(&str) -> std::io::Result<Vec<u8>>,
+    read_drv: &(dyn Fn(&str) -> std::io::Result<Vec<u8>> + Sync),
 ) -> StoreResult<Vec<(String, String)>> {
     let mut infos = Infos { store, known: BTreeMap::new(), read_drv };
     if let Some(mut json) = SandboxConfig::structured_attrs(drv) {
