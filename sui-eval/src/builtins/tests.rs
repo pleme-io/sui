@@ -2676,6 +2676,23 @@ fn builtins_find_file_not_found() {
     } else { panic!(); }
 }
 
+#[test] fn a_derivation_attribute_that_throws_fails_the_derivation_in_every_env_mode() {
+    for structured in ["false", "true"] {
+        for (attr, value) in [
+            ("src", r#"throw "boom""#),
+            ("src", r#"abort "boom""#),
+            ("src", r#"(assert false; "x")"#),
+            ("buildInputs", r#"[ (throw "boom") ]"#),
+            ("passthru", r#"{ x = 1; }.y"#),
+        ] {
+            let expr = format!(
+                r#"(derivation {{ name = "t"; system = "x86_64-linux"; builder = "/bin/sh"; __structuredAttrs = {structured}; {attr} = {value}; }}).drvPath"#
+            );
+            assert!(eval(&expr).is_err(), "structured={structured} {attr} = {value} must fail as in cppnix, not drop the attribute");
+        }
+    }
+}
+
 #[test] fn builtins_to_xml_int() {
     let v = ev("builtins.toXML 42");
     let s = v.as_string().unwrap();

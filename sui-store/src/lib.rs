@@ -27,6 +27,7 @@ pub mod gc_roots;
 pub mod http;
 pub mod local;
 pub mod nar;
+pub mod path_lock;
 pub mod pg;
 pub mod profile;
 pub mod query;

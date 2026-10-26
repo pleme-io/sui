@@ -238,6 +238,11 @@ impl LocalStore {
         &self.store_dir
     }
 
+    async fn lock_store_path(&self, path: &str) -> StoreResult<crate::path_lock::PathLock> {
+        let basename = path.rsplit('/').next().unwrap_or_default();
+        crate::path_lock::PathLock::acquire_async(Path::new(&self.store_dir).join(basename)).await
+    }
+
     fn unpack_at(&self, path: &str, nar: &[u8]) -> StoreResult<()> {
         let basename = path.rsplit('/').next().unwrap_or_default();
         let dest = Path::new(&self.store_dir).join(basename);
@@ -508,6 +513,17 @@ impl Store for LocalStore {
     }
 
     async fn add_nar_at(&self, info: &PathInfo, nar_data: &[u8]) -> StoreResult<()> {
+        self.add_nar_at_with(info, nar_data, false).await
+    }
+
+    async fn add_nar_at_with(&self, info: &PathInfo, nar_data: &[u8], repair: bool) -> StoreResult<()> {
+        let _lock = self.lock_store_path(&info.path).await?;
+        if self.find_by_path(&info.path).await?.is_some() {
+            if repair {
+                self.unpack_at(&info.path, nar_data)?;
+            }
+            return Ok(());
+        }
         self.unpack_at(&info.path, nar_data)?;
         self.register_path(info).await
     }
@@ -556,6 +572,12 @@ impl Store for LocalStore {
         let store_path = make_fixed_output_path_from_ca(&self.store_dir, method, &ca_hash, references, name)
             .map_err(|e| StoreError::Internal(e.to_string()))?;
 
+        if !repair {
+            if let Some(existing) = self.find_by_path(&store_path).await? {
+                return self.model_to_path_info(&existing).await;
+            }
+        }
+        let _lock = self.lock_store_path(&store_path).await?;
         if let Some(existing) = self.find_by_path(&store_path).await? {
             if repair {
                 self.unpack_at(&store_path, &nar)?;
@@ -2535,6 +2557,63 @@ mod tests {
         store.add_nar_at(&info, &nar_data).await.unwrap();
 
         assert_eq!(std::fs::read(&wanted).unwrap(), b"dev");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn writers_adding_one_path_at_once_all_succeed_and_register_it_once() {
+        use sui_compat::content_address::ContentAddressMethod;
+        use sui_compat::hash::{HashAlgorithm, NixHash};
+        use sui_compat::nar::{NarNode, NarWriter};
+
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let store_dir = tmp_dir.path().to_str().unwrap().to_string();
+        let store = std::sync::Arc::new(LocalStore::open_in_memory_with_dir(&store_dir).await.unwrap());
+        let mut nar = Vec::new();
+        NarWriter::write(&mut nar, &NarNode::Regular { executable: false, contents: b"same source".to_vec() }).unwrap();
+
+        let dumps: Vec<_> = (0..24)
+            .map(|_| {
+                let (store, nar) = (store.clone(), nar.clone());
+                tokio::spawn(async move {
+                    store
+                        .add_to_store_from_dump("src", &nar, &ContentAddressMethod::Recursive, HashAlgorithm::Sha256, &[], false)
+                        .await
+                })
+            })
+            .collect();
+        let mut paths = std::collections::BTreeSet::new();
+        for d in dumps {
+            paths.insert(d.await.unwrap().expect("every concurrent add of one path succeeds").path);
+        }
+        assert_eq!(paths.len(), 1);
+        let path = paths.into_iter().next().unwrap();
+
+        let iap = "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-iap".to_string();
+        let info = PathInfo {
+            nar_size: nar.len() as i64,
+            ..PathInfo::new(&iap, format!("sha256:{}", NixHash::of(HashAlgorithm::Sha256, &nar).to_nix32()))
+        };
+        let nars: Vec<_> = (0..24)
+            .map(|i| {
+                let (store, nar, info) = (store.clone(), nar.clone(), info.clone());
+                tokio::spawn(async move { store.add_to_store_nar(&info, &nar, i % 3 == 0).await })
+            })
+            .collect();
+        for n in nars {
+            n.await.unwrap().expect("every concurrent add or repair of one path succeeds");
+        }
+
+        for (p, on_disk) in [(&path, path.clone()), (&iap, format!("{store_dir}/0123456789abcdfghijklmnpqrsvwxyz-iap"))] {
+            let rows = valid_path::Entity::find().filter(valid_path::Column::Path.eq(p.as_str())).all(&store.db).await.unwrap();
+            assert_eq!(rows.len(), 1, "{p} registered once");
+            assert_eq!(std::fs::read(on_disk).unwrap(), b"same source");
+        }
+        let leftover: Vec<_> = std::fs::read_dir(&store_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".lock"))
+            .collect();
+        assert!(leftover.is_empty(), "no lock file stays behind: {leftover:?}");
     }
 
     #[tokio::test]

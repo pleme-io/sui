@@ -120,6 +120,10 @@ struct ComputedDrv {
 /// WHNF no longer forces its dependency attrs, so a mutually-referential
 /// package set never manufactures a same-thunk Blackhole re-entry that nix
 /// avoids by never forcing the deps until a store path is demanded.
+fn drop_attr_on_force_error() -> bool {
+    std::env::var("SUI_DROP_ATTR_ON_FORCE_ERROR").is_ok_and(|v| v == "1")
+}
+
 fn compute_full_drv(input: &NixAttrs, name: &str) -> Result<ComputedDrv, EvalError> {
     let (_name, drv) = construct_derivation(input)?;
     if crate::nix_bytes::has_escapes(&drv.serialize()) {
@@ -266,9 +270,8 @@ fn construct_derivation(
             }
             let forced_v = match crate::eval::force_value(v) {
                 Ok(v) => v,
-                Err(e @ EvalError::IoError { .. }) => return Err(e),
+                Err(e) if !drop_attr_on_force_error() => return Err(e),
                 Err(_e) => {
-                    // SUI_PARITY_STRICT: un-blind the structured-attrs drop too.
                     parity_strict::record(
                         &name,
                         &k,
@@ -298,6 +301,7 @@ fn construct_derivation(
                 Ok(jv) => {
                     obj.insert(k.clone(), jv);
                 }
+                Err(e) if !drop_attr_on_force_error() => return Err(e),
                 Err(e) => {
                     if std::env::var_os("SUI_DEBUG_DRV").is_some() {
                         eprintln!(
@@ -338,30 +342,13 @@ fn construct_derivation(
             ) {
                 continue;
             }
-            // NOTE (2026-07-10): this force-error path is DELIBERATELY still a
-            // best-effort skip, NOT a surfaced error, even after the
-            // overlay-fixpoint promotion fix.  The promotion lands the real
-            // partial for the native-system fixpoint (`libxcrypt` — the perl
-            // dep is no longer dropped, sui now byte-matches nix jb9k6090…),
-            // but on cross-system paths the promoted empty-attrs partial can
-            // still fail to coerce in a dep position that nix itself tolerates
-            // by dropping.  Surfacing the error there regresses `libxcrypt`
-            // ITSELF back to a `throw` and turns a dozen clean value-diverges
-            // into hard errors (measured).  The correct terminal fix is the
-            // materialized-attrset-with-keys partial (so the coerce succeeds),
-            // which is a larger architectural change than this increment; until
-            // then the skip stays.  `SUI_DEBUG_DRV` surfaces the dropped attr
-            // for diagnosis without changing the result.
             let forced_v = match crate::eval::force_value(v) {
                 Ok(v) => v,
-                Err(e @ EvalError::IoError { .. }) => return Err(e),
+                Err(e) if !drop_attr_on_force_error() => return Err(e),
                 Err(_e) => {
                     if std::env::var_os("SUI_DEBUG_DRV").is_some() {
                         eprintln!("[SUI_DEBUG_DRV] drv={name} attr={k} FORCE-ERR: {_e:?}");
                     }
-                    // SUI_PARITY_STRICT: un-blind this dropped dep for
-                    // enumeration. No-op unless strict; the `continue` below is
-                    // unchanged, so the default drvPath outcome is identical.
                     parity_strict::record(
                         &name,
                         &k,

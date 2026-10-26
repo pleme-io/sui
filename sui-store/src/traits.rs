@@ -411,6 +411,10 @@ pub trait Store: Send + Sync {
         if let Some(ca) = &info.content_address {
             verify_content_address(&info.path, ca, nar)?;
         }
+        self.add_nar_at_with(info, nar, repair).await
+    }
+
+    async fn add_nar_at_with(&self, info: &PathInfo, nar: &[u8], _repair: bool) -> StoreResult<()> {
         self.add_nar_at(info, nar).await
     }
 
