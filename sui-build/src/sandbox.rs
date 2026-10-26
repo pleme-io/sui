@@ -85,7 +85,80 @@ impl SandboxConfig {
     }
 
     #[must_use]
+    pub fn structured_attrs(drv: &sui_compat::derivation::Derivation) -> Option<serde_json::Map<String, serde_json::Value>> {
+        let mut json = match serde_json::from_str(drv.env.get("__json")?) {
+            Ok(serde_json::Value::Object(map)) => map,
+            _ => return None,
+        };
+        let outputs = drv
+            .outputs
+            .iter()
+            .map(|(name, out)| (name.clone(), serde_json::Value::String(out.path.clone())))
+            .collect();
+        json.insert("outputs".into(), serde_json::Value::Object(outputs));
+        Some(json)
+    }
+
+    fn shell_escape(s: &str) -> String {
+        format!("'{}'", s.replace('\'', "'\\''"))
+    }
+
+    fn shell_simple(value: &serde_json::Value) -> Option<String> {
+        match value {
+            serde_json::Value::String(s) => Some(Self::shell_escape(s)),
+            serde_json::Value::Number(n) => n
+                .as_i64()
+                .map(|i| i.to_string())
+                .or_else(|| n.as_f64().filter(|f| f.fract() == 0.0).map(|f| format!("{}", f as i64))),
+            serde_json::Value::Null => Some("''".into()),
+            serde_json::Value::Bool(b) => Some(if *b { "1".into() } else { String::new() }),
+            _ => None,
+        }
+    }
+
+    fn is_shell_var_name(key: &str) -> bool {
+        let mut chars = key.chars();
+        chars.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+            && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+    }
+
+    #[must_use]
+    pub fn structured_attrs_shell(json: &serde_json::Map<String, serde_json::Value>) -> String {
+        let mut keys: Vec<&String> = json.keys().collect();
+        keys.sort();
+        let mut out = String::new();
+        for key in keys.into_iter().filter(|k| Self::is_shell_var_name(k)) {
+            let value = &json[key];
+            if let Some(simple) = Self::shell_simple(value) {
+                out.push_str(&format!("declare {key}={simple}\n"));
+            } else if let serde_json::Value::Array(items) = value {
+                if let Some(items) = items.iter().map(Self::shell_simple).collect::<Option<Vec<_>>>() {
+                    let body: String = items.iter().map(|i| format!("{i} ")).collect();
+                    out.push_str(&format!("declare -a {key}=({body})\n"));
+                }
+            } else if let serde_json::Value::Object(map) = value {
+                let mut inner: Vec<(&String, &serde_json::Value)> = map.iter().collect();
+                inner.sort_by(|a, b| a.0.cmp(b.0));
+                if let Some(items) = inner
+                    .iter()
+                    .map(|(k, v)| Self::shell_simple(v).map(|v| format!("[{}]={v} ", Self::shell_escape(k))))
+                    .collect::<Option<Vec<_>>>()
+                {
+                    out.push_str(&format!("declare -A {key}=({})\n", items.concat()));
+                }
+            }
+        }
+        out
+    }
+
+    #[must_use]
     pub fn attr_files(drv: &sui_compat::derivation::Derivation, build_dir: &str) -> Vec<(String, String)> {
+        if let Some(json) = Self::structured_attrs(drv) {
+            return vec![
+                (format!("{build_dir}/.attrs.json"), serde_json::Value::Object(json.clone()).to_string()),
+                (format!("{build_dir}/.attrs.sh"), Self::structured_attrs_shell(&json)),
+            ];
+        }
         Self::pass_as_file_names(drv)
             .into_iter()
             .map(|name| {
@@ -102,12 +175,18 @@ impl SandboxConfig {
         env.insert("HOME".into(), "/homeless-shelter".into());
         env.insert("NIX_STORE".into(), "/nix/store".into());
         env.insert("NIX_BUILD_CORES".into(), cores.to_string());
-        let pass_as_file = Self::pass_as_file_names(drv);
-        for (k, v) in &drv.env {
-            if pass_as_file.contains(k) {
-                env.insert(format!("{k}Path"), format!("{build_dir}/{}", Self::attr_file_name(k)));
-            } else {
-                env.insert(k.clone(), v.clone());
+        let structured = Self::structured_attrs(drv);
+        if structured.is_some() {
+            env.insert("NIX_ATTRS_JSON_FILE".into(), format!("{build_dir}/.attrs.json"));
+            env.insert("NIX_ATTRS_SH_FILE".into(), format!("{build_dir}/.attrs.sh"));
+        } else {
+            let pass_as_file = Self::pass_as_file_names(drv);
+            for (k, v) in &drv.env {
+                if pass_as_file.contains(k) {
+                    env.insert(format!("{k}Path"), format!("{build_dir}/{}", Self::attr_file_name(k)));
+                } else {
+                    env.insert(k.clone(), v.clone());
+                }
             }
         }
         for key in ["NIX_BUILD_TOP", "TMPDIR", "TEMPDIR", "TMP", "TEMP", "PWD"] {
@@ -116,9 +195,23 @@ impl SandboxConfig {
         env.insert("NIX_LOG_FD".into(), "2".into());
         env.insert("TERM".into(), "xterm-256color".into());
         if drv.outputs.values().any(|o| !o.hash.is_empty()) {
-            for name in drv.env.get("impureEnvVars").map_or("", String::as_str).split_whitespace() {
-                if let Ok(value) = std::env::var(name) {
-                    env.insert(name.to_owned(), value);
+            let impure: Vec<String> = match &structured {
+                Some(json) => json
+                    .get("impureEnvVars")
+                    .and_then(serde_json::Value::as_array)
+                    .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect())
+                    .unwrap_or_default(),
+                None => drv
+                    .env
+                    .get("impureEnvVars")
+                    .map_or("", String::as_str)
+                    .split_whitespace()
+                    .map(str::to_owned)
+                    .collect(),
+            };
+            for name in impure {
+                if let Ok(value) = std::env::var(&name) {
+                    env.insert(name, value);
                 }
             }
         }
@@ -1865,6 +1958,56 @@ mod tests {
         assert_eq!(env["textPath"], files[0].0);
         assert_eq!(files[0].1, "#!/bin/sh");
         assert!(files[0].0.starts_with("/b/.attr-"));
+    }
+
+    #[test]
+    fn structured_attrs_reach_the_builder_as_cppnix_writes_them() {
+        use sui_compat::derivation::{Derivation, DerivationOutput};
+        use std::collections::BTreeMap;
+
+        let json = r#"{"name":"t","b":true,"f":false,"n":null,"i":3,"x":1.5,"q":"it's","l":["a",1],"bad-key":"x","m":{"k":"v","j":2},"deep":[[1]],"_u":"u","9n":"n","impureEnvVars":["SUI_STRUCTURED_IMPURE"]}"#;
+        let mut env = BTreeMap::new();
+        env.insert("__json".into(), json.into());
+        env.insert("out".into(), "/nix/store/o".into());
+        let mut outputs = BTreeMap::new();
+        outputs.insert("out".into(), DerivationOutput { path: "/nix/store/o".into(), hash_algo: "sha256".into(), hash: "ab".into() });
+        let drv = Derivation {
+            outputs,
+            input_derivations: BTreeMap::new(),
+            input_sources: vec![],
+            system: "aarch64-darwin".to_string(),
+            builder: "/bin/sh".to_string(),
+            args: vec![],
+            env,
+        };
+        unsafe { std::env::set_var("SUI_STRUCTURED_IMPURE", "yes") };
+        let config = SandboxConfig::from_derivation(&drv, "/b");
+        let env: BTreeMap<&str, &str> = config.env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        assert_eq!(env["NIX_ATTRS_JSON_FILE"], "/b/.attrs.json");
+        assert_eq!(env["NIX_ATTRS_SH_FILE"], "/b/.attrs.sh");
+        assert_eq!(env["SUI_STRUCTURED_IMPURE"], "yes");
+        assert!(!env.contains_key("__json") && !env.contains_key("out") && !env.contains_key("name"));
+
+        let files: BTreeMap<String, String> = SandboxConfig::attr_files(&drv, "/b").into_iter().collect();
+        let attrs: serde_json::Value = serde_json::from_str(&files["/b/.attrs.json"]).unwrap();
+        assert_eq!(attrs["outputs"], serde_json::json!({"out": "/nix/store/o"}));
+        assert_eq!(attrs["q"], "it's");
+        assert_eq!(
+            files["/b/.attrs.sh"],
+            concat!(
+                "declare _u='u'\n",
+                "declare b=1\n",
+                "declare f=\n",
+                "declare i=3\n",
+                "declare -a impureEnvVars=('SUI_STRUCTURED_IMPURE' )\n",
+                "declare -a l=('a' 1 )\n",
+                "declare -A m=(['j']=2 ['k']='v' )\n",
+                "declare n=''\n",
+                "declare name='t'\n",
+                "declare -A outputs=(['out']='/nix/store/o' )\n",
+                "declare q='it'\\''s'\n",
+            )
+        );
     }
 
     #[test]
