@@ -31,6 +31,21 @@ in
       description = "The nix version sui answers for: the version nix-darwin reads from nix.package for its feature checks (isNixAtLeast).";
     };
 
+    cppnixAlias.enable = mkOption {
+      type = types.bool;
+      default = true;
+      description = "Install cppnixPackage as the `cppnix` command, the oracle beside sui.";
+    };
+
+    nixConsumers = {
+      enable = mkEnableOption "build the packages that call nix as a CLI against sui instead of cppnix";
+      packages = mkOption {
+        type = types.listOf types.str;
+        default = [ "nix-direnv" "nix-index" "bundix" "nurl" "nixos-option" ];
+        description = "nixpkgs attributes whose `nix` argument is set to the sui-as-nix package.";
+      };
+    };
+
     daemon = mkOption {
       type = types.enum [ "cppnix" "sui" ];
       default = "cppnix";
@@ -42,7 +57,10 @@ in
     nix.package = cfg.package.overrideAttrs (_: { version = cfg.compatibleNixVersion; });
     system.tools.darwin-rebuild.enable = false;
     environment.etc."sui/cppnix-passthrough".text = "off\n";
-    environment.systemPackages = [ cppnixAlias ];
+    environment.systemPackages = lib.optional cfg.cppnixAlias.enable cppnixAlias;
+    nixpkgs.overlays = lib.optional cfg.nixConsumers.enable (
+      _final: prev: lib.genAttrs cfg.nixConsumers.packages (name: prev.${name}.override { nix = cfg.package; })
+    );
     launchd.daemons.nix-daemon.command = mkForce (
       if cfg.daemon == "cppnix" then
         lib.getExe' cfg.cppnixPackage "nix-daemon"
