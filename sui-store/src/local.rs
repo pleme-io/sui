@@ -76,7 +76,10 @@ impl LocalStore {
             LocalStoreMode::ReadOnly => format!("sqlite://{db_path_str}?mode=ro"),
             LocalStoreMode::ReadWrite => format!("sqlite://{db_path_str}"),
         };
-        let db = Database::connect(&url).await.map_err(db_err)?;
+        let wait = busy_wait();
+        let mut options = sea_orm::ConnectOptions::new(url);
+        options.acquire_timeout(wait).sqlx_logging(false).map_sqlx_sqlite_opts(move |o| o.busy_timeout(wait));
+        let db = Database::connect(options).await.map_err(db_err)?;
 
         Ok(Self {
             db,
@@ -1114,6 +1117,14 @@ impl LocalStore {
         }
         Ok((order, freed))
     }
+}
+
+/// How long a store call waits for the database while another process holds
+/// it. cppnix retries a busy database without limit; the default here is an
+/// hour, and `SUI_DB_BUSY_SECS` sets it.
+fn busy_wait() -> std::time::Duration {
+    let secs = std::env::var("SUI_DB_BUSY_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(3600);
+    std::time::Duration::from_secs(secs)
 }
 
 pub(crate) fn state_dir_for_store(store_dir: &str) -> String {
@@ -3188,5 +3199,42 @@ mod tests {
         // Should skip the already-linked files.
         assert_eq!(result.files_linked, 0);
         assert_eq!(result.bytes_saved, 0);
+    }
+}
+
+#[cfg(test)]
+mod busy_tests {
+    use super::*;
+    use crate::traits::Store;
+    use sea_orm::{ConnectionTrait, TransactionTrait};
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_write_waits_out_another_writer_as_cppnix_does() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("db.sqlite");
+        std::fs::File::create(&db).unwrap();
+        let store = LocalStore::open_rw(&db).await.unwrap();
+        store.create_tables().await.unwrap();
+        let holder = LocalStore::open_rw(&db).await.unwrap();
+        let txn = holder.db().begin().await.unwrap();
+        txn.execute_unprepared("CREATE TABLE busy_hold (x INTEGER)").await.unwrap();
+        let release = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(7)).await;
+            txn.commit().await.unwrap();
+        });
+        let info = crate::traits::PathInfo {
+            path: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-busy".to_string(),
+            nar_hash: format!("sha256:{}", "0".repeat(64)),
+            nar_size: 1,
+            references: vec![],
+            deriver: None,
+            signatures: vec![],
+            registration_time: 0,
+            content_address: None,
+        };
+        let started = std::time::Instant::now();
+        store.register_path(&info).await.expect("the write waits for the other writer instead of failing");
+        assert!(started.elapsed() >= std::time::Duration::from_secs(6));
+        release.await.unwrap();
     }
 }
