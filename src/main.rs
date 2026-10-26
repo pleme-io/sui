@@ -6008,6 +6008,10 @@ fn diff_text(sui: Result<String, String>, nix: Result<String, String>) -> Parity
     match (sui, nix) {
         (Ok(s), Ok(n)) if s == n => ParityVerdict::Match,
         (Ok(s), Ok(n))           => ParityVerdict::Diverge { sui: s, nix: n },
+        (Err(_), Err(n))         => ParityVerdict::Skipped(format!(
+            "the oracle fails too, so this nixpkgs cannot answer the row: {}",
+            n.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("").trim()
+        )),
         (Err(e), _)              => ParityVerdict::SuiError(e),
         (_, Err(e))              => ParityVerdict::NixError(e),
     }
@@ -10599,5 +10603,22 @@ mod parity_gate_tests {
         let v = SweepVerdict::classify(Vec::new(), floor(20));
         assert_eq!(v, SweepVerdict::Vacuous);
         assert!(parity_verdict_is_fatal(&v));
+    }
+}
+
+#[cfg(test)]
+mod parity_verdict_tests {
+    use super::*;
+
+    #[test]
+    fn a_row_both_engines_fail_is_a_named_skip_not_a_sui_error() {
+        assert!(matches!(diff_text(Ok("a".into()), Ok("a".into())), ParityVerdict::Match));
+        assert!(matches!(diff_text(Ok("a".into()), Ok("b".into())), ParityVerdict::Diverge { .. }));
+        assert!(matches!(diff_text(Err("s".into()), Ok("n".into())), ParityVerdict::SuiError(_)));
+        assert!(matches!(diff_text(Ok("s".into()), Err("n".into())), ParityVerdict::NixError(_)));
+        match diff_text(Err("sui failed".into()), Err("error:\n  attribute 'x' missing\n".into())) {
+            ParityVerdict::Skipped(why) => assert!(why.ends_with("attribute 'x' missing"), "{why}"),
+            other => panic!("want Skipped, got {}", other.label()),
+        }
     }
 }

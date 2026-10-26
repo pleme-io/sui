@@ -5113,3 +5113,18 @@ fn builtins_path_filter_changes_store_path() {
     );
     assert_eq!(ev(&keep_all).as_string().unwrap().to_string(), u);
 }
+
+#[test] fn a_string_plus_a_path_copies_the_path_to_the_store_as_interpolation_does() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("f.c"), "int x;\n").unwrap();
+    let file = dir.path().join("f.c");
+    let f = file.display();
+    let plus = eval(&format!(r#""a " + {f}"#)).unwrap();
+    let interp = eval(&format!(r#""a ${{{f}}}""#)).unwrap();
+    assert_eq!(plus, interp);
+    let s = plus.as_string().unwrap().to_string();
+    assert!(s.starts_with("a /nix/store/") && s.ends_with("-f.c"), "{s}");
+    let ctx = eval(&format!(r#"builtins.attrNames (builtins.getContext ("a " + {f}))"#)).unwrap();
+    assert_eq!(ctx, eval(&format!(r#"builtins.attrNames (builtins.getContext "a ${{{f}}}")"#)).unwrap());
+    assert!(eval(r#""a " + /sui-no-such-path"#).is_err());
+}

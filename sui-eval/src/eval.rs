@@ -3525,6 +3525,12 @@ fn eval_binop(
             }
             (Value::Path(a), Value::String(b)) => Ok(Value::path(format!("{a}{}", b.chars).as_str())),
             (Value::Path(a), Value::Path(b)) => Ok(Value::path(format!("{a}/{b}").as_str())),
+            (Value::String(a), Value::Path(_)) => {
+                let (path, path_ctx) = r.coerce_to_string_copy_to_store()?;
+                let mut ctx = a.context.clone();
+                ctx.merge(&path_ctx);
+                Ok(Value::String(Rc::new(NixString::with_context(format!("{}{path}", a.chars), ctx))))
+            }
             // CppNix coerces attrsets with outPath when used with +
             (Value::Attrs(_), _) | (_, Value::Attrs(_)) => {
                 let (ls, lctx) = l.coerce_to_string()?;

@@ -1691,8 +1691,18 @@ fn eval_binop(
                 Ok(IrValue::string_with_context(s, ctx))
             }
             // Walker: path + string concatenates raw; path + path joins
-            // with a `/`. (string + path is NOT matched there — it falls
-            // through to the type error, mirrored here.)
+            // with a `/`; string + path copies the path to the store, as
+            // cppnix's ExprConcatStrings does when the first operand is a
+            // string.
+            (IrValue::Str(a, actx), IrValue::Path(_)) => {
+                let (path, pctx) = coerce_to_string_ctx(&r, true)?;
+                let mut ctx = IrStringContext::new();
+                if let Some(actx) = actx {
+                    ctx.merge(actx);
+                }
+                ctx.merge(&pctx);
+                Ok(IrValue::string_with_context(format_concat(a, &path), ctx))
+            }
             (IrValue::Path(a), IrValue::Str(b, _)) => {
                 Ok(IrValue::Path(Rc::new(format_concat(a, b))))
             }
@@ -2681,7 +2691,7 @@ mod tests {
         // Path arithmetic mirrors the walker's Add arms.
         assert!(matches!(ev(r#"./x + "/y""#), Ok(IrValue::Path(p)) if *p == format!("{cwd_x}/y")));
         assert!(matches!(ev("/a + /b"), Ok(IrValue::Path(p)) if *p == "/a/b"));
-        assert!(matches!(ev(r#""s" + /a"#), Err(IrEvalError::TypeError(_))));
+        assert!(ev(r#""s" + /sui-no-such-path"#).is_err());
         // typeOf + equality.
         assert_eq!(ev_str("builtins.typeOf ./x"), "path");
         assert!(matches!(ev("/a/b == /a/b"), Ok(IrValue::Bool(true))));
