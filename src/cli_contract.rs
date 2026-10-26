@@ -149,6 +149,8 @@ pub const CONTRACT: &[(&[&str], &str, Honour)] = &[
     // always on and naming it asks for what is already delivered; a feature it
     // does not implement is refused by name (`refused_features`).
     (&[], "extra_experimental_features", H),
+    // Honoured by construction: it silences a dirty-tree warning sui never prints.
+    (&[], "no_warn_dirty", H),
     (
         &[],
         "no_write_lock_file",
@@ -412,24 +414,10 @@ pub const CONTRACT: &[(&[&str], &str, Honour)] = &[
     (&["parity-bisect"], "nix", H),
     (&["perf-seal"], "json", H),
     (&["perf-seal"], "write_baseline", H),
-    // ── print-dev-env (the whole command is unimplemented) ──────────────
-    (
-        &["print-dev-env"],
-        "flake_ref",
-        Honour::Refused {
-            since: NOW,
-            reason: "`sui print-dev-env` is unimplemented; the flake ref reaches only the \
-                     error message",
-        },
-    ),
-    (
-        &["print-dev-env"],
-        "json",
-        Honour::Refused {
-            since: NOW,
-            reason: "`sui print-dev-env` is unimplemented; the flag is parsed and discarded",
-        },
-    ),
+    // ── print-dev-env ───────────────────────────────────────────────────
+    (&["print-dev-env"], "flake_ref", H),
+    (&["print-dev-env"], "json", H),
+    (&["print-dev-env"], "profile", H),
     // ── bundle (the whole command is unimplemented) ─────────────────────
     (
         &["bundle"],
@@ -781,6 +769,9 @@ pub const HONOURED_UNDER: &[(&[&str], &str)] = &[
     // on disk; it writes no lock and fetches nothing.
     (&["flake", "metadata"], "no_write_lock_file"),
     (&["flake", "metadata"], "offline"),
+    // `flake archive` reads flake.lock and copies the inputs it pins; it never
+    // writes a lock.
+    (&["flake", "archive"], "no_write_lock_file"),
 ];
 
 fn invoked_path(m: &ArgMatches) -> Vec<&str> {

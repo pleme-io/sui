@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "16ae1d8c7c993f2fc2f235ddaf37aa16b410293a4b2ea5cc6eac9157688b104a",
+  "cargo_lock_sha256": "dba9cde11e561d2a4ee8bd36293fba7730fec94a9555cbfba56a2bed2a2b7053",
   "manifest_sha256": {
     "Cargo.toml": "76110d0517ab41037e08d00b43bc623cdf1b1d65b2f56404ff9db6d5b522aadd",
     "canteiro-types/Cargo.toml": "140edf011d225b89a3a8b8cc15d5212e84c056493e7c8a5b488d1c7e88847388",
@@ -19,7 +19,7 @@
     "sui-dockerfile-prewarmer/Cargo.toml": "d5a84d137aadbc380818f25d4d59f728939cc523837eb1c232104e1dec315b5e",
     "sui-dockerfile-verify/Cargo.toml": "1b4114c0abb7761a054f8c20cc59885ef75bbbad021df12341177bf87f2f55f0",
     "sui-dockerfile-wrapper/Cargo.toml": "b0e69fd6d4f62718b891000d3e61cb869cb0089f758888a378630e0d1e309261",
-    "sui-eval/Cargo.toml": "a6c04097f9b7f9ef1f1ebb441db82e6b071820ad7bf3d2fe7bd035b4149335d6",
+    "sui-eval/Cargo.toml": "c27cfa4478a6bc84ace8f441187938fb881585e46bbab0c4828019270bdbe924",
     "sui-fmt/Cargo.toml": "c6b3ceec3b679871e1a63b78790e5a2cd8d7b40fa960fedd5575d9c4f969bd4b",
     "sui-graph-store/Cargo.toml": "a947a9ea34bb09798ae6433ac21d01deb57b2d854bc9774122ad7583f8fda257",
     "sui-intern/Cargo.toml": "50af7772869b3fb3118e90ef309e64dee2f65a443c4dee63554c9da212e959bc",

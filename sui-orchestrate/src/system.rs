@@ -1083,6 +1083,42 @@ pub fn classify_activate_user(system_path: &str) -> (bool, bool) {
     (true, deprecated)
 }
 
+/// Make `path` valid in the store, substituting it when the store lacks it,
+/// as cppnix's `ensurePath`.
+///
+/// # Errors
+/// The path is not a store path, no store can be reached, or no substituter
+/// holds it.
+pub async fn ensure_valid_path(path: &str) -> Result<(), SystemError> {
+    use sui_store::StoreAccess;
+    let err = |message: String| SystemError::RebuildFailed(message);
+    let store_path = sui_compat::store_path::StorePath::from_absolute_path(path)
+        .map_err(|e| err(format!("'{path}' is not a store path: {e}")))?;
+    match StoreAccess::detect() {
+        Some(StoreAccess::Daemon(daemon)) => {
+            let valid = sui_store::daemon_session::with_session(daemon.socket(), |c| c.is_valid_path(path))
+                .map_err(|e| err(format!("{path}: {e}")))?;
+            if valid { Ok(()) } else { Err(err(format!("path '{path}' is not valid"))) }
+        }
+        Some(StoreAccess::Direct(_)) => {
+            let store = sui_store::LocalStore::open_rw(NIX_DB_PATH)
+                .await
+                .map_err(|e| err(format!("store open ({NIX_DB_PATH}): {e}")))?;
+            let store: std::sync::Arc<dyn sui_store::Store> = std::sync::Arc::new(store);
+            if store.is_valid_path(&store_path).await.map_err(|e| err(e.to_string()))? {
+                return Ok(());
+            }
+            let substitutor = sui_store::Substitutor::new(store, build_caches(&get_substituters()));
+            match substitutor.substitute(&store_path).await.map_err(|e| err(e.to_string()))? {
+                sui_store::SubstituteResult::AlreadyPresent | sui_store::SubstituteResult::Substituted { .. } => Ok(()),
+                _ => Err(err(format!("path '{path}' is not valid and no substituter has it"))),
+            }
+        }
+        None => Err(err("no writable store and no reachable daemon".into())),
+    }
+}
+
+
 /// Realize a `.drv`'s closure into the store, dispatching on the detected store
 /// access mode — the operator-build sibling of `sui`'s IFD `ifd_realize` hook.
 ///

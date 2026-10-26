@@ -49,6 +49,8 @@ struct Cli {
     // by delegation. See src/cli_contract.rs.
     /// Experimental features to enable; sui's implemented ones are always on, any other is refused by name.
     #[arg(long, global = true)] extra_experimental_features: Option<String>,
+    /// Do not warn that a git flake's tree is dirty; sui never prints that warning.
+    #[arg(long, global = true)] no_warn_dirty: bool,
     /// [REFUSED] nix parse-compat: do not write flake.lock.
     #[arg(long, global = true)] no_write_lock_file: bool,
     /// [REFUSED] nix parse-compat: do not use the network.
@@ -362,7 +364,7 @@ enum Commands {
         #[arg(long)]
         write_baseline: bool,
     },
-    #[command(name = "print-dev-env")] PrintDevEnv { flake_ref: Option<String>, #[arg(long)] json: bool },
+    #[command(name = "print-dev-env")] PrintDevEnv { flake_ref: Option<String>, #[arg(long)] json: bool, #[arg(long)] profile: Option<std::path::PathBuf> },
     Bundle { installable: String, #[arg(long)] bundler: Option<String>, #[arg(short = 'o', long)] out_link: Option<String> },
     /// Run differential parity probes (sui vs cppnix) and write a typed
     /// JSON ShadowReport.  Tests sui as a full nix replacement without
@@ -5718,6 +5720,127 @@ async fn build_drv(drv_path: &str, request: &BuildRequest) -> Result<(), CliErro
     Ok(())
 }
 
+async fn build_store_path(path: &str, request: &BuildRequest) -> Result<(), CliError> {
+    let err = |message: String| CliError::Orchestrate { operation: "build", message };
+    if request.dry_run {
+        return Ok(());
+    }
+    sui_orchestrate::system::ensure_valid_path(path).await.map_err(|e| err(e.to_string()))?;
+    if request.json {
+        println!("{}", serde_json::json!([{ "path": path }]));
+    } else if request.print_out_paths {
+        println!("{path}");
+    }
+    if !request.no_link {
+        let link = request.out_link.as_deref().unwrap_or("result");
+        sui_store::gc_roots::add_perm_root(path, std::path::Path::new(link)).map_err(|e| err(e.to_string()))?;
+    }
+    Ok(())
+}
+
+fn dev_shell_drv_path(installable: &str) -> Result<String, CliError> {
+    let err = |message: String| CliError::Orchestrate { operation: "print-dev-env", message };
+    let (base, attr) = installable.split_once('#').map_or((installable, None), |(b, a)| (b, Some(a.to_string())));
+    let system = current_system();
+    let candidates: Vec<String> = match attr {
+        Some(a) if !a.is_empty() => vec![
+            format!("devShells.{system}.{a}"),
+            format!("packages.{system}.{a}"),
+            format!("legacyPackages.{system}.{a}"),
+            a,
+        ],
+        _ => vec![
+            format!("devShells.{system}.default"),
+            format!("devShell.{system}"),
+            format!("packages.{system}.default"),
+            format!("defaultPackage.{system}"),
+        ],
+    };
+    let flake_ref = sui_compat::flake_ref::FlakeRef::parse(&format!("{}#", if base.is_empty() { "." } else { base }))
+        .map_err(|e| err(format!("flake ref parse: {e}")))?;
+    let flake_dir = sui_eval::fetcher::resolve_flake_dir(&flake_ref).map_err(|e| err(format!("fetch: {e}")))?;
+    let shown = installable.to_string();
+    on_eval_stack("sui-print-dev-env-eval", move || -> Result<String, CliError> {
+        let err = |message: String| CliError::Orchestrate { operation: "print-dev-env", message };
+        let flake = sui_eval::builtins::evaluate_flake(&flake_dir).map_err(|e| err(format!("eval: {e}")))?;
+        for candidate in &candidates {
+            let segments: Vec<&str> = candidate.split('.').collect();
+            let Ok(target) = sui_eval::builtins::navigate_attrs(&flake, &segments) else { continue };
+            let target = sui_eval::eval::force_value(&target).map_err(|e| err(format!("eval {candidate}: {e}")))?;
+            let sui_eval::Value::Attrs(attrs) = &target else { continue };
+            let Some(drv) = attrs.get("drvPath") else { continue };
+            let drv = sui_eval::eval::force_value(drv).map_err(|e| err(format!("drvPath {candidate}: {e}")))?;
+            return drv.as_string().map(ToString::to_string).map_err(|e| err(format!("drvPath {candidate}: {e}")));
+        }
+        Err(err(format!("flake '{shown}' does not provide attribute '{}'", candidates.join("', '"))))
+    })?
+}
+
+fn update_profile(profile: &std::path::Path, store_path: &str) -> Result<(), CliError> {
+    let err = |message: String| CliError::Orchestrate { operation: "profile", message };
+    let profile = std::path::absolute(profile).map_err(|e| err(format!("{}: {e}", profile.display())))?;
+    let dir = profile.parent().ok_or_else(|| err(format!("{} has no parent", profile.display())))?;
+    let name = profile.file_name().ok_or_else(|| err(format!("{} has no name", profile.display())))?.to_string_lossy();
+    let manager = sui_store::ProfileManager::new(dir, name.as_ref());
+    let generations = manager.list_generations().map_err(|e| err(e.to_string()))?;
+    let number = match generations.last() {
+        Some(last) if last.path == std::path::Path::new(store_path) => last.number,
+        last => {
+            let next = last.map_or(1, |g| g.number + 1);
+            sui_store::gc_roots::add_perm_root(store_path, &dir.join(format!("{name}-{next}-link")))
+                .map_err(|e| err(e.to_string()))?;
+            next
+        }
+    };
+    manager.switch_generation(number).map_err(|e| err(e.to_string()))
+}
+
+async fn cmd_print_dev_env(installable: &str, json: bool, profile: Option<&std::path::Path>) -> Result<(), CliError> {
+    let err = |message: String| CliError::Orchestrate { operation: "print-dev-env", message };
+    let shell_out = match sui::installable::StoreInstallable::parse(installable) {
+        Some(sui::installable::StoreInstallable::Path(p)) if p.ends_with("-env") => p,
+        _ => {
+            let drv_path = dev_shell_drv_path(installable)?;
+            let load = |path: &str| {
+                let bytes = std::fs::read(path).map_err(|e| sui_compat::derivation::DerivationError::Parse {
+                    pos: 0,
+                    message: format!("read {path}: {e}"),
+                })?;
+                sui_compat::derivation::Derivation::parse(&bytes)
+            };
+            let drv = load(&drv_path).map_err(|e| err(e.to_string()))?;
+            let (env_drv_path, env_drv) = sui::dev_env::env_derivation(&drv_path, &drv, &mut |p| load(p)).map_err(err)?;
+            sui_store::drv_write::write_text(&sui::dev_env::get_env_sh_path(), sui::dev_env::GET_ENV_SH.as_bytes(), &[])
+                .map_err(|e| err(format!("get-env.sh: {e}")))?;
+            sui_store::drv_write::write_drv(&env_drv_path, &env_drv).map_err(|e| err(e.to_string()))?;
+            sui_orchestrate::system::realize_drv(&env_drv_path).await.map_err(|e| err(e.to_string()))?;
+            env_drv
+                .outputs
+                .values()
+                .map(|o| o.path.clone())
+                .find(|p| std::fs::metadata(p).is_ok_and(|m| m.len() > 0))
+                .ok_or_else(|| err("get-env.sh failed to produce an environment".into()))?
+        }
+    };
+    if let Some(profile) = profile {
+        update_profile(profile, &shell_out)?;
+    }
+    let text = std::fs::read_to_string(&shell_out).map_err(|e| err(format!("{shell_out}: {e}")))?;
+    let env = sui::dev_env::BuildEnvironment::parse(&text).map_err(err)?;
+    if json {
+        println!("{}", env.to_json());
+    } else {
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+        let tmp = std::env::temp_dir().join(format!("nix-dev-env-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(&tmp)?;
+        let outputs = std::env::current_dir()?.join("outputs");
+        let script = env.rc_script(&tmp, &outputs);
+        let _ = std::fs::remove_dir_all(&tmp);
+        println!("{}", script.map_err(|e| err(e.to_string()))?);
+    }
+    Ok(())
+}
+
 fn link_build_outputs(drv_path: &str, outputs: &[String], out_link: &str) -> Result<(), CliError> {
     let err = |message: String| CliError::Orchestrate { operation: "build", message };
     let bytes = std::fs::read(drv_path).map_err(|e| err(format!("read {drv_path}: {e}")))?;
@@ -6185,11 +6308,16 @@ fn parse_clone_target(flake_ref: &str) -> Result<(String, Option<String>), CliEr
 fn flake_archive(flake_ref: &str, json: bool) -> Result<(), CliError> {
     use sui_eval::fetcher::{ArchiveReport, InputFailure, InputFetcher};
 
-    let source = std::path::PathBuf::from(flake_ref);
+    let local = flake_ref.strip_prefix("git+file://").or_else(|| flake_ref.strip_prefix("path:")).unwrap_or(flake_ref);
+    let local = local.split(['?', '#']).next().unwrap_or(local);
+    let source = std::path::PathBuf::from(local);
     if !source.exists() {
         return Err(CliError::NotImplemented(format!(
             "flake archive: source `{flake_ref}` doesn't exist locally (remote inputs need fetcher transport)"
         )));
+    }
+    if json {
+        return flake_archive_json(&source);
     }
     let flake_nix = source.join("flake.nix");
     if !flake_nix.exists() {
@@ -6275,6 +6403,45 @@ fn flake_archive(flake_ref: &str, json: bool) -> Result<(), CliError> {
             report.scanned
         )))
     }
+}
+
+fn flake_archive_json(source: &std::path::Path) -> Result<(), CliError> {
+    let fail = |message: String| CliError::Orchestrate { operation: "flake archive", message };
+    let to_store = |path: &str, dir: &std::path::Path| {
+        sui_store::drv_write::ensure_source(path, dir).map_err(|e| e.to_string())
+    };
+    let tree_dir = sui_eval::git_tree::tracked_tree(source).map_err(|e| fail(e.to_string()))?;
+    let own = sui_compat::source::nar_hash_source_tree(&tree_dir, "source").map_err(|e| fail(e.to_string()))?;
+    to_store(&own.store_path, &tree_dir).map_err(fail)?;
+    let lock_path = source.join("flake.lock");
+    let mut out = match std::fs::read_to_string(&lock_path) {
+        Ok(text) => {
+            let lock = sui_compat::flake::FlakeLock::parse(&text).map_err(|e| fail(format!("{}: {e}", lock_path.display())))?;
+            let fetcher = sui_eval::fetcher::InputFetcher::new();
+            let root = lock.root.clone();
+            sui::flake_archive::input_tree(&lock, &root, &mut |name, locked| {
+                let dir = fetcher.fetch(locked).map_err(|e| format!("input `{name}`: {e}"))?;
+                let path = match locked.nar_hash.as_deref() {
+                    Some(sri) => {
+                        let hash = sui_compat::hash::NixHash::parse_any(sui_compat::hash::HashAlgorithm::Sha256, sri)
+                            .map_err(|e| format!("input `{name}` narHash {sri}: {e}"))?;
+                        sui_compat::store_path::make_source_path(&hash.to_hex(), &[], false, "source")
+                    }
+                    None => sui_compat::source::nar_hash_source_tree(&dir, "source")
+                        .map_err(|e| format!("input `{name}`: {e}"))?
+                        .store_path,
+                };
+                to_store(&path, &dir).map_err(|e| format!("input `{name}`: {e}"))?;
+                Ok(Some(path))
+            })
+            .map_err(fail)?
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => serde_json::json!({ "inputs": {} }),
+        Err(e) => return Err(fail(format!("{}: {e}", lock_path.display()))),
+    };
+    out["path"] = serde_json::Value::String(own.store_path);
+    println!("{out}");
+    Ok(())
 }
 
 fn flake_prefetch(flake_ref: &str, json: bool) -> Result<(), CliError> {
@@ -7577,7 +7744,14 @@ async fn main() -> Result<(), CliError> {
             // path either way. This is the exact dispatch the IFD hook already
             // uses, reused here for the operator build command.
 
-            if std::path::Path::new(&installable).extension().is_some_and(|ext| ext.eq_ignore_ascii_case("drv")) {
+            if let Some(store) = sui::installable::StoreInstallable::parse(&installable)
+                .or_else(|| sui::installable::StoreInstallable::follow_links(&installable))
+            {
+                match store {
+                    sui::installable::StoreInstallable::Derivation(drv) => build_drv(&drv, &request).await?,
+                    sui::installable::StoreInstallable::Path(path) => build_store_path(&path, &request).await?,
+                }
+            } else if std::path::Path::new(&installable).extension().is_some_and(|ext| ext.eq_ignore_ascii_case("drv")) {
                 // ── ★ THE SECOND ARM. The first pass at this fix guarded the
                 // flake branch only, so `sui build --dry-run <path>.drv` still
                 // performed a real build — same wrong ACTION, different branch.
@@ -8735,7 +8909,9 @@ async fn main() -> Result<(), CliError> {
         Commands::PerfSeal { json, write_baseline } => {
             perf_seal::run(json, write_baseline)?;
         }
-        Commands::PrintDevEnv { flake_ref, .. } => { return Err(CliError::NotImplemented(format!("print-dev-env {}", flake_ref.as_deref().unwrap_or(".")))); }
+        Commands::PrintDevEnv { flake_ref, json, profile } => {
+            cmd_print_dev_env(flake_ref.as_deref().unwrap_or("."), json, profile.as_deref()).await?;
+        }
         Commands::Bundle { installable, bundler, .. } => { return Err(CliError::NotImplemented(format!("bundle {installable} --bundler {}", bundler.as_deref().unwrap_or("default")))); }
         Commands::RebuildShadow {
             flakes, nix, flakes_root, corpus, tag, skip_tag,

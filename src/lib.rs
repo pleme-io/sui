@@ -8,6 +8,8 @@
 pub mod api;
 pub mod build_face;
 pub mod installable;
+pub mod flake_archive;
+pub mod dev_env;
 pub mod child_usage;
 pub mod flip_probe;
 

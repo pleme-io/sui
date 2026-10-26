@@ -152,9 +152,9 @@
 (defsui-command
   :name "print-dev-env"
   :nix-equivalent "nix print-dev-env"
-  :maturity Stub
-  :substrate ("flake")
-  :notes "Print devShell env vars + functions as a shell script")
+  :maturity Working
+  :substrate ("flake" "derivation")
+  :notes "cppnix's getDerivationEnvironment + makeRcScript: builds the get-env.sh derivation, prints the rc script or --json, --profile keeps the environment as a generation")
 
 (defsui-command
   :name "bundle"

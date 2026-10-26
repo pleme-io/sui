@@ -1024,8 +1024,26 @@ fn parse_gh_hosts_token(yml: &str, host: &str) -> Option<String> {
     None
 }
 
-/// Extract a `.tar.gz` archive into a destination directory.
+/// Extract a tarball into a destination directory, its compression read from
+/// its first bytes as cppnix's libarchive does: gzip, xz, zstd or none.
 fn extract_tar_gz(bytes: &[u8], dest: &Path) -> Result<(), FetchError> {
+    let unpack = |data: &[u8]| {
+        tar::Archive::new(data)
+            .unpack(dest)
+            .map_err(|e| FetchError::Extract(format!("tar unpack: {e}")))
+    };
+    let decompress = |kind: &str| {
+        sui_store::decompress_nar(bytes, kind).map_err(|e| FetchError::Extract(format!("{kind} decompression: {e}")))
+    };
+    if bytes.starts_with(&[0xFD, b'7', b'z', b'X', b'Z', 0x00]) {
+        return unpack(&decompress("xz")?);
+    }
+    if bytes.starts_with(&[0x28, 0xB5, 0x2F, 0xFD]) {
+        return unpack(&decompress("zstd")?);
+    }
+    if bytes.get(257..262) == Some(b"ustar") {
+        return unpack(bytes);
+    }
     let gz = flate2::read::GzDecoder::new(bytes);
 
     // Check if the gzip header is valid before attempting extraction.
@@ -1902,6 +1920,28 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let result = extract_tar_gz(&[], tmp.path());
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn a_tarball_unpacks_whatever_its_compression_as_libarchive_does() {
+        use std::io::Write;
+        let mut builder = tar::Builder::new(Vec::new());
+        let mut header = tar::Header::new_gnu();
+        header.set_size(5);
+        header.set_mode(0o644);
+        header.set_cksum();
+        builder.append_data(&mut header, "src/hello.txt", &b"hello"[..]).unwrap();
+        let plain = builder.into_inner().unwrap();
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        gz.write_all(&plain).unwrap();
+        let mut xz = xz2::write::XzEncoder::new(Vec::new(), 6);
+        xz.write_all(&plain).unwrap();
+        let zst = zstd::stream::encode_all(&plain[..], 3).unwrap();
+        for (kind, bytes) in [("none", plain.clone()), ("gzip", gz.finish().unwrap()), ("xz", xz.finish().unwrap()), ("zstd", zst)] {
+            let tmp = tempfile::tempdir().unwrap();
+            extract_tar_gz(&bytes, tmp.path()).unwrap_or_else(|e| panic!("{kind}: {e}"));
+            assert_eq!(std::fs::read(tmp.path().join("src/hello.txt")).unwrap(), b"hello", "{kind}");
+        }
     }
 
     #[test]

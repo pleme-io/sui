@@ -65,6 +65,8 @@ libc = "0.2"
 
 [dev-dependencies]
 tempfile.workspace = true
+xz2 = "0.1"
+zstd = "0.13"
 pretty_assertions.workspace = true
 test-case.workspace = true
 proptest.workspace = true

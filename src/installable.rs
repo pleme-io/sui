@@ -143,3 +143,76 @@ mod tests {
         assert!(s.expression().ends_with(".pkgs.foo-bar.\"1x\".\"a b\""), "{}", s.expression());
     }
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StoreInstallable {
+    Derivation(String),
+    Path(String),
+}
+
+impl StoreInstallable {
+    #[must_use]
+    pub fn parse(installable: &str) -> Option<Self> {
+        let (base, outputs) = match installable.split_once('^') {
+            Some((base, outputs)) => (base, Some(outputs)),
+            None => (installable, None),
+        };
+        let rest = base.strip_prefix("/nix/store/")?;
+        let name = rest.split('/').next().filter(|n| !n.is_empty())?;
+        let root = format!("/nix/store/{name}");
+        match (name.ends_with(".drv"), outputs) {
+            (true, Some(_)) => Some(Self::Derivation(root)),
+            (true, None) => None,
+            (false, None) => Some(Self::Path(root)),
+            (false, Some(_)) => None,
+        }
+    }
+
+    #[must_use]
+    pub fn follow_links(installable: &str) -> Option<Self> {
+        if !installable.contains('/') || installable.contains('#') {
+            return None;
+        }
+        let real = std::fs::canonicalize(installable).ok()?;
+        let real = real.to_str()?;
+        real.starts_with("/nix/store/").then(|| Self::parse(real)).flatten()
+    }
+}
+
+#[cfg(test)]
+mod store_installable_tests {
+    use super::StoreInstallable;
+
+    #[test]
+    fn a_store_path_or_a_derivation_with_outputs_is_built_as_cppnix_reads_it() {
+        let p = "/nix/store/7hdmnzw8bzchrwvqyhahdrvrijmf414f-nix-2.31.5";
+        assert_eq!(StoreInstallable::parse(p), Some(StoreInstallable::Path(p.into())));
+        assert_eq!(StoreInstallable::parse(&format!("{p}/bin/nix")), Some(StoreInstallable::Path(p.into())));
+        let d = "/nix/store/5i38p4am32wcmf0acdizd7880md2bzd5-countme-3.0.1.tar.gz.drv";
+        assert_eq!(StoreInstallable::parse(&format!("{d}^*")), Some(StoreInstallable::Derivation(d.into())));
+        assert_eq!(StoreInstallable::parse(&format!("{d}^out,dev")), Some(StoreInstallable::Derivation(d.into())));
+        assert_eq!(StoreInstallable::parse(d), None);
+        assert_eq!(StoreInstallable::parse(".#default"), None);
+        assert_eq!(StoreInstallable::parse("nixpkgs#hello"), None);
+        assert_eq!(StoreInstallable::parse("/nix/store/"), None);
+        assert_eq!(StoreInstallable::parse(&format!("{p}^out")), None);
+    }
+
+    #[test]
+    fn a_link_into_the_store_is_the_store_path_it_reaches() {
+        let target = std::fs::read_dir("/nix/store")
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .find(|p| p.is_dir() && !p.to_string_lossy().ends_with(".drv"))
+            .expect("a store directory");
+        let dir = tempfile::tempdir().unwrap();
+        let link = dir.path().join("profile");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let want = StoreInstallable::Path(target.to_string_lossy().into_owned());
+        assert_eq!(StoreInstallable::follow_links(link.to_str().unwrap()), Some(want));
+        assert_eq!(StoreInstallable::follow_links(dir.path().to_str().unwrap()), None);
+        assert_eq!(StoreInstallable::follow_links("."), None);
+        assert_eq!(StoreInstallable::follow_links("./x#y"), None);
+    }
+}
