@@ -603,6 +603,7 @@ mod tests {
             &self,
             hash: &str,
             content: &str,
+            _write: sui_cache::RecordWrite,
         ) -> Result<(), sui_cache::CacheError> {
             self.narinfos
                 .lock()

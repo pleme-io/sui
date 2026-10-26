@@ -329,7 +329,7 @@ mod tests {
         async fn get_narinfo(&self, hash: &str) -> Result<Option<String>, StoreError> {
             Ok(self.narinfo.lock().unwrap().get(hash).cloned())
         }
-        async fn put_narinfo_record(&self, hash: &str, content: &str) -> Result<(), StoreError> {
+        async fn put_narinfo_record(&self, hash: &str, content: &str, _write: sui_cache::RecordWrite) -> Result<(), StoreError> {
             self.narinfo
                 .lock()
                 .unwrap()
@@ -383,10 +383,10 @@ mod tests {
         // servability, never mere indexing.
         let backend = Arc::new(MemBackend::default());
         // "h-both": narinfo + its referenced NAR both present → servable.
-        backend.put_narinfo("h-both", NI_BOTH).await.unwrap();
+        backend.put_narinfo(&sui_castore::AdmittedNarInfo::unchecked_fixture("h-both", NI_BOTH)).await.unwrap();
         backend.put_nar("nar/both.nar.xz", b"realbytes").await.unwrap();
         // "h-orphan": narinfo present but its NAR absent → NOT servable.
-        backend.put_narinfo("h-orphan", NI_ORPHAN).await.unwrap();
+        backend.put_narinfo(&sui_castore::AdmittedNarInfo::unchecked_fixture("h-orphan", NI_ORPHAN)).await.unwrap();
         let probe = StoreBackedProbe::new(backend);
 
         let both = node("both", &[], &["src/"]).with_output_addr(OutputAddr("h-both".into()));
@@ -477,7 +477,7 @@ mod tests {
 
         // --- CACHE HIT: the backend genuinely holds warm's servable output ---
         let hit = Arc::new(MemBackend::default());
-        hit.put_narinfo("h-warm", NI_BOTH).await.unwrap();
+        hit.put_narinfo(&sui_castore::AdmittedNarInfo::unchecked_fixture("h-warm", NI_BOTH)).await.unwrap();
         hit.put_nar("nar/both.nar.xz", b"servable-output").await.unwrap();
         // Servability is REAL: a descendant could fetch both the narinfo and the
         // NAR it references. This is the fact that MAKES the skip sound.

@@ -356,7 +356,7 @@ where
     let mut nodes_cached = 0usize;
     if let Some(plan) = &plan {
         for node in &plan.graph.nodes {
-            match cache.put_narinfo(&node.content_hash, &config.image_tag).await {
+            match cache.put_kv_value(&node.content_hash, &config.image_tag).await {
                 Ok(()) => nodes_cached += 1,
                 Err(e) => {
                     tracing::warn!(hash = %node.content_hash, error = %e, "cache back-fill write failed — build still succeeded");

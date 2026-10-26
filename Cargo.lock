@@ -4433,6 +4433,7 @@ dependencies = [
  "sui-build",
  "sui-bytecode",
  "sui-cache",
+ "sui-castore",
  "sui-compat",
  "sui-daemon",
  "sui-eval",
@@ -6564,12 +6565,15 @@ dependencies = [
  "schemars 1.2.2",
  "serde",
  "serde_json",
+ "sha2",
  "sqlx",
  "sui-compat",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "xz2",
+ "zstd",
 ]
 
 [[package]]
@@ -6580,6 +6584,7 @@ dependencies = [
  "criterion",
  "ed25519-dalek",
  "md-5",
+ "memchr",
  "nix-nar",
  "proptest",
  "rand_core 0.6.4",
@@ -6589,6 +6594,8 @@ dependencies = [
  "sha2",
  "tempfile",
  "thiserror 2.0.18",
+ "xz2",
+ "zstd",
 ]
 
 [[package]]

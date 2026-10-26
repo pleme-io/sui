@@ -121,6 +121,7 @@ pub async fn push_path_remote(
     references: &[String],
     deriver: Option<&str>,
     codec: NarCodec,
+    universe: &dyn sui_castore::RefUniverse,
 ) -> Result<RemoteOutcome, RemoteError> {
     if remote.has_narinfo(hash).await? {
         return Ok(RemoteOutcome::Present);
@@ -137,7 +138,7 @@ pub async fn push_path_remote(
     let stage = tempfile::tempdir().map_err(|e| stage_err(CacheError::Io(e)))?;
     let storage = LocalStorage::new(stage.path());
     let result = push_path(
-        &storage, signer, store_path, hash, references, deriver, codec,
+        &storage, signer, store_path, hash, references, deriver, codec, universe,
     )
     .await
     .map_err(stage_err)?;
@@ -222,6 +223,7 @@ mod tests {
             &[],
             None,
             NarCodec::default(),
+            &std::collections::BTreeSet::<String>::new(),
         )
         .await
         .unwrap();
@@ -236,6 +238,7 @@ mod tests {
             &[],
             None,
             NarCodec::default(),
+            &std::collections::BTreeSet::<String>::new(),
         )
         .await
         .unwrap();
@@ -268,6 +271,36 @@ mod tests {
         assert_eq!(nar.bytes().await.unwrap().len() as u64, info.file_size);
     }
 
+    /// The remote mode of the cid receipt: a path whose bytes name a store
+    /// path the local store holds, pushed with no references, is refused
+    /// before anything is uploaded, so the origin never sees it.
+    #[tokio::test]
+    async fn remote_push_of_a_path_that_omits_a_named_reference_uploads_nothing() {
+        let cache_dir = tempfile::tempdir().unwrap();
+        let store_dir = tempfile::tempdir().unwrap();
+        let origin = Arc::new(CacheSigner::generate("origin-1".to_string()));
+        let url = spawn_origin(cache_dir.path(), vec![], origin).await;
+        let remote = RemoteCache::new(&url).unwrap();
+        let dep = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1";
+        let path = store_dir.path().join("rmt1-toolchain");
+        std::fs::create_dir_all(&path).unwrap();
+        std::os::unix::fs::symlink(format!("/nix/store/{dep}-rust-std/lib"), path.join("lib")).unwrap();
+        let universe: std::collections::BTreeSet<String> = [dep.to_string()].into_iter().collect();
+        let signer = CacheSigner::generate("ci-1".to_string());
+
+        let err = push_path_remote(
+            &remote, &signer, path.to_str().unwrap(), "rmt1", &[], None, NarCodec::default(), &universe,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(&err, RemoteError::Stage { source: CacheError::Refused(sui_castore::Refusal::OmittedReferences { .. }), .. }),
+            "{err}"
+        );
+        assert!(!remote.has_narinfo("rmt1").await.unwrap());
+        assert!(std::fs::read_dir(cache_dir.path()).map(|d| d.count()).unwrap_or(0) == 0, "nothing reached the origin");
+    }
+
     #[tokio::test]
     async fn remote_push_signed_by_a_non_upload_key_is_refused() {
         let cache_dir = tempfile::tempdir().unwrap();
@@ -287,6 +320,7 @@ mod tests {
             &[],
             None,
             NarCodec::default(),
+            &std::collections::BTreeSet::<String>::new(),
         )
         .await
         .expect_err("a non-upload key must be refused");

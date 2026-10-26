@@ -33,14 +33,27 @@ use sui_compat::narinfo::NarInfo;
 
 /// An unsigned narinfo whose references are intentionally NOT in canonical
 /// (sorted) order — this exercises the ref-ordering fix end-to-end.
-const UNSIGNED_NARINFO: &str = "StorePath: /nix/store/e2e-hello\n\
-     URL: nar/e2e.nar.xz\n\
-     Compression: xz\n\
-     FileHash: sha256:aaa\n\
-     FileSize: 100\n\
-     NarHash: sha256:bbb\n\
-     NarSize: 200\n\
-     References: /nix/store/zzz-b /nix/store/aaa-a /nix/store/mmm-c\n";
+fn unsigned_entry() -> sui_castore::storage::admission::fixture::FixtureEntry {
+    sui_castore::storage::admission::fixture::entry(
+        "e2e",
+        "hello",
+        b"e2e payload",
+        &["/nix/store/zzz-b", "/nix/store/aaa-a", "/nix/store/mmm-c"],
+    )
+}
+
+/// Upload the entry's NAR, as nix does before its narinfo (admission reads it
+/// back), and return the unsigned narinfo text.
+async fn upload_nar(app: &axum::Router) -> String {
+    let e = unsigned_entry();
+    let put = Request::builder()
+        .method("PUT")
+        .uri(format!("/{}", e.url))
+        .body(Body::from(e.nar_file))
+        .unwrap();
+    assert_eq!(app.clone().oneshot(put).await.unwrap().status(), StatusCode::OK);
+    e.text
+}
 
 fn config(dir: &std::path::Path) -> CacheConfig {
     CacheConfig {
@@ -86,10 +99,11 @@ async fn signing_daemon_serves_verifiable_signature_and_consumer_accepts() {
     });
 
     // PUT an unsigned narinfo (write-through ingest).
+    let unsigned = upload_nar(&app).await;
     let put = Request::builder()
         .method("PUT")
         .uri("/e2e.narinfo")
-        .body(Body::from(UNSIGNED_NARINFO))
+        .body(Body::from(unsigned))
         .unwrap();
     assert_eq!(
         app.clone().oneshot(put).await.unwrap().status(),
@@ -127,10 +141,11 @@ async fn unsigned_daemon_serves_unsigned_and_requiring_consumer_rejects() {
         signer: None,
     });
 
+    let unsigned = upload_nar(&app).await;
     let put = Request::builder()
         .method("PUT")
         .uri("/e2e.narinfo")
-        .body(Body::from(UNSIGNED_NARINFO))
+        .body(Body::from(unsigned))
         .unwrap();
     assert_eq!(
         app.clone().oneshot(put).await.unwrap().status(),
@@ -169,10 +184,11 @@ async fn tampered_served_path_is_rejected_on_consume() {
         signer: Some(signer),
     });
 
+    let unsigned = upload_nar(&app).await;
     let put = Request::builder()
         .method("PUT")
         .uri("/e2e.narinfo")
-        .body(Body::from(UNSIGNED_NARINFO))
+        .body(Body::from(unsigned))
         .unwrap();
     assert_eq!(
         app.clone().oneshot(put).await.unwrap().status(),

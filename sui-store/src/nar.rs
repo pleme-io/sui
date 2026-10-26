@@ -1,7 +1,5 @@
 //! NAR decompression — supports xz, zstd, and uncompressed NAR data.
 
-use std::io::Read;
-
 use crate::traits::{StoreError, StoreResult};
 
 /// Decompress NAR data based on the compression algorithm.
@@ -9,39 +7,14 @@ use crate::traits::{StoreError, StoreResult};
 /// Supports `"xz"`, `"zstd"`, `"none"` (or empty string for uncompressed).
 /// Returns the decompressed NAR bytes.
 pub fn decompress_nar(data: &[u8], compression: &str) -> StoreResult<Vec<u8>> {
-    match compression {
-        "xz" => {
-            let mut decoder = xz2::read::XzDecoder::new(data);
-            let mut decompressed = Vec::new();
-            decoder.read_to_end(&mut decompressed).map_err(|e| {
-                StoreError::Io(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!("xz decompression failed: {e}"),
-                ))
-            })?;
-            Ok(decompressed)
-        }
-        "zstd" => {
-            let mut decoder = zstd::stream::read::Decoder::new(data).map_err(|e| {
-                StoreError::Io(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!("zstd decoder init failed: {e}"),
-                ))
-            })?;
-            let mut decompressed = Vec::new();
-            decoder.read_to_end(&mut decompressed).map_err(|e| {
-                StoreError::Io(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!("zstd decompression failed: {e}"),
-                ))
-            })?;
-            Ok(decompressed)
-        }
-        "none" | "" => Ok(data.to_vec()),
-        other => Err(StoreError::NotSupported(format!(
-            "compression: {other}"
-        ))),
-    }
+    let codec = sui_compat::nar_compression::NarCompression::from_narinfo_name(compression)
+        .ok_or_else(|| StoreError::NotSupported(format!("compression: {compression}")))?;
+    codec.decompress(data).map_err(|e| {
+        StoreError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("{} decompression failed: {e}", codec.narinfo_name()),
+        ))
+    })
 }
 
 #[cfg(test)]

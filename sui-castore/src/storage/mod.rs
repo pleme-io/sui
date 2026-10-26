@@ -16,6 +16,7 @@
 //! (recursing for the tiered arm), so a deployment picks `{disk | s3 | redis |
 //! pg | tiered}` by configuration — never a silent hard-coded constructor.
 
+pub mod admission;
 pub mod index;
 pub mod local;
 pub mod nar_refs;
@@ -27,6 +28,10 @@ pub mod tiered;
 
 use std::sync::Arc;
 
+pub use admission::{
+    admit, admit_bytes, admit_stored, is_servable_under, resign_stored, AdmissionError, AdmittedNarInfo,
+    CacheUniverse, RecordWrite, RefUniverse, Refusal,
+};
 pub use index::StorageIndex;
 pub use local::LocalStorage;
 pub use nar_refs::{
@@ -151,11 +156,15 @@ pub trait StorageBackend: Send + Sync {
     async fn get_narinfo(&self, hash: &str) -> Result<Option<String>, StoreError>;
 
     /// Store narinfo text keyed by store path hash — **the record verb**: one
-    /// key, no index maintenance.
+    /// key, no index maintenance, no admission.
     ///
-    /// Callers want [`put_narinfo`](Self::put_narinfo), which also records the
-    /// reverse edge.
-    async fn put_narinfo_record(&self, hash: &str, content: &str) -> Result<(), StoreError>;
+    /// It takes a [`RecordWrite`], which only this crate can make, so the only
+    /// callers are this crate's composed verbs:
+    /// [`put_narinfo`](Self::put_narinfo) (an [`AdmittedNarInfo`]),
+    /// [`put_kv_value`](Self::put_kv_value) (a value that is not a narinfo) and
+    /// tier promotion. A backend implements it; a wrapper delegates the token
+    /// it was handed.
+    async fn put_narinfo_record(&self, hash: &str, content: &str, write: RecordWrite) -> Result<(), StoreError>;
 
     /// Remove a narinfo record by store path hash. Idempotent; removing an
     /// absent narinfo is `Ok(())`.
@@ -244,23 +253,38 @@ pub trait StorageBackend: Send + Sync {
     /// as-is and indexes nothing — it advertises no NAR, so there is nothing to
     /// strand.
     ///
+    /// # Admission
+    ///
+    /// The entry is an [`AdmittedNarInfo`]: it passed [`admission::admit`], so
+    /// its hashes match its NAR and its references cover what the NAR names.
+    /// See [`admission`] for why this is a type and not a check here.
+    ///
     /// # Errors
     ///
     /// Propagates the index write or the record write, and returns
     /// [`StoreError::NarInfo`] for an unaddressable `URL:`.
-    async fn put_narinfo(&self, hash: &str, content: &str) -> Result<(), StoreError> {
-        match nar_refs::advertised_url_line(content) {
-            Some(url) if nar_refs::is_addressable_nar_path(url) => {
-                self.nar_ref_index().record(url, hash).await?;
-            }
-            Some(url) => {
-                return Err(StoreError::NarInfo(format!(
-                    "narinfo {hash} advertises an unaddressable URL: {url:?}",
-                )));
-            }
-            None => {}
+    async fn put_narinfo(&self, entry: &AdmittedNarInfo) -> Result<(), StoreError> {
+        write_narinfo(self, entry.key(), entry.text()).await
+    }
+
+    /// Store a value that is **not a narinfo** under a narinfo key.
+    ///
+    /// For consumers that use a backend as a key-value store (the dockerfile
+    /// wrapper keeps an image tag per content hash). A value that reads as a
+    /// narinfo (it has a `StorePath:` or a `URL:` line) is refused: a narinfo
+    /// enters only through admission.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::NarInfo`] for a narinfo-shaped value; otherwise the
+    /// record write.
+    async fn put_kv_value(&self, key: &str, value: &str) -> Result<(), StoreError> {
+        if nar_refs::is_servable_narinfo(value) || nar_refs::advertised_url_line(value).is_some() {
+            return Err(StoreError::NarInfo(format!(
+                "refusing a raw write of a narinfo under {key}: a narinfo enters only through admission",
+            )));
         }
-        self.put_narinfo_record(hash, content).await
+        self.put_narinfo_record(key, value, RecordWrite::mint()).await
     }
 
     /// The NAR path this store path's narinfo advertises — **resolved, never
@@ -372,6 +396,29 @@ pub trait StorageBackend: Send + Sync {
         }
         Ok(n)
     }
+}
+
+/// The composed narinfo write: record the reverse edge, then the record.
+///
+/// Crate-private on purpose: its callers are [`StorageBackend::put_narinfo`]
+/// (an admitted entry) and tier promotion (a record a tier already holds).
+pub(crate) async fn write_narinfo<B: StorageBackend + ?Sized>(
+    backend: &B,
+    hash: &str,
+    content: &str,
+) -> Result<(), StoreError> {
+    match nar_refs::advertised_url_line(content) {
+        Some(url) if nar_refs::is_addressable_nar_path(url) => {
+            backend.nar_ref_index().record(url, hash).await?;
+        }
+        Some(url) => {
+            return Err(StoreError::NarInfo(format!(
+                "narinfo {hash} advertises an unaddressable URL: {url:?}",
+            )));
+        }
+        None => {}
+    }
+    backend.put_narinfo_record(hash, content, RecordWrite::mint()).await
 }
 
 /// Config-select factory: build the concrete [`StorageBackend`] a
@@ -552,8 +599,8 @@ mod nar_ref_gate {
 
     /// Run the whole scenario against one backend, naming it in every failure.
     async fn assert_never_strands(name: &str, backend: &dyn StorageBackend) {
-        backend.put_narinfo("pathA", &narinfo_for(SHARED_NAR)).await.unwrap();
-        backend.put_narinfo("pathB", &narinfo_for(SHARED_NAR)).await.unwrap();
+        backend.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("pathA", &narinfo_for(SHARED_NAR))).await.unwrap();
+        backend.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("pathB", &narinfo_for(SHARED_NAR))).await.unwrap();
         backend.put_nar(SHARED_NAR, b"shared contents").await.unwrap();
         // A decoy shaped like the old extension guess, which the store hash
         // would have produced. Nothing advertises it.
@@ -634,8 +681,8 @@ mod nar_ref_gate {
 
         // The gap: narinfos written the pre-index way, via the record verb.
         let stale = LocalStorage::new(dir.path().join("stale"));
-        stale.put_narinfo_record("pathA", &narinfo_for(SHARED_NAR)).await.unwrap();
-        stale.put_narinfo_record("pathB", &narinfo_for(SHARED_NAR)).await.unwrap();
+        stale.put_narinfo_record("pathA", &narinfo_for(SHARED_NAR), crate::RecordWrite::mint()).await.unwrap();
+        stale.put_narinfo_record("pathB", &narinfo_for(SHARED_NAR), crate::RecordWrite::mint()).await.unwrap();
         stale.put_nar(SHARED_NAR, b"shared").await.unwrap();
         stale.delete("pathA").await.unwrap();
         assert!(
@@ -650,8 +697,8 @@ mod nar_ref_gate {
 
         // The close: same fixture, reindexed before the delete.
         let healed = LocalStorage::new(dir.path().join("healed"));
-        healed.put_narinfo_record("pathA", &narinfo_for(SHARED_NAR)).await.unwrap();
-        healed.put_narinfo_record("pathB", &narinfo_for(SHARED_NAR)).await.unwrap();
+        healed.put_narinfo_record("pathA", &narinfo_for(SHARED_NAR), crate::RecordWrite::mint()).await.unwrap();
+        healed.put_narinfo_record("pathB", &narinfo_for(SHARED_NAR), crate::RecordWrite::mint()).await.unwrap();
         healed.put_nar(SHARED_NAR, b"shared").await.unwrap();
         assert_eq!(healed.reindex_nar_refs().await.unwrap(), 2);
         healed.delete("pathA").await.unwrap();

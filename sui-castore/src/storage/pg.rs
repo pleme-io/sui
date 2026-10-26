@@ -337,7 +337,7 @@ impl<C: PgCacheConn + 'static> StorageBackend for PgStorageBackend<C> {
         }
     }
 
-    async fn put_narinfo_record(&self, hash: &str, content: &str) -> Result<(), StoreError> {
+    async fn put_narinfo_record(&self, hash: &str, content: &str, _write: super::RecordWrite) -> Result<(), StoreError> {
         self.healing(|| self.conn.upsert(PgTable::Narinfo, hash, content.as_bytes())).await
     }
 
@@ -1116,7 +1116,7 @@ mod tests {
     #[tokio::test]
     async fn put_then_get_narinfo_roundtrips() {
         let backend = PgStorageBackend::new(MockPg::default());
-        backend.put_narinfo("abc", NARINFO).await.unwrap();
+        backend.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("abc", NARINFO)).await.unwrap();
         assert_eq!(backend.get_narinfo("abc").await.unwrap().unwrap(), NARINFO);
     }
 
@@ -1133,7 +1133,7 @@ mod tests {
         // Same bare id used as both a narinfo hash and a nar path fragment: the
         // two-table split keeps them apart.
         let backend = PgStorageBackend::new(MockPg::default());
-        backend.put_narinfo("dead", "the-narinfo").await.unwrap();
+        backend.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("dead", "the-narinfo")).await.unwrap();
         backend.put_nar("dead", b"the-nar").await.unwrap();
         assert_eq!(backend.get_narinfo("dead").await.unwrap().unwrap(), "the-narinfo");
         assert_eq!(backend.get_nar("dead").await.unwrap().unwrap(), b"the-nar");
@@ -1158,7 +1158,7 @@ mod tests {
     #[tokio::test]
     async fn delete_resolves_the_nar_from_the_narinfo_instead_of_guessing() {
         let backend = PgStorageBackend::new(MockPg::default());
-        backend.put_narinfo("storehash", &narinfo_for("nar/narhash.nar.xz")).await.unwrap();
+        backend.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("storehash", &narinfo_for("nar/narhash.nar.xz"))).await.unwrap();
         backend.put_nar("nar/narhash.nar.xz", b"the real nar").await.unwrap();
         // Decoys the extension-guessing fan-out would have taken instead.
         backend.put_nar("nar/storehash.nar.zst", b"someone else's nar").await.unwrap();
@@ -1184,8 +1184,8 @@ mod tests {
     async fn deleting_one_of_two_paths_sharing_a_nar_leaves_the_nar() {
         let backend = PgStorageBackend::new(MockPg::default());
         let shared = "nar/sharednarhash.nar.xz";
-        backend.put_narinfo("pathA", &narinfo_for(shared)).await.unwrap();
-        backend.put_narinfo("pathB", &narinfo_for(shared)).await.unwrap();
+        backend.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("pathA", &narinfo_for(shared))).await.unwrap();
+        backend.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("pathB", &narinfo_for(shared))).await.unwrap();
         backend.put_nar(shared, b"shared contents").await.unwrap();
 
         backend.delete("pathA").await.unwrap();
@@ -1207,9 +1207,9 @@ mod tests {
         let backend = PgStorageBackend::new(MockPg::default());
         // Real keying: narinfo by store-hash, NAR by a DIFFERENT narhash — the
         // orphan class a per-hash `delete` cannot reach.
-        backend.put_narinfo("storehash", NARINFO).await.unwrap();
+        backend.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("storehash", NARINFO)).await.unwrap();
         backend.put_nar("nar/0narhashXXXXXXXXXXXXXXXXXXXXXXXXXX.nar", b"blob").await.unwrap();
-        backend.put_narinfo("other", NARINFO).await.unwrap();
+        backend.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("other", NARINFO)).await.unwrap();
 
         let removed = backend.wipe_all().await.unwrap();
         assert_eq!(removed, 2, "wipe_all should report the narinfo count");
@@ -1234,8 +1234,8 @@ mod tests {
     #[tokio::test]
     async fn list_narinfos_is_authoritative_and_full() {
         let backend = PgStorageBackend::new(MockPg::default());
-        backend.put_narinfo("aaa", "1").await.unwrap();
-        backend.put_narinfo("bbb", "2").await.unwrap();
+        backend.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("aaa", "1")).await.unwrap();
+        backend.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("bbb", "2")).await.unwrap();
         // A NAR write must not leak into the narinfo listing.
         backend.put_nar("nar/ccc.nar.xz", b"3").await.unwrap();
         let mut hashes = backend.list_narinfos().await.unwrap();
@@ -1246,8 +1246,8 @@ mod tests {
     #[tokio::test]
     async fn overwrite_narinfo_takes_latest() {
         let backend = PgStorageBackend::new(MockPg::default());
-        backend.put_narinfo("h", "v1").await.unwrap();
-        backend.put_narinfo("h", "v2").await.unwrap();
+        backend.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("h", "v1")).await.unwrap();
+        backend.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("h", "v2")).await.unwrap();
         assert_eq!(backend.get_narinfo("h").await.unwrap().unwrap(), "v2");
     }
 
@@ -1261,7 +1261,7 @@ mod tests {
         // query failed from then on, with no restart of THIS process to
         // re-trigger the connect-time DDL. It 500ed for over an hour.
         let backend = PgStorageBackend::new(MockPg::default());
-        backend.put_narinfo("h", NARINFO).await.unwrap();
+        backend.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("h", NARINFO)).await.unwrap();
         assert_eq!(backend.conn().ddl_runs(), 0, "no heal needed while healthy");
 
         backend.conn().drop_schema();
@@ -1275,7 +1275,7 @@ mod tests {
         assert_eq!(backend.conn().ddl_runs(), 1, "the idempotent DDL must have re-run");
 
         // The tier is now fully functional again — writes land and read back.
-        backend.put_narinfo("h2", NARINFO).await.unwrap();
+        backend.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("h2", NARINFO)).await.unwrap();
         assert_eq!(backend.get_narinfo("h2").await.unwrap().unwrap(), NARINFO);
     }
 
@@ -1295,7 +1295,7 @@ mod tests {
         conn.ensure_schema().await.expect("run against an absent schema");
         conn.ensure_schema().await.expect("and again once it exists");
         let backend = PgStorageBackend::new(conn);
-        backend.put_narinfo("x", NARINFO).await.expect("usable after repeated DDL");
+        backend.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("x", NARINFO)).await.expect("usable after repeated DDL");
     }
 
     #[tokio::test]
@@ -1309,7 +1309,7 @@ mod tests {
         // put_narinfo
         let b = PgStorageBackend::new(MockPg::default());
         b.conn().drop_schema();
-        b.put_narinfo("h", NARINFO).await.expect("put_narinfo self-heals");
+        b.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("h", NARINFO)).await.expect("put_narinfo self-heals");
         assert_eq!(b.get_narinfo("h").await.unwrap().unwrap(), NARINFO);
 
         // put_nar
@@ -1580,7 +1580,7 @@ mod tests {
     #[tokio::test]
     async fn backend_fault_on_write_is_an_error() {
         let backend = PgStorageBackend::new(FaultyPg::always(RELATION_MISSING));
-        assert!(backend.put_narinfo("h", NARINFO).await.is_err());
+        assert!(backend.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("h", NARINFO)).await.is_err());
         assert!(backend.put_nar("nar/h.nar.xz", b"bytes").await.is_err());
     }
 
@@ -1606,7 +1606,7 @@ mod tests {
         let mut set = tokio::task::JoinSet::new();
         for i in 0..64 {
             let b = Arc::clone(&backend);
-            set.spawn(async move { b.put_narinfo(&format!("k{i}"), &format!("v{i}")).await });
+            set.spawn(async move { b.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture(&format!("k{i}"), &format!("v{i}"))).await });
         }
         while let Some(r) = set.join_next().await {
             r.expect("task panicked").expect("put failed");
@@ -1628,7 +1628,7 @@ mod tests {
     async fn repeated_identical_put_is_idempotent() {
         let backend = PgStorageBackend::new(MockPg::default());
         for _ in 0..10 {
-            backend.put_narinfo("same", NARINFO).await.unwrap();
+            backend.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("same", NARINFO)).await.unwrap();
         }
         assert_eq!(backend.list_narinfos().await.unwrap().len(), 1);
         assert_eq!(backend.get_narinfo("same").await.unwrap().unwrap(), NARINFO);
@@ -1770,7 +1770,7 @@ mod tests {
     async fn delete_clears_both_storage_generations() {
         let backend = PgStorageBackend::new(MockPg::default());
         let key = "nar/xyz.nar.xz";
-        backend.put_narinfo("storehash", &narinfo_for(key)).await.unwrap();
+        backend.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("storehash", &narinfo_for(key))).await.unwrap();
         backend.put_nar(key, b"chunked").await.unwrap();
         backend.conn().seed_legacy_nar(key, b"legacy");
 
@@ -1784,7 +1784,7 @@ mod tests {
     #[tokio::test]
     async fn wipe_all_reclaims_the_chunk_table_too() {
         let backend = PgStorageBackend::new(MockPg::default());
-        backend.put_narinfo("h", NARINFO).await.unwrap();
+        backend.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("h", NARINFO)).await.unwrap();
         backend.put_nar(NAR_KEY, &multi_chunk_nar()).await.unwrap();
         assert!(backend.conn().chunk_rows() > 1);
         assert_eq!(backend.wipe_all().await.unwrap(), 1);

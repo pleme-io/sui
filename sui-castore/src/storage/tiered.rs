@@ -210,8 +210,11 @@ impl TieredBackend {
 
     // ── best-effort warmers (promotion + hot write) ────────────────────────
 
+    /// Copies a record one tier already holds (promotion) or the record this
+    /// write is fanning out; either way it was admitted before it reached the
+    /// tiers, so this goes through the crate's composed write, not admission.
     async fn warm_narinfo(tier: &Arc<dyn StorageBackend>, hash: &str, content: &str) {
-        if let Err(e) = tier.put_narinfo(hash, content).await {
+        if let Err(e) = super::write_narinfo(tier.as_ref(), hash, content).await {
             warn!(hash = %hash, error = %e, "tiered: best-effort narinfo warm failed");
         }
     }
@@ -406,13 +409,13 @@ impl StorageBackend for TieredBackend {
         }
     }
 
-    async fn put_narinfo_record(&self, hash: &str, content: &str) -> Result<(), StoreError> {
+    async fn put_narinfo_record(&self, hash: &str, content: &str, _write: crate::RecordWrite) -> Result<(), StoreError> {
         if self.write_policy == WritePolicy::WriteBack {
             Self::warm_narinfo(&self.l1, hash, content).await;
         }
 
-        let l2 = self.l2.put_narinfo_record(hash, content).await;
-        let l3 = self.l3.put_narinfo_record(hash, content).await;
+        let l2 = self.l2.put_narinfo_record(hash, content, crate::RecordWrite::mint()).await;
+        let l3 = self.l3.put_narinfo_record(hash, content, crate::RecordWrite::mint()).await;
         Self::durable_write_outcome("narinfo", hash, l2, l3)?;
 
         if self.write_policy == WritePolicy::WriteThrough {
@@ -687,7 +690,7 @@ mod tests {
             self.fail_reads_if_configured()?;
             Ok(self.narinfo.lock().unwrap().get(hash).cloned())
         }
-        async fn put_narinfo_record(&self, hash: &str, content: &str) -> Result<(), StoreError> {
+        async fn put_narinfo_record(&self, hash: &str, content: &str, _write: crate::RecordWrite) -> Result<(), StoreError> {
             self.fail_if_configured()?;
             self.narinfo.lock().unwrap().insert(hash.to_string(), content.to_string());
             Ok(())
@@ -746,7 +749,7 @@ mod tests {
     #[tokio::test]
     async fn l1_hit_returns_without_touching_lower_tiers() {
         let (l1, l2, l3, tiered) = mocks();
-        l1.put_narinfo("h", "hot").await.unwrap();
+        l1.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("h", "hot")).await.unwrap();
         assert_eq!(tiered.get_narinfo("h").await.unwrap().unwrap(), "hot");
         // Lower tiers never populated.
         assert!(!l2.has_narinfo("h"));
@@ -756,7 +759,7 @@ mod tests {
     #[tokio::test]
     async fn l2_hit_promotes_into_l1() {
         let (l1, l2, _l3, tiered) = mocks();
-        l2.put_narinfo("h", NARINFO).await.unwrap();
+        l2.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("h", NARINFO)).await.unwrap();
         assert!(!l1.has_narinfo("h"));
         let got = tiered.get_narinfo("h").await.unwrap().unwrap();
         assert_eq!(got, NARINFO);
@@ -767,7 +770,7 @@ mod tests {
     #[tokio::test]
     async fn l3_hit_promotes_into_l2_and_l1() {
         let (l1, l2, l3, tiered) = mocks();
-        l3.put_narinfo("h", NARINFO).await.unwrap();
+        l3.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("h", NARINFO)).await.unwrap();
         let got = tiered.get_narinfo("h").await.unwrap().unwrap();
         assert_eq!(got, NARINFO);
         assert!(l2.has_narinfo("h"), "L3 hit must promote into L2");
@@ -800,7 +803,7 @@ mod tests {
         // The old code `?`d that error straight out, so L3 — which was healthy
         // and held the content — was never even consulted.
         let (l1, l2, l3, tiered) = mocks();
-        l3.put_narinfo("h", NARINFO).await.unwrap();
+        l3.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("h", NARINFO)).await.unwrap();
         l3.put_nar("nar/h.nar.xz", b"blob").await.unwrap();
         l2.set_reads_fail(true);
 
@@ -817,7 +820,7 @@ mod tests {
     #[tokio::test]
     async fn broken_l1_and_l2_still_serve_from_l3() {
         let (l1, l2, l3, tiered) = mocks();
-        l3.put_narinfo("h", NARINFO).await.unwrap();
+        l3.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("h", NARINFO)).await.unwrap();
         // Both upper tiers up-but-broken.
         l1.set_reads_fail(true);
         l2.set_reads_fail(true);
@@ -857,7 +860,7 @@ mod tests {
         // A best-effort warm that fails must NOT turn a successful read into an
         // error — the bytes were found.
         let (l1, l2, _l3, tiered) = mocks();
-        l2.put_narinfo("h", NARINFO).await.unwrap();
+        l2.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("h", NARINFO)).await.unwrap();
         l1.set_writes_fail(true); // L1 warm will error
         let got = tiered.get_narinfo("h").await.unwrap();
         assert_eq!(got.unwrap(), NARINFO);
@@ -869,7 +872,7 @@ mod tests {
     #[tokio::test]
     async fn write_through_populates_all_tiers() {
         let (l1, l2, l3, tiered) = mocks();
-        tiered.put_narinfo("h", NARINFO).await.unwrap();
+        tiered.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("h", NARINFO)).await.unwrap();
         assert!(l1.has_narinfo("h"), "write-through warms L1");
         assert!(l2.has_narinfo("h"), "write-through persists L2");
         assert!(l3.has_narinfo("h"), "write-through persists L3");
@@ -883,7 +886,7 @@ mod tests {
         let tiered = TieredBackend::with_write_policy(
             l1.clone(), l2.clone(), l3.clone(), WritePolicy::WriteAround,
         );
-        tiered.put_narinfo("h", NARINFO).await.unwrap();
+        tiered.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("h", NARINFO)).await.unwrap();
         assert!(!l1.has_narinfo("h"), "write-around must NOT touch L1");
         assert!(l2.has_narinfo("h"));
         assert!(l3.has_narinfo("h"));
@@ -920,7 +923,7 @@ mod tests {
         l2.set_writes_fail(true);
         let tiered = TieredBackend::new(l1.clone(), l2.clone(), l3.clone());
 
-        tiered.put_narinfo("h", NARINFO).await.expect("one healthy durable tier must accept");
+        tiered.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("h", NARINFO)).await.expect("one healthy durable tier must accept");
         tiered.put_nar("nar/h.nar.xz", b"blob").await.expect("one healthy durable tier must accept");
 
         assert!(!l2.has_narinfo("h"), "the broken tier holds nothing");
@@ -940,7 +943,7 @@ mod tests {
         l2.set_writes_fail(true);
         l3.set_writes_fail(true);
         let tiered = TieredBackend::new(l1, l2, l3);
-        let err = tiered.put_narinfo("h", NARINFO).await.unwrap_err();
+        let err = tiered.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("h", NARINFO)).await.unwrap_err();
         assert!(matches!(err, StoreError::NotImplemented(_)));
     }
 
@@ -949,7 +952,7 @@ mod tests {
     #[tokio::test]
     async fn pod_roll_losing_l1_loses_nothing() {
         let (l1, _l2, _l3, tiered) = mocks();
-        tiered.put_narinfo("h", NARINFO).await.unwrap();
+        tiered.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("h", NARINFO)).await.unwrap();
         tiered.put_nar("nar/h.nar.xz", b"blob").await.unwrap();
         // Simulate a pod roll wiping the entire hot tier.
         l1.clear();
@@ -963,7 +966,7 @@ mod tests {
     #[tokio::test]
     async fn delete_fans_out_to_all_tiers() {
         let (l1, l2, l3, tiered) = mocks();
-        tiered.put_narinfo("h", NARINFO).await.unwrap();
+        tiered.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("h", NARINFO)).await.unwrap();
         tiered.put_nar(ADVERTISED_NAR, b"blob").await.unwrap();
         tiered.delete("h").await.unwrap();
         for t in [&l1, &l2, &l3] {
@@ -977,7 +980,7 @@ mod tests {
     #[tokio::test]
     async fn delete_resolves_across_tiers_instead_of_guessing() {
         let (l1, l2, l3, tiered) = mocks();
-        tiered.put_narinfo("h", NARINFO).await.unwrap();
+        tiered.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("h", NARINFO)).await.unwrap();
         tiered.put_nar(ADVERTISED_NAR, b"blob").await.unwrap();
         tiered.put_nar("nar/h.nar.zst", b"someone else's nar").await.unwrap();
 
@@ -997,8 +1000,8 @@ mod tests {
     #[tokio::test]
     async fn a_co_referenced_nar_survives_the_first_delete_on_every_tier() {
         let (l1, l2, l3, tiered) = mocks();
-        tiered.put_narinfo("pathA", NARINFO).await.unwrap();
-        tiered.put_narinfo("pathB", NARINFO).await.unwrap();
+        tiered.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("pathA", NARINFO)).await.unwrap();
+        tiered.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("pathB", NARINFO)).await.unwrap();
         tiered.put_nar(ADVERTISED_NAR, b"shared").await.unwrap();
 
         tiered.delete("pathA").await.unwrap();
@@ -1023,7 +1026,7 @@ mod tests {
     #[tokio::test]
     async fn a_failed_narinfo_delete_must_not_take_the_nar_with_it() {
         let (l1, l2, l3, tiered) = mocks();
-        tiered.put_narinfo("h", NARINFO).await.unwrap();
+        tiered.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("h", NARINFO)).await.unwrap();
         tiered.put_nar(ADVERTISED_NAR, b"blob").await.unwrap();
 
         // L2 goes read-only-ish: its narinfo record delete will fail. Its copy
@@ -1054,10 +1057,10 @@ mod tests {
     async fn wipe_all_clears_every_tier() {
         let (l1, l2, l3, tiered) = mocks();
         // write-through seeds all three tiers.
-        tiered.put_narinfo("h", NARINFO).await.unwrap();
+        tiered.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("h", NARINFO)).await.unwrap();
         tiered.put_nar(ADVERTISED_NAR, b"blob").await.unwrap();
         // a durable-only key proves the list-driven clear, not just the hot one.
-        l2.put_narinfo("only2", "x").await.unwrap();
+        l2.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("only2", "x")).await.unwrap();
 
         let removed = tiered.wipe_all().await.unwrap();
         assert!(removed >= 1, "wipe reported nothing cleared");
@@ -1076,12 +1079,12 @@ mod tests {
     async fn list_narinfos_unions_durable_tiers_deduped() {
         let (l1, l2, l3, tiered) = mocks();
         // A key present in BOTH durable tiers must appear once.
-        l2.put_narinfo("shared", "x").await.unwrap();
-        l3.put_narinfo("shared", "x").await.unwrap();
-        l2.put_narinfo("only2", "y").await.unwrap();
-        l3.put_narinfo("only3", "z").await.unwrap();
+        l2.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("shared", "x")).await.unwrap();
+        l3.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("shared", "x")).await.unwrap();
+        l2.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("only2", "y")).await.unwrap();
+        l3.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("only3", "z")).await.unwrap();
         // An L1-only key must NOT appear (L1 is a partial hot subset).
-        l1.put_narinfo("hot-only", "w").await.unwrap();
+        l1.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("hot-only", "w")).await.unwrap();
         let listed = tiered.list_narinfos().await.unwrap();
         assert_eq!(listed, vec!["only2".to_string(), "only3".to_string(), "shared".to_string()]);
     }
@@ -1095,7 +1098,7 @@ mod tests {
         let l2 = Arc::new(MemBackend::default());
         let l3_disk = Arc::new(LocalStorage::new(dir.path()));
         // Seed the real on-disk L3 directly.
-        l3_disk.put_narinfo("h", NARINFO).await.unwrap();
+        l3_disk.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("h", NARINFO)).await.unwrap();
         l3_disk.put_nar("nar/h.nar.xz", b"disk-blob").await.unwrap();
 
         let tiered = TieredBackend::new(l1.clone(), l2.clone(), l3_disk);
@@ -1124,7 +1127,7 @@ mod tests {
         async fn get_narinfo(&self, _h: &str) -> Result<Option<String>, StoreError> {
             Ok(None)
         }
-        async fn put_narinfo_record(&self, _h: &str, _c: &str) -> Result<(), StoreError> {
+        async fn put_narinfo_record(&self, _h: &str, _c: &str, _write: crate::RecordWrite) -> Result<(), StoreError> {
             Ok(())
         }
         async fn delete_narinfo_record(&self, _h: &str) -> Result<(), StoreError> {

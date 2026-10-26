@@ -49,6 +49,11 @@ pub struct PushResult {
 ///
 /// `references` are the runtime dependency store path basenames.
 ///
+/// `universe` is the set of store paths that really exist where the path was
+/// read from (the local store). The entry is [admitted](sui_castore::admit)
+/// against the bytes before anything is uploaded, so a reference list that
+/// misses a path the NAR names is refused here, for this path alone.
+///
 /// `codec` is the packing posture — resolved from
 /// [`CacheConfig::nar_codec`](crate::CacheConfig::nar_codec), never chosen
 /// here. It is one value and it is *threaded*, not re-stated: the bytes, the
@@ -59,8 +64,10 @@ pub struct PushResult {
 /// # Errors
 ///
 /// [`CacheError::PathNotFound`] if `store_path` does not exist,
-/// [`CacheError::Io`] if the NAR dump or compression fails, or whatever the
+/// [`CacheError::Io`] if the NAR dump or compression fails,
+/// [`CacheError::Refused`] if admission refuses the entry, or whatever the
 /// backend returns from the two uploads.
+#[allow(clippy::too_many_arguments)]
 pub async fn push_path(
     storage: &dyn StorageBackend,
     signer: &CacheSigner,
@@ -69,6 +76,7 @@ pub async fn push_path(
     references: &[String],
     deriver: Option<&str>,
     codec: NarCodec,
+    universe: &dyn sui_castore::RefUniverse,
 ) -> Result<PushResult, CacheError> {
     let path = Path::new(store_path);
     if !path.exists() {
@@ -113,9 +121,11 @@ pub async fn push_path(
         ..narinfo
     };
 
-    // 7. Upload.
+    // 7. Admit against the bytes, then upload: nothing reaches the cache
+    //    unless its hashes and references match what was dumped.
+    let admitted = sui_castore::admit_bytes(hash, &narinfo.serialize(), &compressed, universe).await?;
     storage.put_nar(&nar_url, &compressed).await?;
-    storage.put_narinfo(hash, &narinfo.serialize()).await?;
+    storage.put_narinfo(&admitted).await?;
 
     Ok(PushResult {
         hash: hash.to_string(),
@@ -452,22 +462,17 @@ impl NarCodec {
     ///
     /// [`CacheError::Io`] if the data is not a valid frame for this codec.
     pub fn decompress(self, data: &[u8]) -> Result<Vec<u8>, CacheError> {
-        use std::io::Read;
-        let mut out = Vec::new();
+        self.compression().decompress(data).map_err(CacheError::Io)
+    }
+
+    /// The wire codec this packing posture writes — the one decoder every
+    /// reader of a cache NAR shares.
+    #[must_use]
+    pub fn compression(self) -> sui_compat::nar_compression::NarCompression {
         match self {
-            Self::Zstd { .. } => {
-                zstd::Decoder::new(data)
-                    .map_err(CacheError::Io)?
-                    .read_to_end(&mut out)
-                    .map_err(CacheError::Io)?;
-            }
-            Self::Xz { .. } => {
-                xz2::read::XzDecoder::new(data)
-                    .read_to_end(&mut out)
-                    .map_err(CacheError::Io)?;
-            }
+            Self::Zstd { .. } => sui_compat::nar_compression::NarCompression::Zstd,
+            Self::Xz { .. } => sui_compat::nar_compression::NarCompression::Xz,
         }
-        Ok(out)
     }
 
     /// Resolve a codec from the `Compression:` field of a narinfo — the
@@ -528,6 +533,7 @@ mod tests {
             &[],
             None,
             NarCodec::default(),
+            &std::collections::BTreeSet::<String>::new(),
         )
         .await
         .unwrap();
@@ -552,6 +558,36 @@ mod tests {
         assert!(!nar.is_empty());
     }
 
+    /// The push and watch mode of the cid receipt: the local store's own
+    /// record said no references, the bytes name `rust-std`, which the store
+    /// holds. The push is refused for this path, and nothing is stored.
+    #[tokio::test]
+    async fn push_refuses_a_path_whose_bytes_name_an_unlisted_store_path() {
+        let cache_dir = tempfile::tempdir().unwrap();
+        let storage = LocalStorage::new(cache_dir.path());
+        let signer = CacheSigner::generate("k".to_string());
+        let dep = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1";
+        let store_dir = tempfile::tempdir().unwrap();
+        let path = store_dir.path().join("tch-rust-stable");
+        std::fs::create_dir_all(&path).unwrap();
+        std::os::unix::fs::symlink(format!("/nix/store/{dep}-rust-std/lib"), path.join("lib")).unwrap();
+        let universe: std::collections::BTreeSet<String> = [dep.to_string()].into_iter().collect();
+
+        let err = push_path(&storage, &signer, path.to_str().unwrap(), "tch", &[], None, NarCodec::default(), &universe)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, CacheError::Refused(sui_castore::Refusal::OmittedReferences { hashes }) if hashes == &vec![dep.to_string()]),
+            "{err}"
+        );
+        assert!(storage.list_narinfos().await.unwrap().is_empty(), "no narinfo stored");
+
+        let refs = vec![format!("{dep}-rust-std")];
+        push_path(&storage, &signer, path.to_str().unwrap(), "tch", &refs, None, NarCodec::default(), &universe)
+            .await
+            .expect("the same path with its reference listed is admitted");
+    }
+
     #[tokio::test]
     async fn push_nonexistent_path_errors() {
         let dir = tempfile::tempdir().unwrap();
@@ -566,6 +602,7 @@ mod tests {
             &[],
             None,
             NarCodec::default(),
+            &std::collections::BTreeSet::<String>::new(),
         )
         .await;
 
@@ -580,7 +617,7 @@ mod tests {
         let signer = CacheSigner::generate("k".to_string());
 
         let store_dir = tempfile::tempdir().unwrap();
-        let path = store_dir.path().join("pkg");
+        let path = store_dir.path().join("xyz-pkg");
         std::fs::create_dir_all(&path).unwrap();
         std::fs::write(path.join("file"), b"data").unwrap();
 
@@ -593,6 +630,7 @@ mod tests {
             &refs,
             Some("builder.drv"),
             NarCodec::default(),
+            &std::collections::BTreeSet::<String>::new(),
         )
         .await
         .unwrap();
@@ -613,7 +651,7 @@ mod tests {
         let pk_str = signer.public_key_string();
 
         let store_dir = tempfile::tempdir().unwrap();
-        let path = store_dir.path().join("test-pkg");
+        let path = store_dir.path().join("ttt-pkg");
         std::fs::create_dir_all(&path).unwrap();
         std::fs::write(path.join("data"), b"test content").unwrap();
 
@@ -625,6 +663,7 @@ mod tests {
             &[],
             None,
             NarCodec::default(),
+            &std::collections::BTreeSet::<String>::new(),
         )
         .await
         .unwrap();
@@ -892,6 +931,7 @@ mod tests {
                 &[],
                 None,
                 codec,
+                &std::collections::BTreeSet::<String>::new(),
             )
             .await
             .unwrap();
@@ -968,7 +1008,7 @@ mod tests {
         let storage = LocalStorage::new(cache_dir.path());
         let signer = CacheSigner::generate("cfg-key".to_string());
         let store_dir = tempfile::tempdir().unwrap();
-        let path = store_dir.path().join("pkg");
+        let path = store_dir.path().join("cfgd-pkg");
         std::fs::create_dir_all(&path).unwrap();
         std::fs::write(path.join("f"), b"data").unwrap();
 
@@ -980,6 +1020,7 @@ mod tests {
             &[],
             None,
             configured,
+            &std::collections::BTreeSet::<String>::new(),
         )
         .await
         .unwrap();

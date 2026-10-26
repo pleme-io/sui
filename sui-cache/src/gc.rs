@@ -93,11 +93,11 @@ mod tests {
         let storage = LocalStorage::new(dir.path());
 
         storage
-            .put_narinfo("aaa", &make_narinfo("aaa", 100))
+            .put_narinfo(&sui_castore::AdmittedNarInfo::unchecked_fixture("aaa", &make_narinfo("aaa", 100)))
             .await
             .unwrap();
         storage
-            .put_narinfo("bbb", &make_narinfo("bbb", 200))
+            .put_narinfo(&sui_castore::AdmittedNarInfo::unchecked_fixture("bbb", &make_narinfo("bbb", 200)))
             .await
             .unwrap();
 
@@ -116,11 +116,11 @@ mod tests {
         let storage = LocalStorage::new(dir.path());
 
         storage
-            .put_narinfo("keep", &make_narinfo("keep", 100))
+            .put_narinfo(&sui_castore::AdmittedNarInfo::unchecked_fixture("keep", &make_narinfo("keep", 100)))
             .await
             .unwrap();
         storage
-            .put_narinfo("drop", &make_narinfo("drop", 500))
+            .put_narinfo(&sui_castore::AdmittedNarInfo::unchecked_fixture("drop", &make_narinfo("drop", 500)))
             .await
             .unwrap();
         storage
@@ -145,15 +145,15 @@ mod tests {
         let storage = LocalStorage::new(dir.path());
 
         storage
-            .put_narinfo("aaa", &make_narinfo("aaa", 100))
+            .put_narinfo(&sui_castore::AdmittedNarInfo::unchecked_fixture("aaa", &make_narinfo("aaa", 100)))
             .await
             .unwrap();
         storage
-            .put_narinfo("bbb", &make_narinfo("bbb", 200))
+            .put_narinfo(&sui_castore::AdmittedNarInfo::unchecked_fixture("bbb", &make_narinfo("bbb", 200)))
             .await
             .unwrap();
         storage
-            .put_narinfo("ccc", &make_narinfo("ccc", 300))
+            .put_narinfo(&sui_castore::AdmittedNarInfo::unchecked_fixture("ccc", &make_narinfo("ccc", 300)))
             .await
             .unwrap();
 
@@ -180,7 +180,7 @@ mod tests {
         let storage = LocalStorage::new(dir.path());
 
         let narinfo_text = make_narinfo("abc", 1000);
-        storage.put_narinfo("abc", &narinfo_text).await.unwrap();
+        storage.put_narinfo(&sui_castore::AdmittedNarInfo::unchecked_fixture("abc", &narinfo_text)).await.unwrap();
 
         let result = collect_garbage(&storage, &[]).await.unwrap();
         // Should include FileSize (1000) + narinfo text length.

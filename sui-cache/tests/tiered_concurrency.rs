@@ -86,7 +86,7 @@ impl StorageBackend for MemBackend {
         self.is_down()?;
         Ok(self.narinfo.lock().unwrap().get(hash).cloned())
     }
-    async fn put_narinfo_record(&self, hash: &str, content: &str) -> Result<(), CacheError> {
+    async fn put_narinfo_record(&self, hash: &str, content: &str, _write: sui_cache::RecordWrite) -> Result<(), CacheError> {
         self.is_down()?;
         self.narinfo
             .lock()
@@ -151,7 +151,7 @@ async fn racing_puts_of_the_same_key_leave_one_value_per_tier_all_readers_agree(
     for _ in 0..RACERS {
         let tiered = tiered.clone();
         set.spawn(async move {
-            tiered.put_narinfo("h", NARINFO).await?;
+            tiered.put_narinfo(&sui_castore::AdmittedNarInfo::unchecked_fixture("h", NARINFO)).await?;
             tiered.put_nar("nar/h.nar.xz", b"blob").await
         });
     }
@@ -210,7 +210,7 @@ async fn racing_puts_of_distinct_keys_all_land_without_cross_contamination() {
     let mut set = tokio::task::JoinSet::new();
     for (k, v) in expected.clone() {
         let tiered = tiered.clone();
-        set.spawn(async move { tiered.put_narinfo(&k, &v).await });
+        set.spawn(async move { tiered.put_narinfo(&sui_castore::AdmittedNarInfo::unchecked_fixture(&k, &v)).await });
     }
     while let Some(res) = set.join_next().await {
         res.expect("task panicked")
@@ -241,7 +241,7 @@ async fn concurrent_readers_during_writes_never_see_a_torn_value() {
     let mut set = tokio::task::JoinSet::new();
     for _ in 0..RACERS {
         let tiered = tiered.clone();
-        set.spawn(async move { tiered.put_narinfo("h", NARINFO).await });
+        set.spawn(async move { tiered.put_narinfo(&sui_castore::AdmittedNarInfo::unchecked_fixture("h", NARINFO)).await });
     }
     for _ in 0..RACERS {
         let tiered = tiered.clone();
@@ -275,7 +275,7 @@ async fn lookup_order_is_l1_then_l2_then_l3_with_promotion() {
     let tiered = TieredBackend::new(l1.clone(), l2.clone(), l3.clone());
 
     // Key present ONLY in L2. The read finds it and promotes it into L1.
-    l2.put_narinfo("k", NARINFO).await.unwrap();
+    l2.put_narinfo(&sui_castore::AdmittedNarInfo::unchecked_fixture("k", NARINFO)).await.unwrap();
     assert!(!l1.has_narinfo("k"));
     assert_eq!(tiered.get_narinfo("k").await.unwrap().unwrap(), NARINFO);
     assert!(l1.has_narinfo("k"), "an L2 hit must be promoted into L1");
@@ -328,7 +328,7 @@ async fn l1_unreachable_falls_through_to_l2_it_degrades_not_errors() {
     let tiered = TieredBackend::new(l1.clone(), l2.clone(), l3);
 
     // Key lives in L2; L1 is a healthy MISS (Ok(None)) → fall through to L2.
-    l2.put_narinfo("only2", NARINFO).await.unwrap();
+    l2.put_narinfo(&sui_castore::AdmittedNarInfo::unchecked_fixture("only2", NARINFO)).await.unwrap();
     assert_eq!(
         tiered.get_narinfo("only2").await.unwrap().unwrap(),
         NARINFO,
@@ -354,7 +354,7 @@ async fn l1_down_is_stepped_over_and_l2_still_answers() {
     let l2 = MemBackend::arc();
     let l3 = MemBackend::arc();
     // Seed L2 so the fall-through has something to find.
-    l2.put_narinfo("k", NARINFO).await.unwrap();
+    l2.put_narinfo(&sui_castore::AdmittedNarInfo::unchecked_fixture("k", NARINFO)).await.unwrap();
     l1.set_down(true);
     let tiered = TieredBackend::new(l1, l2, l3);
     assert_eq!(
@@ -381,7 +381,7 @@ async fn l2_down_surfaces_the_typed_error_when_l1_and_l3_miss() {
 #[tokio::test]
 async fn a_key_put_through_the_tier_is_readable_back_through_the_tier() {
     let tiered = TieredBackend::new(MemBackend::arc(), MemBackend::arc(), MemBackend::arc());
-    tiered.put_narinfo("rt", NARINFO).await.unwrap();
+    tiered.put_narinfo(&sui_castore::AdmittedNarInfo::unchecked_fixture("rt", NARINFO)).await.unwrap();
     tiered.put_nar("nar/rt.nar.xz", b"body").await.unwrap();
     assert_eq!(tiered.get_narinfo("rt").await.unwrap().unwrap(), NARINFO);
     assert_eq!(
@@ -400,7 +400,7 @@ async fn write_to_l2_read_via_l1_fronted_tier_hits_and_promotes() {
     let l3 = MemBackend::arc();
     let tiered = TieredBackend::new(l1.clone(), l2.clone(), l3);
 
-    l2.put_narinfo("shared", NARINFO).await.unwrap();
+    l2.put_narinfo(&sui_castore::AdmittedNarInfo::unchecked_fixture("shared", NARINFO)).await.unwrap();
     assert!(!l1.has_narinfo("shared"));
     assert_eq!(
         tiered.get_narinfo("shared").await.unwrap().unwrap(),
@@ -421,7 +421,7 @@ async fn read_through_from_a_real_on_disk_local_storage_l3() {
     let l2 = MemBackend::arc();
     let l3_disk = Arc::new(LocalStorage::new(dir.path()));
     // Seed the REAL disk L3.
-    l3_disk.put_narinfo("h", NARINFO).await.unwrap();
+    l3_disk.put_narinfo(&sui_castore::AdmittedNarInfo::unchecked_fixture("h", NARINFO)).await.unwrap();
     l3_disk.put_nar("nar/h.nar.xz", b"disk-blob").await.unwrap();
 
     let tiered = TieredBackend::new(l1.clone(), l2.clone(), l3_disk);
@@ -450,7 +450,7 @@ async fn write_around_racing_reads_lazily_fill_l1_without_losing_durability() {
     ));
 
     // Write-around: durable tiers only, skip L1.
-    tiered.put_narinfo("wa", NARINFO).await.unwrap();
+    tiered.put_narinfo(&sui_castore::AdmittedNarInfo::unchecked_fixture("wa", NARINFO)).await.unwrap();
     assert!(!l1.has_narinfo("wa"), "write-around must not touch L1");
     assert!(
         l2.has_narinfo("wa") && l3.has_narinfo("wa"),
@@ -602,7 +602,7 @@ mod real_infra {
         for _ in 0..24 {
             let tiered = tiered.clone();
             set.spawn(async move {
-                tiered.put_narinfo("live", NARINFO).await?;
+                tiered.put_narinfo(&sui_castore::AdmittedNarInfo::unchecked_fixture("live", NARINFO)).await?;
                 tiered.put_nar("nar/live.nar.xz", b"live-blob").await
             });
         }
@@ -624,7 +624,7 @@ mod real_infra {
             let tiered = tiered.clone();
             set.spawn(async move {
                 tiered
-                    .put_narinfo(&format!("k{i}"), &format!("body-{i}"))
+                    .put_narinfo(&sui_castore::AdmittedNarInfo::unchecked_fixture(&format!("k{i}"), &format!("body-{i}")))
                     .await
             });
         }
@@ -644,7 +644,7 @@ mod real_infra {
             PgStorageBackend::connect(&format!("postgres://sui:sui@127.0.0.1:{pg_port}/sui"), 4)
                 .await
                 .unwrap();
-        pg2.put_narinfo("l2direct", NARINFO).await.unwrap();
+        pg2.put_narinfo(&sui_castore::AdmittedNarInfo::unchecked_fixture("l2direct", NARINFO)).await.unwrap();
         assert_eq!(
             tiered.get_narinfo("l2direct").await.unwrap().unwrap(),
             NARINFO

@@ -105,7 +105,7 @@ impl StorageBackend for LocalStorage {
         }
     }
 
-    async fn put_narinfo_record(&self, hash: &str, content: &str) -> Result<(), StoreError> {
+    async fn put_narinfo_record(&self, hash: &str, content: &str, _write: super::RecordWrite) -> Result<(), StoreError> {
         self.ensure_dir(&self.root).await?;
         let path = self.narinfo_path(hash);
         fs::write(&path, content).await.map_err(StoreError::Io)
@@ -286,7 +286,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let storage = LocalStorage::new(dir.path());
         let content = "StorePath: /nix/store/abc-hello\nURL: nar/abc.nar.xz\nCompression: xz\nFileHash: sha256:aaa\nFileSize: 100\nNarHash: sha256:bbb\nNarSize: 200\nReferences: \n";
-        storage.put_narinfo("abc", content).await.unwrap();
+        storage.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("abc", content)).await.unwrap();
         let retrieved = storage.get_narinfo("abc").await.unwrap().unwrap();
         assert_eq!(retrieved, content);
     }
@@ -321,8 +321,8 @@ mod tests {
     async fn list_narinfos_returns_hashes() {
         let dir = tempfile::tempdir().unwrap();
         let storage = LocalStorage::new(dir.path());
-        storage.put_narinfo("aaa", "content1").await.unwrap();
-        storage.put_narinfo("bbb", "content2").await.unwrap();
+        storage.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("aaa", "content1")).await.unwrap();
+        storage.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("bbb", "content2")).await.unwrap();
         let mut hashes = storage.list_narinfos().await.unwrap();
         hashes.sort();
         assert_eq!(hashes, vec!["aaa", "bbb"]);
@@ -332,7 +332,7 @@ mod tests {
     async fn list_narinfos_ignores_non_narinfo_files() {
         let dir = tempfile::tempdir().unwrap();
         let storage = LocalStorage::new(dir.path());
-        storage.put_narinfo("abc", "content").await.unwrap();
+        storage.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("abc", "content")).await.unwrap();
         // Write a non-narinfo file.
         fs::write(dir.path().join("readme.txt"), "hello")
             .await
@@ -354,7 +354,7 @@ mod tests {
         let storage = LocalStorage::new(dir.path());
 
         let narinfo = "StorePath: /nix/store/xyz-hello\nURL: nar/xyz.nar.xz\nCompression: xz\nFileHash: sha256:aaa\nFileSize: 100\nNarHash: sha256:bbb\nNarSize: 200\nReferences: \n";
-        storage.put_narinfo("xyz", narinfo).await.unwrap();
+        storage.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("xyz", narinfo)).await.unwrap();
         storage.put_nar("nar/xyz.nar.xz", b"nar data").await.unwrap();
 
         assert!(storage.get_narinfo("xyz").await.unwrap().is_some());
@@ -389,8 +389,8 @@ mod tests {
     async fn the_index_is_a_directory_of_edge_files() {
         let dir = tempfile::tempdir().unwrap();
         let storage = LocalStorage::new(dir.path());
-        storage.put_narinfo("pathA", &narinfo_for("nar/shared.nar.xz")).await.unwrap();
-        storage.put_narinfo("pathB", &narinfo_for("nar/shared.nar.xz")).await.unwrap();
+        storage.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("pathA", &narinfo_for("nar/shared.nar.xz"))).await.unwrap();
+        storage.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("pathB", &narinfo_for("nar/shared.nar.xz"))).await.unwrap();
 
         assert!(dir.path().join("nar-refs/nar/shared.nar.xz/pathA").exists());
         assert!(dir.path().join("nar-refs/nar/shared.nar.xz/pathB").exists());
@@ -400,7 +400,7 @@ mod tests {
         );
 
         // A re-push of the same narinfo is the same file, not a second edge.
-        storage.put_narinfo("pathA", &narinfo_for("nar/shared.nar.xz")).await.unwrap();
+        storage.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("pathA", &narinfo_for("nar/shared.nar.xz"))).await.unwrap();
         assert_eq!(
             storage.nar_ref_index().referrers("nar/shared.nar.xz").await.unwrap().len(),
             2,
@@ -412,7 +412,7 @@ mod tests {
     async fn edge_files_do_not_pollute_the_narinfo_listing() {
         let dir = tempfile::tempdir().unwrap();
         let storage = LocalStorage::new(dir.path());
-        storage.put_narinfo("pathA", &narinfo_for("nar/shared.nar.xz")).await.unwrap();
+        storage.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("pathA", &narinfo_for("nar/shared.nar.xz"))).await.unwrap();
         assert_eq!(storage.list_narinfos().await.unwrap(), vec!["pathA".to_string()]);
     }
 
@@ -422,7 +422,7 @@ mod tests {
     async fn the_last_edge_takes_its_directory_with_it() {
         let dir = tempfile::tempdir().unwrap();
         let storage = LocalStorage::new(dir.path());
-        storage.put_narinfo("pathA", &narinfo_for("nar/x.nar.xz")).await.unwrap();
+        storage.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("pathA", &narinfo_for("nar/x.nar.xz"))).await.unwrap();
         assert!(dir.path().join("nar-refs/nar/x.nar.xz").exists());
         storage.delete("pathA").await.unwrap();
         assert!(!dir.path().join("nar-refs/nar/x.nar.xz").exists());
@@ -436,7 +436,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let storage = LocalStorage::new(dir.path());
         let evil = narinfo_for("../../escape.nar");
-        let err = storage.put_narinfo("evil", &evil).await.unwrap_err();
+        let err = storage.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("evil", &evil)).await.unwrap_err();
         assert!(
             matches!(err, StoreError::NarInfo(ref m) if m.contains("unaddressable")),
             "expected a typed refusal, got {err:?}",
@@ -455,8 +455,8 @@ mod tests {
         let storage = LocalStorage::new(dir.path());
         // Write narinfos through the RECORD verb — exactly what a pre-index
         // binary did, since it had no index to maintain.
-        storage.put_narinfo_record("pathA", &narinfo_for("nar/shared.nar.xz")).await.unwrap();
-        storage.put_narinfo_record("pathB", &narinfo_for("nar/shared.nar.xz")).await.unwrap();
+        storage.put_narinfo_record("pathA", &narinfo_for("nar/shared.nar.xz"), crate::RecordWrite::mint()).await.unwrap();
+        storage.put_narinfo_record("pathB", &narinfo_for("nar/shared.nar.xz"), crate::RecordWrite::mint()).await.unwrap();
         assert!(
             storage.nar_ref_index().referrers("nar/shared.nar.xz").await.unwrap().is_empty(),
             "the fixture must actually start unindexed",
@@ -488,7 +488,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let nested = dir.path().join("a").join("b").join("cache");
         let storage = LocalStorage::new(&nested);
-        storage.put_narinfo("test", "content").await.unwrap();
+        storage.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("test", "content")).await.unwrap();
         assert!(nested.join("test.narinfo").exists());
     }
 
@@ -504,8 +504,8 @@ mod tests {
     async fn overwrite_narinfo() {
         let dir = tempfile::tempdir().unwrap();
         let storage = LocalStorage::new(dir.path());
-        storage.put_narinfo("hash", "version1").await.unwrap();
-        storage.put_narinfo("hash", "version2").await.unwrap();
+        storage.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("hash", "version1")).await.unwrap();
+        storage.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("hash", "version2")).await.unwrap();
         let content = storage.get_narinfo("hash").await.unwrap().unwrap();
         assert_eq!(content, "version2");
     }

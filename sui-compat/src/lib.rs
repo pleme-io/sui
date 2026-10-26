@@ -12,6 +12,7 @@ pub mod flake;
 pub mod flake_ref;
 pub mod hash;
 pub mod nar;
+pub mod nar_compression;
 pub mod narinfo;
 pub mod realisation;
 pub mod nix_conf;
@@ -19,6 +20,7 @@ pub mod path_literal;
 pub mod signature;
 pub mod source;
 pub mod store_path;
+pub mod store_path_scan;
 /// The names Nix resolves as bare identifiers — one list, every engine.
 pub mod scope;
 pub mod search_path;

@@ -61,7 +61,7 @@ impl StorageBackend for MockCacheBackend {
         Ok(self.narinfos.lock().expect("mock mutex poisoned").get(hash).cloned())
     }
 
-    async fn put_narinfo_record(&self, hash: &str, content: &str) -> Result<(), CacheError> {
+    async fn put_narinfo_record(&self, hash: &str, content: &str, _write: sui_cache::RecordWrite) -> Result<(), CacheError> {
         self.narinfos
             .lock()
             .expect("mock mutex poisoned")

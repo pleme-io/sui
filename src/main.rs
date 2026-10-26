@@ -944,14 +944,21 @@ enum CacheCommands {
     /// a bad signature by our own key is permanent until something rewrites
     /// it. This rewrites it.
     ///
-    /// Reads and rewrites narinfo text only — no NAR is re-uploaded — so it is
-    /// O(entries) rather than O(bytes), and it repairs entries whose original
-    /// store path no longer exists locally. Idempotent: a second run resigns
-    /// nothing. Signatures by other key names are preserved.
+    /// Rewrites narinfo text only — no NAR is re-uploaded — and it repairs
+    /// entries whose original store path no longer exists locally.
+    /// Idempotent: a second run resigns nothing. Signatures by other key names
+    /// are preserved.
+    ///
+    /// Each entry is admitted against its NAR first, and an entry that fails
+    /// (hashes that do not match the bytes, references that omit what the
+    /// bytes name) is counted and NOT re-signed: a signature is a vouch.
     Resign {
         #[arg(long, default_value = "/var/cache/sui")] store_path: String,
         /// Path to the ed25519 signing secret (`keyname:base64(64)`).
         #[arg(long)] signing_key: String,
+        /// Rewrite signatures without reading any NAR: O(entries), and it
+        /// re-vouches for whatever is stored. Off by default.
+        #[arg(long)] signatures_only: bool,
     },
     /// Clear the ENTIRE cache — every narinfo + NAR across all tiers (Redis L1,
     /// Postgres L2, object/local L3). The inverse of a warm push: the cache is
@@ -8365,6 +8372,20 @@ async fn main() -> Result<(), CliError> {
                     println!("pushing closure: {} path(s)", targets.len());
                 }
 
+                // Admission's universe: every path valid in this store. A
+                // hash the bytes name that is valid here and not listed is an
+                // omitted reference, and that path is refused.
+                let universe: std::collections::HashSet<String> = local
+                    .query_all_valid_paths()
+                    .await
+                    .map_err(|e| CliError::Orchestrate {
+                        operation: "cache push",
+                        message: format!("query_all_valid_paths: {e}"),
+                    })?
+                    .iter()
+                    .map(sui_compat::store_path::StorePath::hash)
+                    .collect();
+
                 for sp in &targets {
                     let path = sp.to_absolute_path();
                     let hash = path
@@ -8420,6 +8441,7 @@ async fn main() -> Result<(), CliError> {
                             &references,
                             deriver.as_deref(),
                             nar_codec,
+                            &universe,
                         )
                         .await
                         {
@@ -8447,6 +8469,7 @@ async fn main() -> Result<(), CliError> {
                         &references,
                         deriver.as_deref(),
                         nar_codec,
+                        &universe,
                     )
                     .await
                     {
@@ -8566,6 +8589,7 @@ async fn main() -> Result<(), CliError> {
                         .map(|sp| (hash_of(&sp.to_absolute_path()), sp.clone()))
                         .collect();
                     let valid_hashes: Vec<String> = by_hash.keys().cloned().collect();
+                    let universe: std::collections::HashSet<String> = valid_hashes.iter().cloned().collect();
 
                     let cached: std::collections::HashSet<String> = storage
                         .list_narinfos()
@@ -8604,7 +8628,7 @@ async fn main() -> Result<(), CliError> {
                             info.references.iter().map(|r| basename(r)).collect();
                         let deriver = info.deriver.as_deref().map(basename);
                         match sui_cache::push::push_path(
-                            &storage, &signer, &path, h, &references, deriver.as_deref(), codec,
+                            &storage, &signer, &path, h, &references, deriver.as_deref(), codec, &universe,
                         )
                         .await
                         {
@@ -8628,7 +8652,7 @@ async fn main() -> Result<(), CliError> {
                     tokio::time::sleep(std::time::Duration::from_secs(interval_secs)).await;
                 }
             }
-            CacheCommands::Resign { store_path, signing_key } => {
+            CacheCommands::Resign { store_path, signing_key, signatures_only } => {
                 let secret = std::fs::read_to_string(&signing_key)
                     .map_err(|e| CliError::Orchestrate {
                         operation: "cache resign",
@@ -8641,16 +8665,30 @@ async fn main() -> Result<(), CliError> {
                             message: e.to_string(),
                         })?;
                 let storage = sui_cache::LocalStorage::new(&store_path);
-                let r = sui_cache::resign::resign_all(&storage, &signer)
+                let mode = if signatures_only {
+                    sui_cache::resign::ResignMode::SignaturesOnly
+                } else {
+                    sui_cache::resign::ResignMode::Admit
+                };
+                let r = sui_cache::resign::resign_all(&storage, &signer, mode)
                     .await
                     .map_err(|e| CliError::Orchestrate {
                         operation: "cache resign",
                         message: e.to_string(),
                     })?;
                 println!(
-                    "resign: {} examined, {} re-signed, {} already correct, {} failed",
-                    r.total, r.resigned, r.unchanged, r.failed
+                    "resign: {} examined, {} re-signed, {} already correct, {} refused, {} failed",
+                    r.total, r.resigned, r.unchanged, r.refused, r.failed
                 );
+                if r.refused > 0 {
+                    return Err(CliError::Orchestrate {
+                        operation: "cache resign",
+                        message: format!(
+                            "{} narinfo(s) refused admission and were not re-signed; `sui cache audit --evict` moves them aside",
+                            r.refused
+                        ),
+                    });
+                }
                 if r.failed > 0 {
                     // A partial sweep must not read as success: the operator
                     // needs to know some entries are still unverifiable.

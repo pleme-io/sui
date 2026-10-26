@@ -487,58 +487,25 @@ async fn resolve_from_lockfile(
         // Try upstream caches
         let mut found = false;
         for cache in upstream_caches {
-            match cache.fetch_narinfo(&store_hash).await {
-                Ok(Some(narinfo)) => {
+            match mirror_one(cache, local_storage, &store_hash).await {
+                Ok(Mirrored::Stored { compressed_bytes }) => {
                     info!(
                         input = %input_name,
                         source = %source_desc,
-                        nar_size = narinfo.nar_size,
-                        "Found in upstream, downloading"
+                        compressed_bytes,
+                        "Mirrored to local cache"
                     );
-
-                    match cache.fetch_nar(&narinfo.url).await {
-                        Ok(nar_data) => {
-                            // Mirror to local cache
-                            if let Err(e) = local_storage
-                                .put_nar(&narinfo.url, &nar_data)
-                                .await
-                            {
-                                warn!(input = %input_name, error = %e, "Failed to cache NAR");
-                                continue;
-                            }
-                            if let Err(e) = local_storage
-                                .put_narinfo(&store_hash, &narinfo.serialize())
-                                .await
-                            {
-                                warn!(input = %input_name, error = %e, "Failed to cache narinfo");
-                                continue;
-                            }
-                            info!(
-                                input = %input_name,
-                                compressed_bytes = nar_data.len(),
-                                "Mirrored to local cache"
-                            );
-                            cached += 1;
-                            found = true;
-                            break;
-                        }
-                        Err(e) => {
-                            warn!(
-                                input = %input_name,
-                                cache = %cache.base_url(),
-                                error = %e,
-                                "NAR download failed"
-                            );
-                        }
-                    }
+                    cached += 1;
+                    found = true;
+                    break;
                 }
-                Ok(None) => continue,
+                Ok(Mirrored::Absent) => continue,
                 Err(e) => {
                     warn!(
                         input = %input_name,
                         cache = %cache.base_url(),
                         error = %e,
-                        "Upstream cache error"
+                        "upstream entry not mirrored"
                     );
                 }
             }
@@ -558,6 +525,39 @@ async fn resolve_from_lockfile(
 }
 
 // ── Helpers ──────────────────────────────────────────────────
+
+/// What [`mirror_one`] did with one path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mirrored {
+    /// The upstream cache does not have it.
+    Absent,
+    /// Admitted and stored locally.
+    Stored { compressed_bytes: usize },
+}
+
+/// Copy one path from an upstream cache into `local`.
+///
+/// The one mirror path both strategies share. The upstream entry is admitted
+/// against the NAR it serves before anything is stored, so a mirror cannot
+/// carry an upstream's poison (hashes that do not match the bytes, references
+/// that omit what the bytes name) into this cache.
+async fn mirror_one(
+    cache: &BinaryCacheStore,
+    local: &dyn StorageBackend,
+    hash: &str,
+) -> Result<Mirrored, AgentError> {
+    let Some(narinfo) = cache.fetch_narinfo(hash).await? else {
+        return Ok(Mirrored::Absent);
+    };
+    let nar = cache.fetch_nar(&narinfo.url).await?;
+    let universe = sui_cache::CacheUniverse(local);
+    let admitted = sui_cache::admit_bytes(hash, &narinfo.serialize(), &nar, &universe)
+        .await
+        .map_err(sui_cache::CacheError::from)?;
+    local.put_nar(&admitted.info().url, &nar).await?;
+    local.put_narinfo(&admitted).await?;
+    Ok(Mirrored::Stored { compressed_bytes: nar.len() })
+}
 
 /// Parse a flake reference into (flake_url, attribute_path).
 fn parse_flake_ref(flake_ref: &str) -> (String, String) {
@@ -699,12 +699,10 @@ async fn resolve_with_eval(
     }
 
     for cache in upstream_caches {
-        if let Ok(Some(narinfo)) = cache.fetch_narinfo(&hash).await {
-            if let Ok(nar) = cache.fetch_nar(&narinfo.url).await {
-                local_storage.put_nar(&narinfo.url, &nar).await?;
-                local_storage.put_narinfo(&hash, &narinfo.serialize()).await?;
-                return Ok((1, 0));
-            }
+        match mirror_one(cache, local_storage, &hash).await {
+            Ok(Mirrored::Stored { .. }) => return Ok((1, 0)),
+            Ok(Mirrored::Absent) => {}
+            Err(e) => warn!(cache = %cache.base_url(), hash = %hash, error = %e, "upstream entry not mirrored"),
         }
     }
 
@@ -843,5 +841,58 @@ mod tests {
             }),
             "tiered"
         );
+    }
+
+    /// An upstream serving fixed bytes per URL.
+    struct Upstream(std::collections::HashMap<String, Vec<u8>>);
+
+    #[async_trait::async_trait]
+    impl sui_store::http::HttpClient for Upstream {
+        async fn get(&self, url: &str, _: &[(&str, &str)]) -> Result<sui_store::http::HttpResponse, sui_store::http::HttpError> {
+            Ok(match self.0.get(url) {
+                Some(b) => sui_store::http::HttpResponse { status: 200, body: String::from_utf8_lossy(b).into_owned() },
+                None => sui_store::http::HttpResponse { status: 404, body: String::new() },
+            })
+        }
+        async fn get_bytes(&self, url: &str) -> Result<Vec<u8>, sui_store::http::HttpError> {
+            self.0.get(url).cloned().ok_or_else(|| sui_store::http::HttpError::Request(format!("404 {url}")))
+        }
+    }
+
+    fn upstream_with(entries: &[&sui_castore::storage::admission::fixture::FixtureEntry]) -> BinaryCacheStore {
+        let base = "https://upstream.invalid";
+        let mut m = std::collections::HashMap::new();
+        for e in entries {
+            m.insert(format!("{base}/{}.narinfo", e.key), e.text.clone().into_bytes());
+            m.insert(format!("{base}/{}", e.url), e.nar_file.clone());
+        }
+        BinaryCacheStore::with_http_client(base, vec![], Box::new(Upstream(m)))
+    }
+
+    /// The mirror mode of the cid receipt: an upstream entry whose NAR names
+    /// a path this cache holds, with `References:` empty, is not mirrored;
+    /// the entry it names stays served, and a complete entry mirrors.
+    #[tokio::test]
+    async fn a_mirror_refuses_an_upstream_entry_that_omits_a_reference() {
+        use sui_castore::storage::admission::fixture::entry;
+        let dir = tempfile::tempdir().unwrap();
+        let local = sui_cache::LocalStorage::new(dir.path());
+        let std_hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1";
+        let tool_hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa2";
+        let dep = entry(std_hash, "rust-std", b"std", &[]);
+        local.put_nar(&dep.url, &dep.nar_file).await.unwrap();
+        local.put_narinfo(&sui_cache::AdmittedNarInfo::unchecked_fixture(std_hash, &dep.text)).await.unwrap();
+
+        let link = format!("/nix/store/{std_hash}-rust-std/lib");
+        let poisoned = entry(tool_hash, "rust-stable", link.as_bytes(), &[]);
+        let err = mirror_one(&upstream_with(&[&poisoned]), &local, tool_hash).await.unwrap_err();
+        assert!(err.to_string().contains("omitted-references"), "{err}");
+        assert!(local.get_narinfo(tool_hash).await.unwrap().is_none());
+        assert!(local.get_narinfo(std_hash).await.unwrap().is_some());
+
+        let complete = entry(tool_hash, "rust-stable", link.as_bytes(), &[&format!("{std_hash}-rust-std")]);
+        let got = mirror_one(&upstream_with(&[&complete]), &local, tool_hash).await.unwrap();
+        assert!(matches!(got, Mirrored::Stored { .. }));
+        assert_eq!(mirror_one(&upstream_with(&[]), &local, "x").await.unwrap(), Mirrored::Absent);
     }
 }

@@ -186,7 +186,7 @@ impl<C: RedisConn> StorageBackend for RedisBackend<C> {
         }
     }
 
-    async fn put_narinfo_record(&self, hash: &str, content: &str) -> Result<(), StoreError> {
+    async fn put_narinfo_record(&self, hash: &str, content: &str, _write: super::RecordWrite) -> Result<(), StoreError> {
         let key = Self::narinfo_key(hash);
         self.conn.set_bytes(&key, content.as_bytes(), self.ttl_secs).await
     }
@@ -525,7 +525,7 @@ mod tests {
     #[tokio::test]
     async fn put_then_get_narinfo_roundtrips() {
         let backend = RedisBackend::new(MockRedis::default());
-        backend.put_narinfo("abc", NARINFO).await.unwrap();
+        backend.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("abc", NARINFO)).await.unwrap();
         let got = backend.get_narinfo("abc").await.unwrap().unwrap();
         assert_eq!(got, NARINFO);
     }
@@ -549,7 +549,7 @@ mod tests {
     async fn narinfo_and_nar_keyspaces_do_not_collide() {
         // Same bare id used for both a narinfo hash and a nar path fragment.
         let backend = RedisBackend::new(MockRedis::default());
-        backend.put_narinfo("dead", "the-narinfo").await.unwrap();
+        backend.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("dead", "the-narinfo")).await.unwrap();
         backend.put_nar("dead", b"the-nar").await.unwrap();
         assert_eq!(backend.get_narinfo("dead").await.unwrap().unwrap(), "the-narinfo");
         assert_eq!(backend.get_nar("dead").await.unwrap().unwrap(), b"the-nar");
@@ -560,7 +560,7 @@ mod tests {
         let mock = MockRedis::default();
         let backend = RedisBackend::new(mock);
         assert_eq!(backend.ttl_secs(), None);
-        backend.put_narinfo("abc", NARINFO).await.unwrap();
+        backend.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("abc", NARINFO)).await.unwrap();
         // The write carried no expiry.
         assert_eq!(backend.conn().ttl_of("sui:narinfo:abc"), None);
     }
@@ -569,7 +569,7 @@ mod tests {
     async fn with_ttl_stamps_every_write() {
         let backend = RedisBackend::with_ttl(MockRedis::default(), 3600);
         assert_eq!(backend.ttl_secs(), Some(3600));
-        backend.put_narinfo("abc", NARINFO).await.unwrap();
+        backend.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("abc", NARINFO)).await.unwrap();
         backend.put_nar("nar/abc.nar.xz", b"data").await.unwrap();
         assert_eq!(backend.conn().ttl_of("sui:narinfo:abc"), Some(3600));
         assert_eq!(backend.conn().ttl_of("sui:nar:nar/abc.nar.xz"), Some(3600));
@@ -579,7 +579,7 @@ mod tests {
     async fn eviction_of_a_hot_key_is_a_plain_miss() {
         // A cache, not a source of truth: an evicted key reads back as Ok(None).
         let backend = RedisBackend::new(MockRedis::default());
-        backend.put_narinfo("abc", NARINFO).await.unwrap();
+        backend.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("abc", NARINFO)).await.unwrap();
         assert!(backend.get_narinfo("abc").await.unwrap().is_some());
         backend.conn().evict("sui:narinfo:abc");
         assert!(backend.get_narinfo("abc").await.unwrap().is_none());
@@ -588,7 +588,7 @@ mod tests {
     #[tokio::test]
     async fn pod_roll_clears_the_whole_hot_tier() {
         let backend = RedisBackend::new(MockRedis::default());
-        backend.put_narinfo("a", NARINFO).await.unwrap();
+        backend.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("a", NARINFO)).await.unwrap();
         backend.put_nar("nar/a.nar.xz", b"x").await.unwrap();
         backend.conn().clear();
         assert!(backend.get_narinfo("a").await.unwrap().is_none());
@@ -601,7 +601,7 @@ mod tests {
     #[tokio::test]
     async fn delete_resolves_the_nar_from_the_narinfo_instead_of_guessing() {
         let backend = RedisBackend::new(MockRedis::default());
-        backend.put_narinfo("xyz", NARINFO).await.unwrap();
+        backend.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("xyz", NARINFO)).await.unwrap();
         backend.put_nar("nar/abc.nar.xz", b"the real nar").await.unwrap();
         backend.put_nar("nar/xyz.nar.zst", b"someone else's nar").await.unwrap();
 
@@ -621,8 +621,8 @@ mod tests {
     #[tokio::test]
     async fn the_hot_tier_indexes_and_forgets_its_edges() {
         let backend = RedisBackend::new(MockRedis::default());
-        backend.put_narinfo("xyz", NARINFO).await.unwrap();
-        backend.put_narinfo("second", NARINFO).await.unwrap();
+        backend.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("xyz", NARINFO)).await.unwrap();
+        backend.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("second", NARINFO)).await.unwrap();
         assert_eq!(
             backend.nar_ref_index().referrers("nar/abc.nar.xz").await.unwrap(),
             vec!["second".to_string(), "xyz".to_string()],
@@ -646,8 +646,8 @@ mod tests {
     #[tokio::test]
     async fn list_narinfos_returns_hot_subset_stripped() {
         let backend = RedisBackend::new(MockRedis::default());
-        backend.put_narinfo("aaa", "1").await.unwrap();
-        backend.put_narinfo("bbb", "2").await.unwrap();
+        backend.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("aaa", "1")).await.unwrap();
+        backend.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("bbb", "2")).await.unwrap();
         // A NAR write must not leak into the narinfo listing.
         backend.put_nar("nar/ccc.nar.xz", b"3").await.unwrap();
         let mut hashes = backend.list_narinfos().await.unwrap();
@@ -664,8 +664,8 @@ mod tests {
     #[tokio::test]
     async fn overwrite_narinfo_takes_latest() {
         let backend = RedisBackend::new(MockRedis::default());
-        backend.put_narinfo("h", "v1").await.unwrap();
-        backend.put_narinfo("h", "v2").await.unwrap();
+        backend.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("h", "v1")).await.unwrap();
+        backend.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("h", "v2")).await.unwrap();
         assert_eq!(backend.get_narinfo("h").await.unwrap().unwrap(), "v2");
     }
 

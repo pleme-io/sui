@@ -105,8 +105,8 @@ impl StorageBackend for DaemonAwareCacheClient {
     /// Every record verb is a straight delegation, so the remote's own composed
     /// `put_narinfo` / `delete` — and therefore its reverse index — stay in
     /// charge. This wrapper owns no storage and must own no index.
-    async fn put_narinfo_record(&self, hash: &str, content: &str) -> Result<(), CacheError> {
-        self.remote.put_narinfo_record(hash, content).await
+    async fn put_narinfo_record(&self, hash: &str, content: &str, write: sui_cache::RecordWrite) -> Result<(), CacheError> {
+        self.remote.put_narinfo_record(hash, content, write).await
     }
 
     async fn delete_narinfo_record(&self, hash: &str) -> Result<(), CacheError> {
@@ -122,14 +122,15 @@ impl StorageBackend for DaemonAwareCacheClient {
     }
 
     /// Overridden rather than inherited, because the daemon warm-up has to
-    /// happen after the remote write. The **composed** `put_narinfo` is what is
-    /// delegated to, so the remote still records the reverse edge; this is a
-    /// proxy adding a side effect, not a backend re-implementing the write.
-    async fn put_narinfo(&self, hash: &str, content: &str) -> Result<(), CacheError> {
+    /// happen after the remote write. The **composed** `put_kv_value` is what
+    /// is delegated to, so the remote still refuses a narinfo-shaped value;
+    /// this is a proxy adding a side effect, not a backend re-implementing the
+    /// write. (An image tag is a key-value entry, never a narinfo.)
+    async fn put_kv_value(&self, hash: &str, content: &str) -> Result<(), CacheError> {
         // The remote write is the one that must succeed for
         // correctness — every other node's future local misses (and
         // any node with no daemon at all) depend on it.
-        self.remote.put_narinfo(hash, content).await?;
+        self.remote.put_kv_value(hash, content).await?;
 
         // Best-effort local warm-up: informs this node's daemon so the
         // very next local Get for this hash is already a local hit.
@@ -307,7 +308,7 @@ mod tests {
         let remote_dyn: Arc<dyn StorageBackend> = remote.clone();
         let client = DaemonAwareCacheClient::new(Some(socket_path), remote_dyn);
 
-        client.put_narinfo("h5", "img:backfilled").await.unwrap();
+        client.put_kv_value("h5", "img:backfilled").await.unwrap();
         assert_eq!(remote.get_narinfo("h5").await.unwrap().as_deref(), Some("img:backfilled"));
     }
 
@@ -322,7 +323,7 @@ mod tests {
         let remote_dyn: Arc<dyn StorageBackend> = remote.clone();
         let client = DaemonAwareCacheClient::new(Some(socket_path), remote_dyn);
 
-        client.put_narinfo("h6", "img:dual-write").await.unwrap();
+        client.put_kv_value("h6", "img:dual-write").await.unwrap();
         assert_eq!(remote.get_narinfo("h6").await.unwrap().as_deref(), Some("img:dual-write"));
     }
 

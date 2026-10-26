@@ -135,7 +135,7 @@ impl StorageBackend for S3Storage {
         }
     }
 
-    async fn put_narinfo_record(&self, hash: &str, content: &str) -> Result<(), StoreError> {
+    async fn put_narinfo_record(&self, hash: &str, content: &str, _write: super::RecordWrite) -> Result<(), StoreError> {
         let path = Path::from(format!("{hash}.narinfo"));
         self.store
             .put(&path, Bytes::from(content.to_string()).into())
@@ -349,7 +349,7 @@ mod tests {
     #[tokio::test]
     async fn delete_resolves_the_nar_from_the_narinfo_instead_of_guessing() {
         let s3 = S3Storage::in_memory();
-        s3.put_narinfo("storehash", NARINFO).await.unwrap();
+        s3.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("storehash", NARINFO)).await.unwrap();
         s3.put_nar(ADVERTISED, b"the real nar").await.unwrap();
         s3.put_nar("nar/storehash.nar.zst", b"someone else's nar").await.unwrap();
 
@@ -368,8 +368,8 @@ mod tests {
     #[tokio::test]
     async fn the_object_index_holds_every_referrer() {
         let s3 = S3Storage::in_memory();
-        s3.put_narinfo("pathA", NARINFO).await.unwrap();
-        s3.put_narinfo("pathB", NARINFO).await.unwrap();
+        s3.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("pathA", NARINFO)).await.unwrap();
+        s3.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("pathB", NARINFO)).await.unwrap();
         s3.put_nar(ADVERTISED, b"shared").await.unwrap();
         assert_eq!(
             s3.nar_ref_index().referrers(ADVERTISED).await.unwrap(),
@@ -393,7 +393,7 @@ mod tests {
     #[tokio::test]
     async fn edge_objects_do_not_pollute_the_narinfo_listing() {
         let s3 = S3Storage::in_memory();
-        s3.put_narinfo("storehash", NARINFO).await.unwrap();
+        s3.put_narinfo(&crate::AdmittedNarInfo::unchecked_fixture("storehash", NARINFO)).await.unwrap();
         assert_eq!(s3.list_narinfos().await.unwrap(), vec!["storehash".to_string()]);
     }
 }

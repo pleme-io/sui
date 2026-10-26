@@ -58,9 +58,9 @@ fn rig(policy: WritePolicy) -> Rig {
 async fn write_through_parity_each_tier_matches_oracle() {
     let r = rig(WritePolicy::WriteThrough);
 
-    r.oracle.put_narinfo("abc", NARINFO).await.unwrap();
+    r.oracle.put_narinfo(&sui_castore::AdmittedNarInfo::unchecked_fixture("abc", NARINFO)).await.unwrap();
     r.oracle.put_nar(NAR_PATH, NAR_BYTES).await.unwrap();
-    r.tiered.put_narinfo("abc", NARINFO).await.unwrap();
+    r.tiered.put_narinfo(&sui_castore::AdmittedNarInfo::unchecked_fixture("abc", NARINFO)).await.unwrap();
     r.tiered.put_nar(NAR_PATH, NAR_BYTES).await.unwrap();
 
     let oracle_ni = r.oracle.get_narinfo("abc").await.unwrap().unwrap();
@@ -79,8 +79,8 @@ async fn write_through_parity_each_tier_matches_oracle() {
 #[tokio::test]
 async fn read_through_parity_with_cold_l1() {
     let r = rig(WritePolicy::WriteThrough);
-    r.oracle.put_narinfo("abc", NARINFO).await.unwrap();
-    r.tiered.put_narinfo("abc", NARINFO).await.unwrap();
+    r.oracle.put_narinfo(&sui_castore::AdmittedNarInfo::unchecked_fixture("abc", NARINFO)).await.unwrap();
+    r.tiered.put_narinfo(&sui_castore::AdmittedNarInfo::unchecked_fixture("abc", NARINFO)).await.unwrap();
 
     // Simulate a cold/rolled hot tier by wiping L1's directory.
     std::fs::remove_dir_all(&r.l1_root).unwrap();
@@ -117,9 +117,9 @@ async fn miss_parity() {
 #[tokio::test]
 async fn durability_parity_l1_loss_loses_nothing() {
     let r = rig(WritePolicy::WriteThrough);
-    r.oracle.put_narinfo("abc", NARINFO).await.unwrap();
+    r.oracle.put_narinfo(&sui_castore::AdmittedNarInfo::unchecked_fixture("abc", NARINFO)).await.unwrap();
     r.oracle.put_nar(NAR_PATH, NAR_BYTES).await.unwrap();
-    r.tiered.put_narinfo("abc", NARINFO).await.unwrap();
+    r.tiered.put_narinfo(&sui_castore::AdmittedNarInfo::unchecked_fixture("abc", NARINFO)).await.unwrap();
     r.tiered.put_nar(NAR_PATH, NAR_BYTES).await.unwrap();
 
     // Pod roll: the entire hot tier vanishes.
@@ -140,8 +140,8 @@ async fn durability_parity_l1_loss_loses_nothing() {
 #[tokio::test]
 async fn write_around_parity_durable_tiers_match_then_read_warms_l1() {
     let r = rig(WritePolicy::WriteAround);
-    r.oracle.put_narinfo("abc", NARINFO).await.unwrap();
-    r.tiered.put_narinfo("abc", NARINFO).await.unwrap();
+    r.oracle.put_narinfo(&sui_castore::AdmittedNarInfo::unchecked_fixture("abc", NARINFO)).await.unwrap();
+    r.tiered.put_narinfo(&sui_castore::AdmittedNarInfo::unchecked_fixture("abc", NARINFO)).await.unwrap();
 
     // L1 untouched by the write; L2/L3 match the oracle.
     assert!(r.l1.get_narinfo("abc").await.unwrap().is_none());

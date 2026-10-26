@@ -129,6 +129,7 @@ postgres = ["dep:sqlx"]
 # Async freshness-pass tests + the in-memory sui_cache::StorageBackend double
 # (proves composition of the real collect_garbage with zero disk).
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
+sui-castore = { workspace = true, features = ["test-fixtures"] }
 
 [lints]
 workspace = true

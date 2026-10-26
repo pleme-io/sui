@@ -521,6 +521,7 @@ sui-eval.workspace = true
 sui-build.workspace = true
 sui-store.workspace = true
 sui-compat.workspace = true
+sui-castore = { workspace = true, features = ["test-fixtures"] }
 tempfile.workspace = true
 
 [profile.release]

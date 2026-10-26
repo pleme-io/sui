@@ -130,30 +130,22 @@ pub async fn serve(
     Ok(())
 }
 
-/// Sign narinfo text at ingest, returning the signed text.
+/// Sign an admitted narinfo at ingest.
 ///
 /// Idempotent: if the narinfo already carries a signature under this
-/// signer's key name, the text is returned unchanged (so a re-`put` of an
+/// signer's key name, it is returned unchanged (so a re-`put` of an
 /// already-signed path does not double-sign). Otherwise the signer's
-/// `keyname:base64sig` is appended and the narinfo re-serialized.
-///
-/// # Errors
-///
-/// Returns [`CacheError::NarInfo`](crate::CacheError::NarInfo) if the text
-/// cannot be parsed as a narinfo.
-fn sign_narinfo_text(signer: &CacheSigner, content: &str) -> Result<String, crate::CacheError> {
-    let mut info =
-        NarInfo::parse(content).map_err(|e| crate::CacheError::NarInfo(e.to_string()))?;
-
+/// `keyname:base64sig` is appended. Only `Sig:` lines change, which is what
+/// keeps the value admitted.
+fn sign_admitted(signer: &CacheSigner, admitted: &sui_castore::AdmittedNarInfo) -> sui_castore::AdmittedNarInfo {
     let key_prefix = format!("{}:", signer.key_name());
+    let info = admitted.info();
     if info.signatures.iter().any(|s| s.starts_with(&key_prefix)) {
-        // Already signed by us — do not double-sign; return as-is.
-        return Ok(content.to_string());
+        return admitted.clone();
     }
-
-    let sig = signer.sign_narinfo(&info);
-    info.signatures.push(sig);
-    Ok(info.serialize())
+    let mut signatures = info.signatures.clone();
+    signatures.push(signer.sign_narinfo(info));
+    admitted.with_signatures(signatures)
 }
 
 /// `GET /nix-cache-info` — returns cache metadata.
@@ -200,13 +192,17 @@ async fn get_narinfo(
         // the build proceeds; anything else converts a cold accelerator into a
         // hard dependency. An unusable hit is a miss that lies, so it is
         // classified with the misses.
-        Ok(Some(content)) if !crate::is_servable_narinfo(&content) => {
+        // The serve-time half of admission: an entry that does not parse, names
+        // another store path than its key, or advertises an unaddressable URL
+        // or an undecodable codec is a miss too (`sui cache audit` checks the
+        // bytes).
+        Ok(Some(content)) if !sui_castore::is_servable_under(hash, &content) => {
             tracing::error!(
                 hash = %hash,
                 len = content.len(),
-                "get_narinfo: stored narinfo is empty or has no StorePath — SERVING 404 so the \
-                 client treats it as a miss instead of aborting; this entry is poison and should \
-                 be evicted",
+                "get_narinfo: stored narinfo is unusable (empty, unparseable, or not this key's) — \
+                 SERVING 404 so the client treats it as a miss instead of aborting; this entry is \
+                 poison and should be evicted (`sui cache audit --evict`)",
             );
             StatusCode::NOT_FOUND.into_response()
         }
@@ -297,17 +293,34 @@ async fn put_narinfo(
         return StatusCode::FORBIDDEN.into_response();
     }
 
+    // ADMISSION — the narinfo must describe the NAR already uploaded at its
+    // `URL:` (nix uploads the NAR first), byte for byte, and list every store
+    // path that NAR names which this cache holds. A refusal is the uploader's
+    // fault (400, reason in the body) and refuses this entry alone.
+    let universe = sui_castore::CacheUniverse(state.storage.as_ref());
+    let admitted = match sui_castore::admit_stored(state.storage.as_ref(), hash, &content, &universe).await {
+        Ok(a) => a,
+        Err(sui_castore::AdmissionError::Refused(r)) => {
+            tracing::warn!(
+                hash = %hash, refusal = r.kind(), reason = %r,
+                "put_narinfo: refused at admission — the entry does not match its NAR",
+            );
+            return (StatusCode::BAD_REQUEST, r.to_string()).into_response();
+        }
+        Err(sui_castore::AdmissionError::Store(e)) => {
+            tracing::error!(
+                hash = %hash, error = %e,
+                "put_narinfo: admission could not read the store — nothing stored",
+            );
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+
     // Sign at ingest when a signer is configured, so the durable tier stores
     // the signed narinfo and every serving tier inherits the `Sig:`.
     let to_store = match &state.signer {
-        Some(signer) => match sign_narinfo_text(signer, &content) {
-            Ok(signed) => signed,
-            Err(e) => {
-                tracing::error!("put_narinfo signing error: {e}");
-                return StatusCode::BAD_REQUEST.into_response();
-            }
-        },
-        None => content,
+        Some(signer) => sign_admitted(signer, &admitted),
+        None => admitted,
     };
 
     // WRITE-PATH POLICY — deliberately NOT symmetric with the read path.
@@ -325,7 +338,7 @@ async fn put_narinfo(
     // and succeeds if any one accepted the write, so this fires only when
     // nothing was stored anywhere. One broken durable tier (the Postgres-OOM
     // case) no longer fails the push.
-    match state.storage.put_narinfo(hash, &to_store).await {
+    match state.storage.put_narinfo(&to_store).await {
         Ok(()) => StatusCode::OK.into_response(),
         Err(e) => {
             tracing::error!(
@@ -505,6 +518,22 @@ mod tests {
         String::from_utf8(bytes.to_vec()).unwrap()
     }
 
+    /// Upload an admissible entry's NAR, as nix does before its narinfo, and
+    /// return the narinfo text to PUT.
+    async fn upload_nar(app: &Router, e: &sui_castore::storage::admission::fixture::FixtureEntry) -> String {
+        let req = axum::http::Request::builder()
+            .method("PUT")
+            .uri(format!("/{}", e.url))
+            .body(Body::from(e.nar_file.clone()))
+            .unwrap();
+        assert_eq!(app.clone().oneshot(req).await.unwrap().status(), StatusCode::OK);
+        e.text.clone()
+    }
+
+    fn entry(key: &str, refs: &[&str]) -> sui_castore::storage::admission::fixture::FixtureEntry {
+        sui_castore::storage::admission::fixture::entry(key, "pkg", format!("contents of {key}").as_bytes(), refs)
+    }
+
     async fn body_bytes(response: axum::http::Response<Body>) -> Vec<u8> {
         let body = response.into_body();
         body.collect().await.unwrap().to_bytes().to_vec()
@@ -548,7 +577,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let app = test_app(dir.path());
 
-        let narinfo = "StorePath: /nix/store/abc-hello\nURL: nar/abc.nar.xz\nCompression: xz\nFileHash: sha256:aaa\nFileSize: 100\nNarHash: sha256:bbb\nNarSize: 200\nReferences: \n";
+        let narinfo = upload_nar(&app, &entry("abc", &[])).await;
+        let narinfo = narinfo.as_str();
 
         // PUT narinfo.
         let req = axum::http::Request::builder()
@@ -570,7 +600,7 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
 
         let body = body_string(resp).await;
-        assert!(body.contains("StorePath: /nix/store/abc-hello"));
+        assert!(body.contains("StorePath: /nix/store/abc-pkg"));
     }
 
     #[tokio::test]
@@ -629,7 +659,7 @@ mod tests {
     async fn get_narinfo_serves_a_poisoned_entry_as_a_miss() {
         let dir = tempfile::tempdir().unwrap();
         let storage = LocalStorage::new(dir.path());
-        storage.put_narinfo("poison", "").await.unwrap();
+        storage.put_narinfo(&sui_castore::AdmittedNarInfo::unchecked_fixture("poison", "")).await.unwrap();
 
         let app = test_app(dir.path());
         let req = axum::http::Request::builder()
@@ -672,7 +702,7 @@ mod tests {
     async fn put_then_get_a_well_formed_narinfo_still_works() {
         let dir = tempfile::tempdir().unwrap();
         let app = test_app(dir.path());
-        let good = "StorePath: /nix/store/ok-pkg\nURL: nar/ok.nar.xz\nCompression: xz\nFileHash: sha256:a\nFileSize: 1\nNarHash: sha256:b\nNarSize: 2\nReferences: \n";
+        let good = upload_nar(&app, &entry("ok", &[])).await;
 
         let put = axum::http::Request::builder()
             .method("PUT")
@@ -698,7 +728,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let storage = LocalStorage::new(dir.path());
         storage
-            .put_narinfo("ct", "StorePath: /nix/store/ct-pkg\nURL: nar/ct.nar.xz\nCompression: xz\nFileHash: sha256:a\nFileSize: 1\nNarHash: sha256:b\nNarSize: 2\nReferences: \n")
+            .put_narinfo(&sui_castore::AdmittedNarInfo::unchecked_fixture("ct", "StorePath: /nix/store/ct-pkg\nURL: nar/ct.nar.xz\nCompression: xz\nFileHash: sha256:a\nFileSize: 1\nNarHash: sha256:b\nNarSize: 2\nReferences: \n"))
             .await
             .unwrap();
 
@@ -793,14 +823,7 @@ mod tests {
         });
 
         // Unsigned narinfo (references deliberately unsorted).
-        let narinfo = "StorePath: /nix/store/abc-hello\n\
-                       URL: nar/abc.nar.xz\n\
-                       Compression: xz\n\
-                       FileHash: sha256:aaa\n\
-                       FileSize: 100\n\
-                       NarHash: sha256:bbb\n\
-                       NarSize: 200\n\
-                       References: zzz-b aaa-a\n";
+        let narinfo = upload_nar(&app, &entry("abc", &["zzz-b", "aaa-a"])).await;
 
         let req = axum::http::Request::builder()
             .method("PUT")
@@ -857,21 +880,14 @@ mod tests {
             signer: Some(signer),
         });
 
-        let narinfo = "StorePath: /nix/store/def-x\n\
-                       URL: nar/def.nar.xz\n\
-                       Compression: xz\n\
-                       FileHash: sha256:a\n\
-                       FileSize: 1\n\
-                       NarHash: sha256:b\n\
-                       NarSize: 2\n\
-                       References: \n";
+        let narinfo = upload_nar(&app, &entry("def", &[])).await;
 
         // First PUT (signs), GET the signed text, PUT it back.
         for uri in ["/def.narinfo"] {
             let req = axum::http::Request::builder()
                 .method("PUT")
                 .uri(uri)
-                .body(Body::from(narinfo))
+                .body(Body::from(narinfo.clone()))
                 .unwrap();
             assert_eq!(
                 app.clone().oneshot(req).await.unwrap().status(),
@@ -926,6 +942,7 @@ mod tests {
             &self,
             _hash: &str,
             _content: &str,
+            _write: crate::RecordWrite,
         ) -> Result<(), crate::CacheError> {
             Err(crate::CacheError::Io(std::io::Error::other(
                 "postgres: down",
@@ -1096,12 +1113,12 @@ mod tests {
         })
     }
 
+    fn gate_entry() -> sui_castore::storage::admission::fixture::FixtureEntry {
+        entry("gate", &[])
+    }
+
     fn gate_narinfo() -> NarInfo {
-        NarInfo::parse(
-            "StorePath: /nix/store/gate-pkg\nURL: nar/gate.nar.zst\nCompression: zstd\n\
-             FileHash: sha256:a\nFileSize: 1\nNarHash: sha256:b\nNarSize: 2\nReferences: \n",
-        )
-        .unwrap()
+        NarInfo::parse(&gate_entry().text).unwrap()
     }
 
     async fn put(app: &Router, uri: &str, body: impl Into<Body>) -> StatusCode {
@@ -1179,6 +1196,7 @@ mod tests {
             Some(origin.clone()),
         );
 
+        upload_nar(&app, &gate_entry()).await;
         let mut info = gate_narinfo();
         info.signatures.push(uploader.sign_narinfo(&info));
         assert_eq!(
@@ -1237,6 +1255,7 @@ mod tests {
             body_bytes(get(&app, "/nar/gate.nar.zst").await).await,
             b"second"
         );
+        upload_nar(&app, &gate_entry()).await;
         assert_eq!(
             put(&app, "/gate.narinfo", gate_narinfo().serialize()).await,
             StatusCode::OK
@@ -1271,5 +1290,96 @@ mod tests {
 
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    const RUST_STD: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1";
+    const TOOLCHAIN: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa2";
+
+    /// The cid receipt (2026-10-26), over HTTP: `rust-stable-with-components`
+    /// arrived with `References:` empty while its NAR names `rust-std`, which
+    /// the cache holds. The upload is refused with its reason, nothing is
+    /// stored for it, and the sibling it names is still served.
+    #[tokio::test]
+    async fn put_narinfo_refuses_an_entry_that_omits_a_reference_its_nar_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = test_app(dir.path());
+        let std_entry = entry(RUST_STD, &[]);
+        let text = upload_nar(&app, &std_entry).await;
+        assert_eq!(put(&app, &format!("/{RUST_STD}.narinfo"), text).await, StatusCode::OK);
+
+        let link = format!("/nix/store/{RUST_STD}-rust-std/lib/rustlib");
+        let toolchain = sui_castore::storage::admission::fixture::entry(TOOLCHAIN, "rust-stable", link.as_bytes(), &[]);
+        let poisoned = upload_nar(&app, &toolchain).await;
+        let req = axum::http::Request::builder()
+            .method("PUT")
+            .uri(format!("/{TOOLCHAIN}.narinfo"))
+            .body(Body::from(poisoned))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let reason = body_string(resp).await;
+        assert!(reason.contains(RUST_STD), "the refusal names the omitted path: {reason}");
+        assert_eq!(get(&app, &format!("/{TOOLCHAIN}.narinfo")).await.status(), StatusCode::NOT_FOUND);
+        assert_eq!(get(&app, &format!("/{RUST_STD}.narinfo")).await.status(), StatusCode::OK);
+
+        let fixed = sui_castore::storage::admission::fixture::entry(
+            TOOLCHAIN,
+            "rust-stable",
+            link.as_bytes(),
+            &[&format!("{RUST_STD}-pkg")],
+        );
+        assert_eq!(put(&app, &format!("/{TOOLCHAIN}.narinfo"), fixed.text).await, StatusCode::OK);
+    }
+
+    /// A narinfo whose hashes do not describe the uploaded NAR (two builders'
+    /// bytes under one URL, or a truncated upload) is refused, and a narinfo
+    /// whose NAR was never uploaded is refused too.
+    #[tokio::test]
+    async fn put_narinfo_refuses_hashes_that_do_not_match_the_nar() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = test_app(dir.path());
+        let e = entry("abc", &[]);
+        assert_eq!(put(&app, "/abc.narinfo", e.text.clone()).await, StatusCode::BAD_REQUEST, "NAR missing");
+
+        let req = axum::http::Request::builder()
+            .method("PUT")
+            .uri(format!("/{}", e.url))
+            .body(Body::from(b"other builder's bytes".to_vec()))
+            .unwrap();
+        assert_eq!(app.clone().oneshot(req).await.unwrap().status(), StatusCode::OK);
+        assert_eq!(put(&app, "/abc.narinfo", e.text.clone()).await, StatusCode::BAD_REQUEST, "bytes differ");
+        assert_eq!(get(&app, "/abc.narinfo").await.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// Serve-time admission: a stored entry that names another store path
+    /// than its key, or does not parse, is a miss.
+    #[tokio::test]
+    async fn get_narinfo_serves_an_entry_stored_under_the_wrong_key_as_a_miss() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = LocalStorage::new(dir.path());
+        let e = entry("abc", &[]);
+        storage.put_narinfo(&sui_castore::AdmittedNarInfo::unchecked_fixture("xyz", &e.text)).await.unwrap();
+        storage.put_narinfo(&sui_castore::AdmittedNarInfo::unchecked_fixture("abc", &e.text)).await.unwrap();
+        let app = test_app(dir.path());
+        assert_eq!(get(&app, "/xyz.narinfo").await.status(), StatusCode::NOT_FOUND);
+        assert_eq!(get(&app, "/abc.narinfo").await.status(), StatusCode::OK);
+    }
+
+    /// The same gate holds when the cache is tiered: admission reads the NAR
+    /// back through the tiers.
+    #[tokio::test]
+    async fn a_tiered_cache_refuses_the_same_poisoned_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let tier = |n: &str| -> Arc<dyn StorageBackend> { Arc::new(LocalStorage::new(dir.path().join(n))) };
+        let storage: Arc<dyn StorageBackend> =
+            Arc::new(crate::TieredBackend::new(tier("l1"), tier("l2"), tier("l3")));
+        let app = build_router(AppState { storage, config: CacheConfig::default(), signer: None });
+        let std_entry = entry(RUST_STD, &[]);
+        let text = upload_nar(&app, &std_entry).await;
+        assert_eq!(put(&app, &format!("/{RUST_STD}.narinfo"), text).await, StatusCode::OK);
+        let link = format!("/nix/store/{RUST_STD}-rust-std/lib");
+        let toolchain = sui_castore::storage::admission::fixture::entry(TOOLCHAIN, "rust-stable", link.as_bytes(), &[]);
+        let poisoned = upload_nar(&app, &toolchain).await;
+        assert_eq!(put(&app, &format!("/{TOOLCHAIN}.narinfo"), poisoned).await, StatusCode::BAD_REQUEST);
     }
 }

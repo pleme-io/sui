@@ -1,16 +1,16 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "729317710c2b2595452adc5839cd38d47412050d3d40508dd661c18b41c6c186",
+  "cargo_lock_sha256": "81087bf982d850ad7922c017d6969c7a502203ce675d11c74437827d5ae0dfae",
   "manifest_sha256": {
-    "Cargo.toml": "d076b7847dc1492fdbbf05d2be62b3b903d60f068bd9f6db55b30a9ffce873f2",
+    "Cargo.toml": "8e0a758a18d0b09da2bbcec9d48ce92ab5a3f0c30761193c5bd9689c383ce8db",
     "canteiro-types/Cargo.toml": "140edf011d225b89a3a8b8cc15d5212e84c056493e7c8a5b488d1c7e88847388",
     "sui-bigorna/Cargo.toml": "c97c5d91369fe30b894299aaf4baac763f3a1f23d9ad51cb74d30cdeb7b8dc48",
     "sui-build/Cargo.toml": "159000b5e22f33e13b171da0e07f11c1e23204ac63fc5f93a44d0f1427a8d286",
     "sui-bytecode/Cargo.toml": "fea40d7d2b922a8987a8dcb3d35bb4072641f0d1fe95f6c6b6b9449c6659ee4b",
     "sui-cache-eval/Cargo.toml": "f16c2a3764aebcbc7d0583a9618dfadd596883dd4842c32b65843999034e5589",
-    "sui-cache/Cargo.toml": "850c76ff1e7e4f20964245c633e176df5b44c0c70698e36dd3e8d8398c0b7472",
-    "sui-castore/Cargo.toml": "4b22d6e29f4c2ed57df3ffe024600c13464b4dba5afdeaff6d8ce9118a389298",
-    "sui-compat/Cargo.toml": "64f02e71de7b64f7009db8574936f6d3bfe8751e98578fa78494e136c4c071d4",
+    "sui-cache/Cargo.toml": "d1ceee54a2da23f0cdf67ba5d3fd6eecac7b4ae1a2d8af1ede2b7a7a45645063",
+    "sui-castore/Cargo.toml": "2274386008eaea9cc08b74a3010b70d3822f99e8f44d5faed22d74606f5712ca",
+    "sui-compat/Cargo.toml": "42be3547d7d5570928c71813e12b482da16331a967a65f182d02ac21e7a9cda9",
     "sui-daemon-client/Cargo.toml": "d8acc61441eadccaf9bb426aa83dfdb71bc628ac13eb23bd2e73ac5fdfb0e477",
     "sui-daemon-frame/Cargo.toml": "391a8e59253c00d6886605ef104794d330d935cab6f7f13d335804258d4144e6",
     "sui-daemon-graph/Cargo.toml": "206356f44f08a819630a8057714643b7f13dfa63b8270759aec804cbcf28e6b6",
@@ -33,7 +33,7 @@
     "sui-resolve/Cargo.toml": "4c0e6027421517fe0f767296a0f468f7bd20fd8f396ea129aca19304cc2c6b50",
     "sui-spec/Cargo.toml": "399b422687d3f829655470bcf19217eb4028aac56751573d37911e4de0c538b1",
     "sui-store/Cargo.toml": "9c0e9261212f0d6415868b677dd5bf6130bdfbe510973b02d984593fa38cdc9a",
-    "sui-supercacheci/Cargo.toml": "61210201deeff582137cd9156faba2a52c9c73335397f835a107a49b22b03b01"
+    "sui-supercacheci/Cargo.toml": "3a47f3d04935987db902f9c0e38b258f117c64b43dddd6a9e06a7977af1f8f39"
   },
   "target_resolves": {
     "base": {
@@ -24803,6 +24803,16 @@
             "tree": "target"
           },
           {
+            "name": "sha2",
+            "package_key": "sha2-0.10.9",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
             "name": "sqlx",
             "package_key": "sqlx-0.8.6",
             "kind": "normal",
@@ -24862,7 +24872,8 @@
         "features": [
           "default",
           "postgres",
-          "redis-client"
+          "redis-client",
+          "test-fixtures"
         ]
       },
       "sui-compat-0.1.228": {
@@ -24893,6 +24904,16 @@
           {
             "name": "md5",
             "package_key": "md-5-0.10.6",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "memchr",
+            "package_key": "memchr-2.8.3",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -24967,6 +24988,26 @@
           {
             "name": "thiserror",
             "package_key": "thiserror-2.0.18",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "xz2",
+            "package_key": "xz2-0.1.7",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "zstd",
+            "package_key": "zstd-0.13.3",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,

@@ -117,7 +117,7 @@ impl StorageBackend for ErroringCacheBackend {
     async fn get_narinfo(&self, _hash: &str) -> Result<Option<String>, CacheError> {
         Err(self.err())
     }
-    async fn put_narinfo_record(&self, _hash: &str, _content: &str) -> Result<(), CacheError> {
+    async fn put_narinfo_record(&self, _hash: &str, _content: &str, _write: sui_cache::RecordWrite) -> Result<(), CacheError> {
         Err(self.err())
     }
     async fn delete_narinfo_record(&self, _hash: &str) -> Result<(), CacheError> {

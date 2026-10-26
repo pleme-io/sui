@@ -21,6 +21,7 @@ bytes = "1"
 futures = "0.3"
 object_store = { version = "0.12", features = ["aws"] }
 redb.workspace = true
+sha2.workspace = true
 
 [dependencies.redis]
 version = "0.27"
@@ -38,11 +39,17 @@ optional = true
 default = []
 redis-client = ["dep:redis"]
 postgres = ["dep:sqlx"]
+# `AdmittedNarInfo::unchecked_fixture`, for other crates' tests of storage
+# mechanics. Enable it only from [dev-dependencies]; a production build that
+# turned it on could store an unadmitted narinfo.
+test-fixtures = []
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }
 tempfile.workspace = true
 serde_json.workspace = true
+xz2 = "0.1"
+zstd = "0.13"
 
 [lints.clippy]
 pedantic = "warn"

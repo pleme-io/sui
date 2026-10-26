@@ -130,7 +130,7 @@ mod tests {
             self.get_calls.fetch_add(1, Ordering::SeqCst);
             Ok(self.entries.lock().unwrap().get(hash).cloned())
         }
-        async fn put_narinfo_record(&self, hash: &str, content: &str) -> Result<(), CacheError> {
+        async fn put_narinfo_record(&self, hash: &str, content: &str, _write: sui_cache::RecordWrite) -> Result<(), CacheError> {
             self.entries.lock().unwrap().insert(hash.to_string(), content.to_string());
             Ok(())
         }
