@@ -955,6 +955,7 @@ mod tests {
         assert_eq!(SandboxMode::parse(None), here);
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn the_darwin_profile_lets_a_builder_write_its_standard_streams() {
         let config = SandboxConfig { build_dir: "/tmp/b".into(), ..SandboxConfig::default() };
