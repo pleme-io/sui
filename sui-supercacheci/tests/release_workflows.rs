@@ -2,8 +2,6 @@ use std::path::PathBuf;
 
 use serde_yaml_ng::Value;
 
-const APP_POOL: &str = "pleme-public-build";
-
 fn workflow(name: &str) -> Value {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../.github/workflows")
@@ -24,9 +22,9 @@ fn text<'a>(v: &'a Value, keys: &[&str]) -> &'a str {
 }
 
 #[test]
-fn the_image_push_runs_where_the_posture_app_token_is_minted() {
+fn the_image_push_stays_on_a_hosted_runner() {
     let w = workflow("image-release.yml");
-    assert_eq!(text(&w, &["jobs", "image-amd64", "with", "runner"]), APP_POOL);
+    assert!(at(&w, &["jobs", "image-amd64", "with", "runner"]).is_null());
 }
 
 #[test]
@@ -37,9 +35,32 @@ fn the_image_push_skips_every_bot_pushed_bump_commit() {
 }
 
 #[test]
-fn the_release_tag_is_pushed_with_the_posture_app_token() {
+fn the_release_stays_on_a_hosted_runner() {
     let w = workflow("auto-release.yml");
-    assert_eq!(text(&w, &["jobs", "release", "with", "runner"]), APP_POOL);
+    assert!(at(&w, &["jobs", "release", "with", "runner"]).is_null());
+}
+
+#[test]
+fn a_new_tag_dispatches_the_binary_release() {
+    let w = workflow("auto-release.yml");
+    let job = at(&w, &["jobs", "binaries"]);
+    assert_eq!(text(job, &["needs"]), "release");
+    assert_eq!(
+        text(job, &["if"]),
+        "needs.release.outputs.bumped == 'true'"
+    );
+    assert_eq!(text(job, &["permissions", "actions"]), "write");
+    let steps = at(job, &["steps"]).as_sequence().expect("steps is a list");
+    assert_eq!(steps.len(), 1);
+    let run = text(&steps[0], &["run"]);
+    assert!(
+        run.contains("gh workflow run release-binaries.yml") && run.contains("--ref \"v$VERSION\""),
+        "{run}"
+    );
+    assert_eq!(
+        text(&steps[0], &["env", "VERSION"]),
+        "${{ needs.release.outputs.new-version }}"
+    );
 }
 
 #[test]
@@ -49,6 +70,10 @@ fn a_release_tag_ships_the_sui_binary() {
         .as_sequence()
         .expect("on.push.tags is a list");
     assert!(tags.iter().any(|t| t.as_str() == Some("v*")), "{tags:?}");
+    assert!(
+        at(&w, &["on"]).as_mapping().is_some_and(|m| m.contains_key("workflow_dispatch")),
+        "release-binaries must accept workflow_dispatch, the one trigger GITHUB_TOKEN may fire"
+    );
     let uses = text(&w, &["jobs", "binaries", "uses"]);
     assert!(
         uses.starts_with("pleme-io/substrate/.github/workflows/rust-binary-release.yml@"),

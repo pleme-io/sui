@@ -10,10 +10,10 @@ name: image-release
 # compiles the Redis L1 + Postgres L2 tiered arms and can serve
 # `cache serve --backend-config <toml>` against the TieredBackend.
 #
-# Runner: `pleme-public-build`, the pool on plo registered to pleme-io/sui
-# alone (nix nodes/plo/ci.nix). Its jobs carry the pleme-org-posture App token,
-# which ghcr.io accepts for the push; GITHUB_TOKEN on a hosted runner is refused
-# (permission_denied: write_package). Fork pull requests never route here.
+# Runner: a GitHub-hosted runner, by routing (sui is public). sui stays on the
+# public track and never couples its build to fleet runners. The push uses
+# GITHUB_TOKEN, so the ghcr.io/pleme-io/sui package must grant this repository
+# write in its Actions access.
 
 on:
   push:
@@ -35,7 +35,6 @@ jobs:
     with:
       imageAttr: dockerImage-amd64
       imageName: pleme-io/sui
-      runner: pleme-public-build
       # AUTOBUMP-friendly: `r<run_number>` makes the tag numerically SORTABLE so
       # Flux ImagePolicy (the env-subscription side) can auto-track the newest
       # build; the sha keeps it traceable. Same shape as hanabi / pangea-operator.
