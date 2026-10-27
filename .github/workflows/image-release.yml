@@ -11,10 +11,13 @@ name: image-release
 # `cache serve --backend-config <toml>` against the TieredBackend.
 #
 # Runner: a GitHub-hosted runner, by routing (sui is public). sui stays on the
-# public track and never couples its build to fleet runners. The push mints a
-# pleme-publish App token in the job from PUBLISH_APP_ID / PUBLISH_APP_KEY
-# (secrets: inherit); image-push hands it to registry-login ahead of every
-# other rung.
+# public track and never couples its build to fleet runners.
+#
+# Publish: off. sui ships through nix, so this builds the image and runs the CVE
+# gate but writes to no registry (`publish: false`). Setting it to true pushes to
+# ghcr.io with the pleme-publish App token minted from PUBLISH_APP_ID /
+# PUBLISH_APP_KEY (secrets: inherit); the ghcr.io/pleme-io/sui package must then
+# grant this repository write.
 
 on:
   push:
@@ -28,7 +31,7 @@ permissions:
 
 jobs:
   image-amd64:
-    name: sui amd64 image → ghcr.io
+    name: sui amd64 image (nix only)
     # Skip the crates-bump commit auto-release.yml pushes as a bot (the
     # posture App or github-actions), so a merge builds one image, not two.
     if: ${{ !endsWith(github.actor, '[bot]') }}
@@ -36,6 +39,7 @@ jobs:
     with:
       imageAttr: dockerImage-amd64
       imageName: pleme-io/sui
+      publish: false
       # AUTOBUMP-friendly: `r<run_number>` makes the tag numerically SORTABLE so
       # Flux ImagePolicy (the env-subscription side) can auto-track the newest
       # build; the sha keeps it traceable. Same shape as hanabi / pangea-operator.

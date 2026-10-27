@@ -28,6 +28,15 @@ fn the_image_push_stays_on_a_hosted_runner() {
 }
 
 #[test]
+fn the_image_ships_through_nix_and_writes_to_no_registry() {
+    let w = workflow("image-release.yml");
+    assert_eq!(
+        at(&w, &["jobs", "image-amd64", "with", "publish"]).as_bool(),
+        Some(false)
+    );
+}
+
+#[test]
 fn the_image_push_hands_its_secrets_to_the_publish_app_mint() {
     let w = workflow("image-release.yml");
     assert_eq!(text(&w, &["jobs", "image-amd64", "secrets"]), "inherit");
