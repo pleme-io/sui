@@ -28,6 +28,16 @@ fn the_image_push_stays_on_a_hosted_runner() {
 }
 
 #[test]
+fn the_image_push_hands_its_secrets_to_the_publish_app_mint() {
+    let w = workflow("image-release.yml");
+    assert_eq!(text(&w, &["jobs", "image-amd64", "secrets"]), "inherit");
+    assert!(
+        text(&w, &["jobs", "image-amd64", "uses"])
+            .starts_with("pleme-io/substrate/.github/workflows/image-push.yml@")
+    );
+}
+
+#[test]
 fn the_image_push_skips_every_bot_pushed_bump_commit() {
     let w = workflow("image-release.yml");
     let guard = text(&w, &["jobs", "image-amd64", "if"]);
