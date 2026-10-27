@@ -1,8 +1,6 @@
 # Sui (粋) — Rust-Native Nix Replacement
 
-`pending-platform-mediated: PUBLISH_APP_ID, PUBLISH_APP_KEY` — set by hand
-2026-10-27 from sops `github/app/pleme-publish/*` (no sops path in `org.yaml`
-yet); unused while image-release `publish` is false.
+`pending-platform-mediated: PUBLISH_APP_ID, PUBLISH_APP_KEY` (hand-set 2026-10-27; no sops path in `org.yaml`)
 
 > **★★★ CSE / Knowable Construction.** This repo operates under
 > **Constructive Substrate Engineering** — canonical specification at
