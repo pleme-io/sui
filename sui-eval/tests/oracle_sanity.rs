@@ -21,6 +21,41 @@ fn sui_eval_error_is_wrapped() {
     assert!(common::is_error_json(&v), "expected error, got {v}");
 }
 
+const CPPNIX_THROW: &str = "error:\n       … while evaluating the attribute 'lists.fold'\n         at /nix/store/x-source/lib/lists.nix:148:3:\n\n       … while calling the 'throw' builtin\n         at /nix/store/x-source/lib/lists.nix:148:10:\n\n       error: fold is a removed alias of foldr, use it instead\n";
+
+fn err(text: &str) -> serde_json::Value {
+    serde_json::json!({ "__error": text })
+}
+
+#[test]
+fn the_same_throw_agrees_across_error_formats() {
+    let oracle = err(CPPNIX_THROW);
+    let ours = common::sui_eval_json(r#"throw "fold is a removed alias of foldr, use it instead""#);
+    assert!(common::outcomes_agree(&oracle, &ours), "{oracle} vs {ours}");
+}
+
+#[test]
+fn a_different_throw_message_disagrees() {
+    let ours = common::sui_eval_json(r#"throw "fold is gone""#);
+    assert!(!common::outcomes_agree(&err(CPPNIX_THROW), &ours));
+}
+
+#[test]
+fn a_throw_against_a_value_disagrees() {
+    let ours = common::sui_eval_json("10");
+    assert!(!common::outcomes_agree(&err(CPPNIX_THROW), &ours));
+    assert!(!common::outcomes_agree(&ours, &err(CPPNIX_THROW)));
+}
+
+#[test]
+fn errors_that_are_not_throws_must_match_exactly() {
+    let oracle = err("error: undefined variable 'x'\n");
+    let ours = common::sui_eval_json("x");
+    assert!(common::is_error_json(&ours));
+    assert!(!common::outcomes_agree(&oracle, &ours));
+    assert!(common::outcomes_agree(&err("same"), &err("same")));
+}
+
 #[test]
 fn pleme_io_sample_is_stable() {
     let a = common::pleme_io_flake_nix_sample(5);

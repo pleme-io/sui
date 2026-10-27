@@ -262,6 +262,30 @@ pub fn is_error_json(v: &serde_json::Value) -> bool {
     v.get("__error").is_some()
 }
 
+pub fn thrown_message(v: &serde_json::Value) -> Option<&str> {
+    let text = v.get("__error")?.as_str()?;
+    if let Some(msg) = text.strip_prefix("throw: ") {
+        return Some(msg.trim_end());
+    }
+    if !text.contains("while calling the 'throw' builtin") {
+        return None;
+    }
+    text.lines()
+        .rev()
+        .find_map(|line| line.trim().strip_prefix("error: "))
+        .map(str::trim_end)
+}
+
+pub fn outcomes_agree(oracle: &serde_json::Value, ours: &serde_json::Value) -> bool {
+    if oracle == ours {
+        return true;
+    }
+    match (thrown_message(oracle), thrown_message(ours)) {
+        (Some(a), Some(b)) => a == b,
+        _ => false,
+    }
+}
+
 // ── Differential assertions ─────────────────────────────────────────────
 
 /// Evaluate `expr` with both real nix and sui; assert JSON is equal.
@@ -274,7 +298,7 @@ pub fn assert_eq_nix(expr: &str) {
     }
     let oracle = nix_eval_json(expr);
     let ours = sui_eval_json(expr);
-    if oracle != ours {
+    if !outcomes_agree(&oracle, &ours) {
         let oracle_s = serde_json::to_string(&oracle).unwrap_or_default();
         let ours_s = serde_json::to_string(&ours).unwrap_or_default();
         panic!(
@@ -290,7 +314,7 @@ pub fn assert_eq_nix_file(path: &Path) {
     }
     let oracle = nix_eval_json_file(path);
     let ours = sui_eval_json_file(path);
-    if oracle != ours {
+    if !outcomes_agree(&oracle, &ours) {
         let oracle_s = serde_json::to_string(&oracle).unwrap_or_default();
         let ours_s = serde_json::to_string(&ours).unwrap_or_default();
         panic!(
