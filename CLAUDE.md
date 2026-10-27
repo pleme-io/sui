@@ -3,11 +3,8 @@
 `pending-platform-mediated: PUBLISH_APP_ID, PUBLISH_APP_KEY` (hand-set 2026-10-27; no sops path in `org.yaml`)
 
 > **★★★ CSE / Knowable Construction.** This repo operates under
-> **Constructive Substrate Engineering** — canonical specification at
-> [`pleme-io/theory/CONSTRUCTIVE-SUBSTRATE-ENGINEERING.md`](https://github.com/pleme-io/theory/blob/main/CONSTRUCTIVE-SUBSTRATE-ENGINEERING.md).
-> The Compounding Directive (operational rules: solve once, load-bearing
-> fixes only, idiom-first, models stay current, direction beats velocity)
-> is in the org-level pleme-io/CLAUDE.md ★★★ section. Read both before
+> [`theory/CONSTRUCTIVE-SUBSTRATE-ENGINEERING.md`](https://github.com/pleme-io/theory/blob/main/CONSTRUCTIVE-SUBSTRATE-ENGINEERING.md)
+> and the org CLAUDE.md ★★★ Compounding Directive; read both before
 > non-trivial changes. Pure-Rust Nix replacement; an in-progress Layer-1
 > normalization platform replacing CppNix with construction guarantees.
 
