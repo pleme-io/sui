@@ -549,6 +549,9 @@ async fn mirror_one(
     let Some(narinfo) = cache.fetch_narinfo(hash).await? else {
         return Ok(Mirrored::Absent);
     };
+    // Nix's trust model first: this cache serves what it re-signs, so an
+    // entry no trusted key vouches for is not mirrored.
+    cache.check_narinfo_acceptable(&narinfo)?;
     let nar = cache.fetch_nar(&narinfo.url).await?;
     let universe = sui_cache::CacheUniverse(local);
     let admitted = sui_cache::admit_bytes(hash, &narinfo.serialize(), &nar, &universe)
@@ -607,32 +610,18 @@ fn fetch_flake_source(flake_url: &str) -> Result<std::path::PathBuf, sui_eval::f
     fetcher.fetch(&locked)
 }
 
-/// Convert a flake.lock narHash (e.g. "sha256-ABCdef...==") to the 32-char
-/// nix base32 hash used for cache.nixos.org narinfo lookups.
+/// The store hash of a flake input's source, from its flake.lock narHash.
 ///
-/// Returns `None` if the hash format is unrecognized.
+/// A locked input is the NAR-hashed `source` path cppnix's fetchTree makes:
+/// `makeStorePath("source", narHash, "source")`. This used to nix32-encode
+/// the 32-byte NAR hash itself, a 52-character string that is no store hash,
+/// so every mirror lookup was a guaranteed miss.
+///
+/// Returns `None` if the hash does not parse as sha256 (SRI, hex or nix32).
 fn nar_hash_to_store_hash(nar_hash: &str) -> Option<String> {
-    // flake.lock uses SRI format: "sha256-<base64>"
-    let b64 = nar_hash.strip_prefix("sha256-")?;
-    let bytes = base64_decode(b64)?;
-    if bytes.len() != 32 {
-        return None;
-    }
-    // Convert to nix base32 (the 32-char hash in /nix/store/HASH-name)
-    Some(sui_compat::store_path::nix_base32_encode(&bytes))
-}
-
-/// Decode base64 (standard, with or without padding).
-fn base64_decode(input: &str) -> Option<Vec<u8>> {
-    use base64::Engine;
-    base64::engine::general_purpose::STANDARD
-        .decode(input)
-        .ok()
-        .or_else(|| {
-            base64::engine::general_purpose::STANDARD_NO_PAD
-                .decode(input)
-                .ok()
-        })
+    let digest = sui_compat::hash::NixHash::parse_any(sui_compat::hash::HashAlgorithm::Sha256, nar_hash).ok()?;
+    let path = sui_compat::store_path::make_source_path(&digest.to_hex(), &[], false, "source");
+    sui_compat::store_path_scan::hash_part(&path).map(str::to_string)
 }
 
 // ── Strategy: eval (full sui-eval derivation resolution) ─────
@@ -866,7 +855,47 @@ mod tests {
             m.insert(format!("{base}/{}.narinfo", e.key), e.text.clone().into_bytes());
             m.insert(format!("{base}/{}", e.url), e.nar_file.clone());
         }
-        BinaryCacheStore::with_http_client(base, vec![], Box::new(Upstream(m)))
+        BinaryCacheStore::builder(base).http_client(Box::new(Upstream(m))).require_signatures(false).build()
+    }
+
+    /// A flake input's narHash names its `source` path, as cppnix computes it
+    /// (vector: a fetchTree source on ryn, `nix path-info --json`).
+    #[test]
+    fn a_nar_hash_names_its_source_store_path() {
+        assert_eq!(
+            nar_hash_to_store_hash("sha256-l0KFg5HjrsfsO/JpG+r7fRrqm12kzFHyUHqHCVpMMbI=").as_deref(),
+            Some("01x5k4nlxcpyd85nnr0b9gm89rm8ff4x")
+        );
+        assert_eq!(nar_hash_to_store_hash("md5-abc"), None);
+    }
+
+    /// An upstream entry no trusted key signs is not mirrored, even when its
+    /// bytes are sound; one signed by a trusted key is.
+    #[tokio::test]
+    async fn a_mirror_refuses_an_upstream_entry_no_trusted_key_signs() {
+        use sui_castore::storage::admission::fixture::entry;
+        let dir = tempfile::tempdir().unwrap();
+        let local = sui_cache::LocalStorage::new(dir.path());
+        let hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa5";
+        let mut e = entry(hash, "hello", b"hello", &[]);
+        let signer = sui_cache::CacheSigner::generate("upstream-1".to_string());
+        let base = "https://upstream.invalid";
+        let serve = |e: &sui_castore::storage::admission::fixture::FixtureEntry| {
+            let mut m = std::collections::HashMap::new();
+            m.insert(format!("{base}/{}.narinfo", e.key), e.text.clone().into_bytes());
+            m.insert(format!("{base}/{}", e.url), e.nar_file.clone());
+            BinaryCacheStore::builder(base)
+                .http_client(Box::new(Upstream(m)))
+                .trusted_keys(vec![signer.public_key_string()])
+                .build()
+        };
+        let err = mirror_one(&serve(&e), &local, hash).await.unwrap_err();
+        assert!(err.to_string().to_lowercase().contains("signature"), "{err}");
+        assert!(local.get_narinfo(hash).await.unwrap().is_none());
+
+        let info = sui_compat::narinfo::NarInfo::parse(&e.text).unwrap();
+        e.text.push_str(&format!("Sig: {}\n", signer.sign_narinfo(&info)));
+        assert_eq!(mirror_one(&serve(&e), &local, hash).await.unwrap(), Mirrored::Stored { compressed_bytes: e.nar_file.len() });
     }
 
     /// The mirror mode of the cid receipt: an upstream entry whose NAR names

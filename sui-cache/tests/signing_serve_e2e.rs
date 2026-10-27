@@ -66,6 +66,9 @@ fn config(dir: &std::path::Path) -> CacheConfig {
         want_mass_query: true,
         store_dir: "/nix/store".to_string(),
         require_sigs: false,
+        // These tests are the signing daemon's open-upload posture, which is
+        // configured on, not the default.
+        sign_unauthenticated_uploads: true,
         // Serving does not compress; take the prescribed push-side codec.
         ..CacheConfig::default()
     }

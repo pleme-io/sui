@@ -98,11 +98,16 @@ pub async fn serve(
     };
 
     if config.upload_keys.is_empty() {
-        if signer.is_some() {
+        if signer.is_some() && config.sign_unauthenticated_uploads {
             tracing::warn!(
-                "sui-cache uploads are UNAUTHENTICATED (no upload_keys configured) and every \
-                 ingested narinfo is signed by this origin: any peer that can reach PUT can \
-                 publish a path the origin vouches for. Pass --upload-key to gate writes.",
+                "sui-cache uploads are UNAUTHENTICATED (no upload_keys configured) and \
+                 sign_unauthenticated_uploads is on: any peer that can reach PUT can publish a \
+                 path the origin vouches for. Pass --upload-key to gate writes.",
+            );
+        } else if signer.is_some() {
+            tracing::warn!(
+                "sui-cache uploads are UNAUTHENTICATED (no upload_keys configured): uploaded \
+                 narinfos are stored unsigned; pass --upload-key to gate and sign them",
             );
         }
     } else {
@@ -318,9 +323,14 @@ async fn put_narinfo(
 
     // Sign at ingest when a signer is configured, so the durable tier stores
     // the signed narinfo and every serving tier inherits the `Sig:`.
+    //
+    // Only an authenticated upload is signed (upload keys are configured and
+    // the gate above passed), unless the operator turned on signing
+    // unauthenticated ones: a signature is a vouch, and an open PUT is anyone.
+    let authenticated = !state.config.upload_keys.is_empty();
     let to_store = match &state.signer {
-        Some(signer) => sign_admitted(signer, &admitted),
-        None => admitted,
+        Some(signer) if authenticated || state.config.sign_unauthenticated_uploads => sign_admitted(signer, &admitted),
+        _ => admitted,
     };
 
     // WRITE-PATH POLICY — deliberately NOT symmetric with the read path.
@@ -852,6 +862,7 @@ mod tests {
             store_dir: "/nix/store".to_string(),
             signing_key: None,
             require_sigs: false,
+            sign_unauthenticated_uploads: true,
             ..CacheConfig::default()
         };
         let app = build_router(AppState {
@@ -910,6 +921,7 @@ mod tests {
             store_dir: "/nix/store".to_string(),
             signing_key: None,
             require_sigs: false,
+            sign_unauthenticated_uploads: true,
             ..CacheConfig::default()
         };
         let app = build_router(AppState {
@@ -1408,7 +1420,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let storage: Arc<dyn StorageBackend> = Arc::new(LocalStorage::new(dir.path()));
         let signer = Arc::new(CacheSigner::generate("origin".to_string()));
-        let app = build_router(AppState { storage, config: CacheConfig::default(), signer: Some(signer) });
+        let config = CacheConfig { sign_unauthenticated_uploads: true, ..CacheConfig::default() };
+        let app = build_router(AppState { storage, config, signer: Some(signer) });
         let text = upload_nar(&app, &entry("abc", &[])).await;
         let text = format!("{text}Provenance: host=ryn engine=cppnix pusher=nix-2.31.5\nSystem: aarch64-darwin\n");
         assert_eq!(put(&app, "/abc.narinfo", text).await, StatusCode::OK);
@@ -1416,6 +1429,32 @@ mod tests {
         assert!(served.contains("Provenance: host=ryn engine=cppnix pusher=nix-2.31.5\n"), "{served}");
         assert!(served.contains("System: aarch64-darwin\n"), "{served}");
         assert!(served.contains("Sig: origin:"), "{served}");
+    }
+
+    /// A signature is a vouch: by default an upload no upload key
+    /// authenticates is stored unsigned, even with a signer configured; an
+    /// authenticated upload is signed.
+    #[tokio::test]
+    async fn an_unauthenticated_upload_is_not_signed_by_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage: Arc<dyn StorageBackend> = Arc::new(LocalStorage::new(dir.path()));
+        let origin = Arc::new(CacheSigner::generate("origin".to_string()));
+        let app = build_router(AppState { storage, config: CacheConfig::default(), signer: Some(origin.clone()) });
+        assert!(!CacheConfig::default().sign_unauthenticated_uploads);
+        let text = upload_nar(&app, &entry("abc", &[])).await;
+        assert_eq!(put(&app, "/abc.narinfo", text).await, StatusCode::OK);
+        let served = body_string(get(&app, "/abc.narinfo").await).await;
+        assert!(!served.contains("Sig: origin:"), "an open upload must not carry the origin's vouch: {served}");
+
+        let dir = tempfile::tempdir().unwrap();
+        let uploader = CacheSigner::generate("ci-1".to_string());
+        let app = gated_app(dir.path(), vec![uploader.public_key_string()], Some(origin));
+        let e = entry("abc", &[]);
+        upload_nar(&app, &e).await;
+        let mut info = NarInfo::parse(&e.text).unwrap();
+        info.signatures.push(uploader.sign_narinfo(&info));
+        assert_eq!(put(&app, "/abc.narinfo", info.serialize()).await, StatusCode::OK);
+        assert!(body_string(get(&app, "/abc.narinfo").await).await.contains("Sig: origin:"), "authenticated: signed");
     }
 
     /// The old layout stays readable: an entry whose NAR sui stored under

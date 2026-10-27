@@ -8407,14 +8407,17 @@ async fn main() -> Result<(), CliError> {
                 })?;
             }
             CacheCommands::Push { paths, cache_url, store_path, signing_key, recursive } => {
-                if cache_url.is_some() && signing_key.is_none() {
+                // A push signs what it publishes; a throwaway key (the old
+                // fallback here) signs with a key no consumer trusts, so every
+                // entry it wrote was one nobody could verify.
+                let Some(signing_key) = signing_key else {
                     return Err(CliError::Orchestrate {
                         operation: "cache push",
-                        message: "--cache-url needs --signing-key: an unsigned upload is refused by a \
-                                  gated origin and unverifiable on an open one"
+                        message: "--signing-key is required: a push signs what it publishes, and an entry signed \
+                                  by a throwaway key is one no consumer can verify"
                             .to_string(),
                     });
-                }
+                };
                 let remote = cache_url
                     .as_deref()
                     .map(sui_cache::remote::RemoteCache::new)
@@ -8432,22 +8435,16 @@ async fn main() -> Result<(), CliError> {
                 // measured fast path; a bandwidth-bound origin points the var
                 // at a YAML naming `{ codec: xz, level: 6 }`.
                 let nar_codec = sui_cache::CacheConfig::resolve().nar_codec;
-                let signer = if let Some(key_path) = signing_key {
-                    let key_str = std::fs::read_to_string(&key_path).map_err(|e| {
-                        CliError::Orchestrate {
-                            operation: "cache push",
-                            message: format!("read signing key: {e}"),
-                        }
-                    })?;
-                    sui_cache::CacheSigner::from_secret_key_string(key_str.trim()).map_err(|e| {
-                        CliError::Orchestrate {
-                            operation: "cache push",
-                            message: format!("parse signing key: {e}"),
-                        }
-                    })?
-                } else {
-                    sui_cache::CacheSigner::generate("sui-cache".to_string())
-                };
+                let key_str = std::fs::read_to_string(&signing_key).map_err(|e| CliError::Orchestrate {
+                    operation: "cache push",
+                    message: format!("read signing key: {e}"),
+                })?;
+                let signer = sui_cache::CacheSigner::from_secret_key_string(key_str.trim()).map_err(|e| {
+                    CliError::Orchestrate {
+                        operation: "cache push",
+                        message: format!("parse signing key: {e}"),
+                    }
+                })?;
 
                 // ── Real references, from the store, not `&[]` ──────────
                 //

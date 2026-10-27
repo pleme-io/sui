@@ -81,6 +81,13 @@ pub struct CacheConfig {
 
     #[serde(default)]
     pub upload_keys: Vec<String>,
+
+    /// Sign a narinfo uploaded with no upload key to authenticate it. Off by
+    /// default: with a signer and no `upload_keys`, any peer that can reach
+    /// PUT would otherwise publish a path this origin vouches for. With upload
+    /// keys configured every accepted upload is authenticated and is signed.
+    #[serde(default)]
+    pub sign_unauthenticated_uploads: bool,
 }
 
 impl Default for CacheConfig {
@@ -128,6 +135,7 @@ impl TieredConfig for CacheConfig {
                 level: XzLevel::default(),
             },
             upload_keys: Vec::new(),
+            sign_unauthenticated_uploads: false,
         }
     }
 
@@ -190,6 +198,7 @@ mod tests {
             require_sigs: true,
             nar_codec: NarCodec::default(),
             upload_keys: vec!["ci-1:AAAA".to_string()],
+            sign_unauthenticated_uploads: false,
         };
         let json = serde_json::to_string_pretty(&config).unwrap();
         let parsed: CacheConfig = serde_json::from_str(&json).unwrap();

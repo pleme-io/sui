@@ -17,6 +17,20 @@ fn sui() -> Command {
 
 // ── Top-level CLI behavior ──────────────────────────────────────────
 
+/// `cache push` with no `--signing-key` refuses; it used to sign with a
+/// throwaway key no consumer trusts. Nothing is written to the cache dir.
+#[test]
+fn cache_push_without_a_signing_key_refuses_and_writes_nothing() {
+    let cache = tempfile::tempdir().unwrap();
+    sui()
+        .args(["cache", "push", "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1-x", "--store-path"])
+        .arg(cache.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--signing-key is required"));
+    assert_eq!(std::fs::read_dir(cache.path()).unwrap().count(), 0);
+}
+
 #[test]
 fn no_args_shows_help_and_exits_nonzero() {
     sui().assert().failure().stderr(predicate::str::contains("Usage"));
