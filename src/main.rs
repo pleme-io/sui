@@ -7188,7 +7188,15 @@ async fn main() -> Result<(), CliError> {
                 }
                 StoreCommands::RepairReferences { dry_run, substituted_since } => {
                     let rw_store = LocalStore::open_rw(NIX_DB_PATH).await.map_err(|e| CliError::StoreOpen { path: NIX_DB_PATH, source: e })?;
-                    let mut repairs = sui_build::repair::repair_references(&rw_store, dry_run).await?;
+                    let audit = sui_build::repair::audit_references(
+                        &rw_store,
+                        std::path::Path::new(sui_compat::store_path::DEFAULT_STORE_DIR),
+                        dry_run,
+                    )
+                    .await?;
+                    let unscanned = audit.unscanned_lines();
+                    let scanned = audit.scanned;
+                    let mut repairs = audit.repairs;
                     if let Some(since) = substituted_since {
                         let caches = sui_orchestrate::system::build_caches(&sui_orchestrate::system::get_substituters());
                         let local: std::sync::Arc<dyn sui_store::Store> = std::sync::Arc::new(
@@ -7205,6 +7213,13 @@ async fn main() -> Result<(), CliError> {
                         for a in &r.absent {
                             println!("  ! absent {a}");
                         }
+                        for a in &r.unresolved {
+                            println!("  ? named, not a build candidate: {a}");
+                        }
+                    }
+                    eprintln!("{scanned} scanned");
+                    for line in &unscanned {
+                        eprintln!("{line}");
                     }
                     let broken = repairs.iter().filter(|r| !r.absent.is_empty()).count();
                     let verb = if dry_run { "would add" } else { "added" };
