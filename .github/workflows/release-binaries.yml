@@ -1,0 +1,21 @@
+name: release-binaries
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-binaries-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  binaries:
+    if: startsWith(github.ref, 'refs/tags/v')
+    uses: pleme-io/substrate/.github/workflows/rust-binary-release.yml@main
+    with:
+      binary-name: sui
+      package: pleme-io-sui

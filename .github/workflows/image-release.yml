@@ -10,13 +10,10 @@ name: image-release
 # compiles the Redis L1 + Postgres L2 tiered arms and can serve
 # `cache serve --backend-config <toml>` against the TieredBackend.
 #
-# Runner: the substrate default `ubuntu-24.04` (GitHub's FREE hosted x86_64 =
-# NATIVE amd64, so `dockerImage-amd64` — an x86_64-linux derivation — is built
-# on-target, no cross-arch `exec format error`). sui is public/open-source, so
-# per the ★★ TOOL DISTRIBUTION rule it must NOT couple its build to private rio
-# infra (mirrors hanabi/armazem). The build is heavy (nix evaluator + bytecode
-# VM); if a hosted runner OOMs/disk-fills, add `buildCores: 2` + `maxJobs: 1`
-# and/or an `extraSubstituters` attic cache below.
+# Runner: `pleme-public-build`, the pool on plo registered to pleme-io/sui
+# alone (nix nodes/plo/ci.nix). Its jobs carry the pleme-org-posture App token,
+# which ghcr.io accepts for the push; GITHUB_TOKEN on a hosted runner is refused
+# (permission_denied: write_package). Fork pull requests never route here.
 
 on:
   push:
@@ -31,13 +28,14 @@ permissions:
 jobs:
   image-amd64:
     name: sui amd64 image → ghcr.io
-    # Skip the crates-bump commit auto-release.yml pushes as
-    # github-actions[bot] (avoids a redundant second image build per merge).
-    if: github.actor != 'github-actions[bot]'
+    # Skip the crates-bump commit auto-release.yml pushes as a bot (the
+    # posture App or github-actions), so a merge builds one image, not two.
+    if: ${{ !endsWith(github.actor, '[bot]') }}
     uses: pleme-io/substrate/.github/workflows/image-push.yml@main
     with:
       imageAttr: dockerImage-amd64
       imageName: pleme-io/sui
+      runner: pleme-public-build
       # AUTOBUMP-friendly: `r<run_number>` makes the tag numerically SORTABLE so
       # Flux ImagePolicy (the env-subscription side) can auto-track the newest
       # build; the sha keeps it traceable. Same shape as hanabi / pangea-operator.

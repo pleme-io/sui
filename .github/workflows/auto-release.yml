@@ -25,4 +25,5 @@ jobs:
     uses: pleme-io/substrate/.github/workflows/rust-auto-release.yml@main
     with:
       bump-type: ${{ inputs.bump-type || 'patch' }}
+      runner: pleme-public-build
     secrets: inherit
