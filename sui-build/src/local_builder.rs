@@ -2150,6 +2150,47 @@ mod tests {
         assert!(top.trim().starts_with(canon_real.to_str().unwrap()), "NIX_BUILD_TOP={top}");
     }
 
+    /// Byte parity with cppnix for every Rust crate with a build script
+    /// (cid 2026-10-26: rust_serde_core-1.0.229-lib differed from two cppnix
+    /// rebuilds, and serde_json's rmeta then named another serde_core SVH).
+    ///
+    /// The rlib records the path of `include!(concat!(env!("OUT_DIR"), …))`.
+    /// buildRustCrate passes `--remap-path-prefix=$NIX_BUILD_TOP=/` and
+    /// `-Z remap-cwd-prefix=.`; OUT_DIR is `$(pwd)/target/build/…` (the
+    /// shell's logical cwd) and rustc's cwd remap uses the physical cwd
+    /// (getcwd). cppnix's build dir has no symlink in it, so all three are one
+    /// string and the file is recorded as `./target/build/serde_core.out/private.rs`.
+    /// cid's bytes record `/serde_core-1.0.229/target/build/serde_core.out/private.rs`:
+    /// the cwd remap missed because the logical and physical cwd differed (a
+    /// build dir under the `/var` symlink, before b84c70e). Measured on ryn
+    /// 2026-10-26: sui's `--check` rebuild NAR-hashes to cppnix's own
+    /// rebuild (sha256:7fe97707…), and both differ from cid's (d6812faa…).
+    #[tokio::test]
+    async fn the_builder_cwd_is_one_string_logically_physically_and_as_nix_build_top() {
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        let link = tmp.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let out = tmp.path().join("out");
+        let store = Arc::new(MockStore::new());
+        let builder = LocalBuilder::new(store, Box::new(NoSandbox)).with_build_dir(link.to_str().unwrap().to_string());
+        let script = format!(
+            "cd \"$NIX_BUILD_TOP\" && /bin/mkdir src && cd src && printf '%s\\n%s\\n%s\\n' \"$NIX_BUILD_TOP/src\" \"$(pwd)\" \"$(pwd -P)\" > {}",
+            out.display()
+        );
+        let drv = make_drv("/bin/sh", &["-c", &script], out.to_str().unwrap());
+        let result = builder.build(&drv).await.unwrap();
+        assert!(result.is_success(), "{}", result.log);
+        let seen = std::fs::read_to_string(&out).unwrap();
+        let lines: Vec<&str> = seen.lines().collect();
+        assert_eq!(lines.len(), 3, "{seen}");
+        assert!(
+            lines[0] == lines[1] && lines[1] == lines[2],
+            "NIX_BUILD_TOP-relative, logical and physical cwd differ, so rustc's two remaps disagree: {lines:?}"
+        );
+    }
+
     #[tokio::test]
     async fn build_closure_present_target_never_builds_its_inputs() {
         let out1 = "/nix/store/sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6-dep-1.0";
