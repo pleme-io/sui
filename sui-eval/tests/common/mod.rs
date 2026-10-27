@@ -276,6 +276,13 @@ pub fn thrown_message(v: &serde_json::Value) -> Option<&str> {
         .map(str::trim_end)
 }
 
+pub fn is_upstream_cppnix_version(version: &str) -> bool {
+    version
+        .trim_start()
+        .split_once(' ')
+        .is_some_and(|(_, rest)| rest.starts_with("(Nix) "))
+}
+
 pub fn outcomes_agree(oracle: &serde_json::Value, ours: &serde_json::Value) -> bool {
     if oracle == ours {
         return true;

@@ -93,3 +93,29 @@ fn sanity_oracle_agrees_on_lists_and_attrs() {
     common::assert_eq_nix("builtins.length [1 2 3]");
     common::assert_eq_nix(r#"{ a = 1; b = 2; }.a + { a = 1; b = 2; }.b"#);
 }
+
+#[test]
+fn the_oracle_is_upstream_cppnix() {
+    if common::skip_if_offline("the_oracle_is_upstream_cppnix") {
+        return;
+    }
+    let out = sui_compat::cppnix::command("nix-instantiate")
+        .arg("--version")
+        .output()
+        .expect("spawn the oracle's nix-instantiate");
+    let version = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "oracle --version failed: {version}");
+    assert!(
+        common::is_upstream_cppnix_version(&version),
+        "the oracle must be upstream cppnix, not a fork with its own builtins: {version}"
+    );
+}
+
+#[test]
+fn a_forked_nix_is_not_an_oracle() {
+    assert!(common::is_upstream_cppnix_version("nix-instantiate (Nix) 2.31.5\n"));
+    assert!(!common::is_upstream_cppnix_version(
+        "nix-instantiate (Determinate Nix 3.11.2) 2.31.2\n"
+    ));
+    assert!(!common::is_upstream_cppnix_version("sui 0.1.0\n"));
+}
