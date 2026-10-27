@@ -8578,6 +8578,7 @@ async fn main() -> Result<(), CliError> {
                     println!("watch: --initial-reconcile — every uncached path is a candidate");
                 }
 
+                let mut published = sui_cache::watch::Published::default();
                 loop {
                     let valid = match local.query_all_valid_paths().await {
                         Ok(v) => v,
@@ -8603,9 +8604,28 @@ async fn main() -> Result<(), CliError> {
                         .into_iter()
                         .collect();
 
+                    // A cached entry whose local record changed since it was
+                    // published (references repaired, hash corrected) is
+                    // stale: re-capture it rather than serve it forever.
+                    published.refresh(&storage, &cached).await;
+                    let local_digests: std::collections::HashMap<String, sui_cache::watch::PathDigest> =
+                        match local.path_digests().await {
+                            Ok(rows) => rows
+                                .iter()
+                                .map(|(p, h, refs)| {
+                                    (hash_of(p), sui_cache::watch::PathDigest::new(h, refs.iter().map(String::as_str)))
+                                })
+                                .collect(),
+                            Err(e) => {
+                                eprintln!("watch: path_digests failed, stale entries not checked this pass: {e}");
+                                std::collections::HashMap::new()
+                            }
+                        };
+                    let stale = sui_cache::watch::stale_cached(published.digests(), &local_digests);
                     let plan = sui_cache::watch::plan_capture(
                         &valid_hashes,
                         &cached,
+                        &stale,
                         &baseline,
                         max_per_pass,
                     );
@@ -8639,7 +8659,17 @@ async fn main() -> Result<(), CliError> {
                         )
                         .await
                         {
-                            Ok(_) => report.captured += 1,
+                            Ok(_) => {
+                                published.record(
+                                    h,
+                                    sui_cache::watch::PathDigest::new(&info.nar_hash, info.references.iter().map(String::as_str)),
+                                );
+                                if stale.contains(h) {
+                                    report.recaptured += 1;
+                                } else {
+                                    report.captured += 1;
+                                }
+                            }
                             Err(e) => {
                                 eprintln!("watch: capture {path} failed: {e}");
                                 report.failed += 1;
@@ -8647,10 +8677,16 @@ async fn main() -> Result<(), CliError> {
                         }
                     }
 
-                    if report.captured > 0 || report.failed > 0 || report.deferred > 0 {
+                    tracing::info!(
+                        target: "sui::cache_watch",
+                        scanned = report.scanned, captured = report.captured, recaptured = report.recaptured,
+                        stale = stale.len(), failed = report.failed, deferred = report.deferred,
+                        "cache watch pass",
+                    );
+                    if report.captured > 0 || report.recaptured > 0 || report.failed > 0 || report.deferred > 0 {
                         println!(
-                            "watch: {} scanned, {} captured, {} failed, {} deferred",
-                            report.scanned, report.captured, report.failed, report.deferred
+                            "watch: {} scanned, {} captured, {} re-captured, {} failed, {} deferred",
+                            report.scanned, report.captured, report.recaptured, report.failed, report.deferred
                         );
                     }
                     if once {

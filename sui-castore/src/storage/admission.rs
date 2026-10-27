@@ -584,7 +584,6 @@ async fn judge(
 mod tests {
     use super::*;
     use std::collections::HashSet;
-    use crate::storage::StorageBackend as _;
 
     pub(crate) const SELF: &str = "sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6";
     const STD: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1";

@@ -144,6 +144,28 @@ impl LocalStore {
         Ok(rows.into_iter().map(|r| r.path).collect())
     }
 
+    /// Every valid path with its recorded NAR hash and references, in two
+    /// queries: the bulk read a reconciler compares against what it
+    /// published (`sui cache watch`), without one query per path.
+    ///
+    /// # Errors
+    ///
+    /// When the database cannot be read.
+    pub async fn path_digests(&self) -> StoreResult<Vec<(String, String, Vec<String>)>> {
+        let paths = valid_path::Entity::find().all(&self.db).await.map_err(db_err)?;
+        let by_id: std::collections::HashMap<i64, &str> = paths.iter().map(|p| (p.id, p.path.as_str())).collect();
+        let mut refs: std::collections::HashMap<i64, Vec<String>> = std::collections::HashMap::new();
+        for r in reference::Entity::find().all(&self.db).await.map_err(db_err)? {
+            if let Some(target) = by_id.get(&r.reference) {
+                refs.entry(r.referrer).or_default().push((*target).to_string());
+            }
+        }
+        Ok(paths
+            .iter()
+            .map(|p| (p.path.clone(), p.hash.clone(), refs.remove(&p.id).unwrap_or_default()))
+            .collect())
+    }
+
     /// Valid signed (substituted) paths registered at or after `since` (unix seconds), with their recorded references.
     ///
     /// # Errors
@@ -2176,6 +2198,46 @@ mod tests {
         assert_eq!(queried.nar_hash, info.nar_hash);
         assert_eq!(queried.nar_size, 1024);
         assert!(queried.references.is_empty());
+    }
+
+    /// The bulk read agrees with the per-path read for every path, and sees
+    /// a repaired reference.
+    #[tokio::test]
+    async fn path_digests_match_query_path_info_and_see_a_repair() {
+        let store = LocalStore::open_in_memory().await.unwrap();
+        let info = |path: &str, refs: Vec<String>| PathInfo {
+            path: path.to_string(),
+            nar_hash: "sha256:aaa".to_string(),
+            nar_size: 1,
+            references: refs,
+            deriver: None,
+            signatures: vec![],
+            registration_time: 1,
+            content_address: None,
+        };
+        let dep = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-rust-std";
+        let tool = "/nix/store/dddddddddddddddddddddddddddddddd-rust-stable";
+        store.register_path(&info(dep, vec![])).await.unwrap();
+        store.register_path(&info(tool, vec![])).await.unwrap();
+        let read = || async {
+            let mut rows = store.path_digests().await.unwrap();
+            rows.sort();
+            rows
+        };
+        assert_eq!(
+            read().await,
+            vec![
+                (dep.to_string(), "sha256:aaa".to_string(), vec![]),
+                (tool.to_string(), "sha256:aaa".to_string(), vec![]),
+            ]
+        );
+        store.add_missing_references(tool, &[dep.to_string()], false).await.unwrap();
+        let rows = read().await;
+        assert_eq!(rows[1].2, vec![dep.to_string()]);
+        for (path, hash, refs) in rows {
+            let q = store.query_path_info(&StorePath::from_absolute_path(&path).unwrap()).await.unwrap().unwrap();
+            assert_eq!((q.nar_hash, q.references), (hash, refs));
+        }
     }
 
     #[tokio::test]
