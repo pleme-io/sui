@@ -1,5 +1,11 @@
 # Sui (粋) — Rust-Native Nix Replacement
 
+`pending-platform-mediated: PUBLISH_APP_ID, PUBLISH_APP_KEY` — repo Actions
+secrets set by hand on 2026-10-27 from sops `github/app/pleme-publish/*`, because
+`org.yaml`'s `actions_secrets` has no path that reads sops on the operator yet.
+image-release's push mints the pleme-publish App token from them. Declare them in
+`org.yaml` once that path exists.
+
 > **★★★ CSE / Knowable Construction.** This repo operates under
 > **Constructive Substrate Engineering** — canonical specification at
 > [`pleme-io/theory/CONSTRUCTIVE-SUBSTRATE-ENGINEERING.md`](https://github.com/pleme-io/theory/blob/main/CONSTRUCTIVE-SUBSTRATE-ENGINEERING.md).
