@@ -50,6 +50,9 @@ fn nix_optimise_outcome(base: &Path) {
             .args([
                 "--extra-experimental-features",
                 "nix-command flakes",
+                "--option",
+                "auto-optimise-store",
+                "false",
                 "store",
                 "add-path",
                 "--store",
