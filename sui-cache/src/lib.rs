@@ -13,6 +13,7 @@
 //! - [`gc`] — garbage collection of unreferenced cache entries
 //! - [`config`] — cache configuration types (CacheConfig; BackendConfig is in sui-castore)
 
+pub mod audit;
 pub mod config;
 pub mod gc;
 pub mod push;
@@ -20,6 +21,8 @@ pub mod remote;
 pub mod resign;
 pub mod server;
 pub mod signing;
+#[cfg(test)]
+pub(crate) mod test_backend;
 pub mod watch;
 
 // ---------------------------------------------------------------------------

@@ -48,6 +48,94 @@ pub enum BuildAction {
     Skipped,
 }
 
+/// How one output of a rebuild compares with what the store records for it
+/// (`--check`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutputCheck {
+    /// The output name.
+    pub output: String,
+    /// The output's store path.
+    pub path: String,
+    /// The NAR hash the store records.
+    pub recorded_nar_hash: String,
+    /// The NAR hash of the rebuild, hashes rewritten back (`sha256:<hex>`).
+    pub rebuilt_nar_hash: String,
+    /// The references the store records.
+    pub recorded_references: Vec<String>,
+    /// The references the rebuild's bytes name, by the builder's rule.
+    pub rebuilt_references: Vec<String>,
+}
+
+/// How a rebuild diverged from the recorded output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Divergence {
+    /// The rebuilt bytes differ (cppnix: "may not be deterministic").
+    Bytes {
+        /// As recorded.
+        recorded: String,
+        /// As rebuilt.
+        rebuilt: String,
+    },
+    /// The bytes agree but the recorded references do not.
+    References {
+        /// Named by the bytes, not recorded.
+        missing: Vec<String>,
+        /// Recorded, not named by the bytes.
+        extra: Vec<String>,
+    },
+}
+
+impl OutputCheck {
+    /// `None` when the rebuild agrees with the record.
+    #[must_use]
+    pub fn divergence(&self) -> Option<Divergence> {
+        use sui_compat::hash::{HashAlgorithm, NixHash};
+        let digest = |h: &str| NixHash::parse_any(HashAlgorithm::Sha256, h).ok().map(|h| h.digest);
+        if digest(&self.recorded_nar_hash).is_none() || digest(&self.recorded_nar_hash) != digest(&self.rebuilt_nar_hash) {
+            return Some(Divergence::Bytes { recorded: self.recorded_nar_hash.clone(), rebuilt: self.rebuilt_nar_hash.clone() });
+        }
+        let recorded: std::collections::BTreeSet<&String> = self.recorded_references.iter().collect();
+        let rebuilt: std::collections::BTreeSet<&String> = self.rebuilt_references.iter().collect();
+        let missing: Vec<String> = rebuilt.difference(&recorded).map(|s| (*s).clone()).collect();
+        let extra: Vec<String> = recorded.difference(&rebuilt).map(|s| (*s).clone()).collect();
+        (!missing.is_empty() || !extra.is_empty()).then_some(Divergence::References { missing, extra })
+    }
+}
+
+/// Compare a rebuilt output, still at its scratch path, with the record of
+/// the real one: rewrite the scratch hashes back, hash its NAR, scan it for
+/// the build's candidates.
+///
+/// # Errors
+///
+/// When the scratch tree cannot be rewritten or read.
+pub fn compare_rebuilt(
+    output: &str,
+    recorded: &PathInfo,
+    scratch: &Path,
+    back: &[(String, String)],
+    candidates: &[String],
+) -> Result<OutputCheck, BuildError> {
+    if !back.is_empty() {
+        rewrite_tree(scratch, back)?;
+    }
+    let digest = sui_compat::store_path_scan::NarDigester::of_path(scratch)
+        .map_err(|e| BuildError::Failed(format!("hashing the rebuilt '{output}': {e}")))?;
+    let hex: String = digest.sha256.iter().map(|b| format!("{b:02x}")).collect();
+    let mut rebuilt_references = scan_refs(candidates, &scratch.to_string_lossy());
+    rebuilt_references.sort();
+    let mut recorded_references = recorded.references.clone();
+    recorded_references.sort();
+    Ok(OutputCheck {
+        output: output.to_string(),
+        path: recorded.path.clone(),
+        recorded_nar_hash: recorded.nar_hash.clone(),
+        rebuilt_nar_hash: format!("sha256:{hex}"),
+        recorded_references,
+        rebuilt_references,
+    })
+}
+
 /// A builder that executes derivations locally with sandbox isolation.
 pub struct LocalBuilder {
     store: Arc<dyn Store>,
@@ -135,7 +223,31 @@ impl LocalBuilder {
     /// 5. Clean up the build directory
     async fn build_single(&self, drv: &Derivation) -> Result<BuildResult, BuildError> {
         let worker = Worker::start(&self.sink);
-        self.build_one(drv, None, None, &worker).await
+        self.build_one(drv, None, None, &worker, None).await
+    }
+
+    /// Rebuild `drv` and compare each output with what the store records
+    /// (`nix-store --realise --check`). Every output must be valid already;
+    /// the rebuild goes to scratch paths, is compared with the hashes
+    /// rewritten back, and is removed. Nothing registered changes.
+    ///
+    /// # Errors
+    ///
+    /// When an output is not valid ("checking is not possible"), the build
+    /// fails, or a rebuilt output cannot be read.
+    pub async fn check(&self, drv: &Derivation, deriver: &str) -> Result<Vec<OutputCheck>, BuildError> {
+        if !self.all_outputs_exist(drv).await? {
+            return Err(BuildError::Failed(format!(
+                "some outputs of '{deriver}' are not valid, so checking is not possible"
+            )));
+        }
+        let worker = Worker::start(&self.sink);
+        let mut checks = Vec::new();
+        let result = self.build_one(drv, None, Some(deriver), &worker, Some(&mut checks)).await?;
+        if !result.is_success() {
+            return Err(BuildError::Failed(format!("rebuild of '{deriver}' failed:\n{}", result.log)));
+        }
+        Ok(checks)
     }
 
     async fn build_one(
@@ -144,12 +256,13 @@ impl LocalBuilder {
         index: Option<&std::collections::HashMap<&str, &Derivation>>,
         deriver: Option<&str>,
         worker: &Worker,
+        mut check: Option<&mut Vec<OutputCheck>>,
     ) -> Result<BuildResult, BuildError> {
         let start = std::time::Instant::now();
         let mut log = BuildLog::new();
 
-        // 1. Check if all outputs already exist
-        if self.all_outputs_exist(drv).await? {
+        // 1. Check if all outputs already exist (a check rebuilds them anyway)
+        if check.is_none() && self.all_outputs_exist(drv).await? {
             log.push("all outputs already exist, skipping build");
             let outputs = self.collect_output_paths(drv);
             return Ok(BuildResult::success(
@@ -249,6 +362,18 @@ impl LocalBuilder {
 
             if let Some((_, scratch)) = redirects.get(output_name) {
                 let produced = Path::new(scratch).exists();
+                if produced && let Some(checks) = check.as_deref_mut() {
+                    let recorded = match StorePath::from_absolute_path(output_path) {
+                        Ok(sp) => self.store.query_path_info(&sp).await.ok().flatten(),
+                        Err(_) => None,
+                    };
+                    let compared = match recorded {
+                        Some(recorded) => compare_rebuilt(output_name, &recorded, Path::new(scratch), &back, &candidates),
+                        None => Err(BuildError::Failed(format!("output '{output_name}' has no record to check against"))),
+                    };
+                    let _ = remove_path(scratch);
+                    checks.push(compared?);
+                }
                 let _ = remove_path(scratch);
                 if !produced {
                     let _ = std::fs::remove_dir_all(&build_dir);
@@ -626,7 +751,7 @@ impl LocalBuilder {
                 tracing::info!(drv_path, "building locally");
                 let index = &index;
                 let worker = &worker;
-                running.push(async move { (drv_path, self.build_one(drv, Some(index), Some(drv_path), worker).await) });
+                running.push(async move { (drv_path, self.build_one(drv, Some(index), Some(drv_path), worker, None).await) });
             }
             let Some((drv_path, result)) = futures::StreamExt::next(&mut running).await else { break };
             let result = result?;
@@ -715,7 +840,7 @@ impl LocalBuilder {
                 action: BuildAction::Building,
             });
             log.push(&format!("building {drv_path}"));
-            let result = self.build_one(drv, Some(&index), Some(drv_path.as_str()), &worker).await?;
+            let result = self.build_one(drv, Some(&index), Some(drv_path.as_str()), &worker, None).await?;
 
             if !result.success {
                 log.push(&format!("FAILED: {drv_path}"));
@@ -930,6 +1055,107 @@ mod tests {
     // ── MockStore ─────────────────────────────────────────────
 
     // ── Helper ────────────────────────────────────────────────
+
+    /// `--check`'s comparison: a rebuild at a scratch path, hashes rewritten
+    /// back, matches the record exactly when its bytes and references do;
+    /// a different byte is a Bytes divergence (cppnix: "may not be
+    /// deterministic"), a record short of a reference the bytes name is a
+    /// References divergence.
+    #[test]
+    fn a_rebuild_is_compared_with_the_record_after_rewriting_hashes_back() {
+        let real = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1-pkg";
+        let scratch_hash = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb1";
+        let dep = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa2-dep";
+        let tmp = tempfile::tempdir().unwrap();
+        let tree = |dir: &Path, own: &str, extra: &str| {
+            std::fs::create_dir_all(dir).unwrap();
+            std::fs::write(dir.join("f"), format!("lib=/nix/store/{own}-pkg/lib dep={dep}/lib{extra}")).unwrap();
+            std::os::unix::fs::symlink(format!("{dep}/bin"), dir.join("l")).unwrap();
+        };
+        let expected = tmp.path().join("expected");
+        tree(&expected, &hash_part(real), "");
+        let d = sui_compat::store_path_scan::NarDigester::of_path(&expected).unwrap();
+        let hex: String = d.sha256.iter().map(|b| format!("{b:02x}")).collect();
+        let recorded = |refs: Vec<String>, nar_hash: String| PathInfo {
+            path: real.to_string(),
+            nar_hash,
+            nar_size: 0,
+            references: refs,
+            deriver: None,
+            signatures: vec![],
+            registration_time: 0,
+            content_address: None,
+        };
+        let back = vec![(scratch_hash.to_string(), hash_part(real))];
+        let candidates = vec![real.to_string(), dep.to_string()];
+        let run = |name: &str, extra: &str, info: &PathInfo| {
+            let scratch = tmp.path().join(name);
+            tree(&scratch, scratch_hash, extra);
+            compare_rebuilt("out", info, &scratch, &back, &candidates).unwrap()
+        };
+
+        let full = recorded(vec![dep.to_string(), real.to_string()], format!("sha256:{hex}"));
+        let same = run("s1", "", &full);
+        assert_eq!(same.divergence(), None, "{same:?}");
+        assert_eq!(same.rebuilt_references, vec![real.to_string(), dep.to_string()]);
+
+        let drifted = run("s2", " one more byte", &full);
+        assert!(matches!(drifted.divergence(), Some(Divergence::Bytes { .. })), "{drifted:?}");
+
+        let short = recorded(vec![], format!("sha256:{hex}"));
+        assert_eq!(
+            run("s3", "", &short).divergence(),
+            Some(Divergence::References { missing: vec![real.to_string(), dep.to_string()], extra: vec![] })
+        );
+        let padded = recorded(
+            vec![dep.to_string(), real.to_string(), "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa3-x".to_string()],
+            format!("sha256:{hex}"),
+        );
+        assert_eq!(
+            run("s4", "", &padded).divergence(),
+            Some(Divergence::References { missing: vec![], extra: vec!["/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa3-x".to_string()] })
+        );
+        let nix32 = format!("sha256:{}", sui_compat::store_path::nix_base32_encode(&d.sha256));
+        assert_eq!(run("s5", "", &recorded(full.references.clone(), nix32)).divergence(), None, "nix32 record");
+        assert!(matches!(run("s6", "", &recorded(vec![], "garbage".into())).divergence(), Some(Divergence::Bytes { .. })));
+    }
+
+    /// `--check` refuses a derivation whose outputs are not all valid, as
+    /// cppnix does, rather than building it as if it were new.
+    #[tokio::test]
+    async fn check_refuses_when_an_output_is_not_valid() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Arc::new(MockStore::new());
+        let builder = LocalBuilder::new(store, Box::new(NoSandbox))
+            .with_build_dir(tmp.path().join("build").to_str().unwrap().to_string());
+        let drv = make_drv("/bin/sh", &["-c", "true"], "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1-pkg");
+        let err = builder.check(&drv, "/nix/store/x.drv").await.unwrap_err();
+        assert!(err.to_string().contains("checking is not possible"), "{err}");
+    }
+
+    /// A rebuild that fails is an error, never an empty (clean-looking)
+    /// comparison. The build never writes: it exits before creating its
+    /// scratch output.
+    #[tokio::test]
+    async fn a_failed_rebuild_is_an_error_not_an_empty_check() {
+        let tmp = tempfile::tempdir().unwrap();
+        let out = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1-pkg";
+        let store = Arc::new(MockStore::new().with_path(PathInfo {
+            path: out.to_string(),
+            nar_hash: "sha256:00".to_string(),
+            nar_size: 0,
+            references: vec![],
+            deriver: None,
+            signatures: vec![],
+            registration_time: 0,
+            content_address: None,
+        }));
+        let builder = LocalBuilder::new(store, Box::new(NoSandbox))
+            .with_build_dir(tmp.path().join("build").to_str().unwrap().to_string());
+        let drv = make_drv("/bin/sh", &["-c", "exit 3"], out);
+        let err = builder.check(&drv, "/nix/store/x.drv").await.unwrap_err();
+        assert!(err.to_string().contains("rebuild of '/nix/store/x.drv' failed"), "{err}");
+    }
 
     fn make_drv(
         builder: &str,

@@ -422,8 +422,18 @@ enum StoreCommands {
         #[arg(long)] ignore_unknown: bool,
         /// [REFUSED] Rebuild and replace corrupt outputs.
         #[arg(long)] repair: bool,
-        /// [REFUSED] Rebuild to check determinism.
+        /// Rebuild each derivation to scratch and compare every output with
+        /// its record (NAR hash and references); nothing registered changes.
         #[arg(long)] check: bool,
+    },
+    /// Rebuild a sample of valid paths (`--check`) and count agreement, byte
+    /// divergence and reference divergence; every path not sampled is
+    /// counted under its reason.
+    Audit {
+        /// Derivations to rebuild.
+        #[arg(long, default_value = "10")] sample: usize,
+        /// Chooses the sample; the same seed picks the same paths.
+        #[arg(long, default_value = "0")] seed: u64,
     },
     /// cppnix's `nix-store --query`: one query kind over the named paths.
     Query {
@@ -960,6 +970,17 @@ enum CacheCommands {
         /// re-vouches for whatever is stored. Off by default.
         #[arg(long)] signatures_only: bool,
     },
+    /// Run admission over every narinfo the cache holds and count refusals by
+    /// kind. With `--evict`, a refused entry is moved aside to `quarantine/`
+    /// (its text kept, its NAR left in place), never deleted.
+    Audit {
+        /// Config-select the backend the daemon serves.
+        #[arg(long)] backend_config: Option<String>,
+        /// Fallback local store dir when no `--backend-config` is given.
+        #[arg(long, default_value = "/var/cache/sui")] store_path: String,
+        /// Move refused entries to quarantine.
+        #[arg(long)] evict: bool,
+    },
     /// Clear the ENTIRE cache — every narinfo + NAR across all tiers (Redis L1,
     /// Postgres L2, object/local L3). The inverse of a warm push: the cache is
     /// regenerable by construction, so a wipe merely forces the next build COLD
@@ -1468,6 +1489,61 @@ fn profile_dirs_to_clean() -> Vec<std::path::PathBuf> {
 }
 
 /// cppnix's `opRealise` + `realisePath`.
+/// A local builder over the system store, for `--check` and `store audit`.
+/// They rebuild to scratch paths in the store, which needs direct (root)
+/// access; through a daemon they are refused with that reason.
+async fn local_check_builder(operation: &'static str) -> Result<sui_build::LocalBuilder, CliError> {
+    match sui_store::StoreAccess::detect() {
+        Some(sui_store::StoreAccess::Direct(_)) => {}
+        _ => {
+            return Err(CliError::Orchestrate {
+                operation,
+                message: "rebuilding to check needs direct write access to the store (run as the store owner); the daemon's check mode is not implemented".into(),
+            });
+        }
+    }
+    let store = LocalStore::open_rw(NIX_DB_PATH).await.map_err(|e| CliError::StoreOpen { path: NIX_DB_PATH, source: e })?;
+    let sandbox = sui_build::sandbox::for_host(sui_build::sandbox::SandboxMode::from_nix_conf());
+    Ok(sui_build::LocalBuilder::new(std::sync::Arc::new(store), sandbox))
+}
+
+/// `nix-store --realise --check`: rebuild each derivation and compare its
+/// outputs with their records. A divergence is an error naming the output,
+/// as cppnix's "may not be deterministic".
+async fn store_realise_check(args: &[String]) -> Result<Vec<String>, CliError> {
+    let fail = |message: String| CliError::Orchestrate { operation: "store realise --check", message };
+    let builder = local_check_builder("store realise --check").await?;
+    let mut out = Vec::new();
+    let mut diverged = Vec::new();
+    for a in args {
+        let p = a.split_once('!').map_or(a.as_str(), |(p, _)| p);
+        let p = sui_store::query::follow_links_to_store_path(p, "/nix/store").map_err(|e| fail(e.to_string()))?;
+        if !p.ends_with(".drv") {
+            return Err(fail(format!("'{p}' is not a derivation; --check rebuilds derivations")));
+        }
+        let drv = sui_compat::derivation::Derivation::parse(&std::fs::read(&p).map_err(|e| fail(format!("{p}: {e}")))?)
+            .map_err(|e| fail(format!("{p}: {e}")))?;
+        for c in builder.check(&drv, &p).await.map_err(|e| fail(e.to_string()))? {
+            match c.divergence() {
+                None => out.push(c.path.clone()),
+                Some(sui_build::Divergence::Bytes { recorded, rebuilt }) => diverged.push(format!(
+                    "derivation '{p}' may not be deterministic: output '{}' differs (recorded {recorded}, rebuilt {rebuilt})",
+                    c.path
+                )),
+                Some(sui_build::Divergence::References { missing, extra }) => diverged.push(format!(
+                    "derivation '{p}': output '{}' has the recorded bytes but other references (not recorded: {missing:?}; recorded, not named: {extra:?})",
+                    c.path
+                )),
+            }
+        }
+    }
+    if diverged.is_empty() {
+        Ok(out)
+    } else {
+        Err(fail(diverged.join("\n")))
+    }
+}
+
 async fn store_realise(
     args: &[String],
     add_root: Option<&str>,
@@ -7269,9 +7345,45 @@ async fn main() -> Result<(), CliError> {
                         println!("{line}");
                     }
                 }
-                StoreCommands::Realise { paths, add_root, dry_run, ignore_unknown, repair: _, check: _ } => {
+                StoreCommands::Realise { paths, add_root: _, dry_run: _, ignore_unknown: _, repair: _, check: true } => {
+                    for line in store_realise_check(&paths).await? {
+                        println!("{line}");
+                    }
+                }
+                StoreCommands::Realise { paths, add_root, dry_run, ignore_unknown, repair: _, check: false } => {
                     for line in store_realise(&paths, add_root.as_deref(), dry_run, ignore_unknown).await? {
                         println!("{line}");
+                    }
+                }
+                StoreCommands::Audit { sample, seed } => {
+                    let builder = local_check_builder("store audit").await?;
+                    let local = LocalStore::open(NIX_DB_PATH).await.map_err(|e| CliError::StoreOpen { path: NIX_DB_PATH, source: e })?;
+                    let audit = sui_build::audit::audit_rebuilds(
+                        &builder,
+                        &local,
+                        std::path::Path::new(sui_compat::store_path::DEFAULT_STORE_DIR),
+                        sample,
+                        seed,
+                    )
+                    .await?;
+                    for c in &audit.divergent {
+                        println!("{} ({}): {:?}", c.path, c.output, c.divergence());
+                    }
+                    for (drv, e) in &audit.failed {
+                        println!("{drv}: rebuild failed: {e}");
+                    }
+                    for (reason, n) in &audit.skipped {
+                        eprintln!("{n} unsampled: {reason}");
+                    }
+                    eprintln!(
+                        "{} rebuilt; {} outputs agree, {} differ in bytes, {} differ in references; {} failed",
+                        audit.checked, audit.agree, audit.bytes, audit.references, audit.failed.len()
+                    );
+                    if audit.bytes + audit.references > 0 {
+                        return Err(CliError::Orchestrate {
+                            operation: "store audit",
+                            message: format!("{} output(s) diverge from their record", audit.bytes + audit.references),
+                        });
                     }
                 }
                 StoreCommands::Info => {
@@ -8766,6 +8878,40 @@ async fn main() -> Result<(), CliError> {
                 })?;
                 println!("Cache dir:   {store_path}");
                 println!("Paths:       {}", hashes.len());
+            }
+            CacheCommands::Audit { backend_config, store_path, evict } => {
+                let backend = resolve_serve_backend(backend_config.as_deref(), None, &store_path)?;
+                let storage = sui_cache::build_backend(&backend).await.map_err(|e| CliError::Orchestrate {
+                    operation: "cache audit",
+                    message: e.to_string(),
+                })?;
+                let a = sui_cache::audit::audit_cache(storage.as_ref(), evict).await.map_err(|e| CliError::Orchestrate {
+                    operation: "cache audit",
+                    message: e.to_string(),
+                })?;
+                for (hash, reason) in &a.findings {
+                    println!("{hash}: {reason}");
+                }
+                let receipt = serde_json::json!({
+                    "op": "cache-audit",
+                    "total": a.total,
+                    "admitted": a.admitted,
+                    "refused": a.refused,
+                    "evicted": a.evicted,
+                    "unreadable": a.unreadable,
+                });
+                eprintln!("{}", serde_json::to_string(&receipt).unwrap_or_default());
+                if a.refused_total() > a.evicted || a.unreadable > 0 {
+                    return Err(CliError::Orchestrate {
+                        operation: "cache audit",
+                        message: format!(
+                            "{} refused ({} evicted), {} unreadable",
+                            a.refused_total(),
+                            a.evicted,
+                            a.unreadable
+                        ),
+                    });
+                }
             }
             CacheCommands::Wipe { backend_config, store_path } => {
                 // Config-select the SAME backend the daemon serves, so a wipe
