@@ -27,5 +27,5 @@ pub use node::{Node, NodeError, NodeRegistry, NodeStatus, StatusCounts};
 pub use system::{
     GenerationInfo, Platform, RebuildAction, RebuildResult, SubstituterConfig, SwitchPlan,
     SystemError, SystemOrchestrator, build_caches, classify_activate_user, get_substituters,
-    dry_plan_drv, realize_bound, realize_drv, realize_drv_observed, running_as_root,
+    dry_plan_drv, realize_bound, realize_drv, realize_drv_observed, build_basic_observed, running_as_root,
 };

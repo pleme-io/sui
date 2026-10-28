@@ -203,14 +203,16 @@ where
             let hash = read_string(&mut self.reader).await?;
             outputs.insert(name, DerivationOutput { path, hash_algo, hash });
         }
-        let _input_srcs = self.read_path_set().await?;
-        let _platform = read_string(&mut self.reader).await?;
-        let _builder = read_string(&mut self.reader).await?;
-        let _args = read_string_list(&mut self.reader).await?;
+        let input_sources = self.read_path_set().await?;
+        let system = read_string(&mut self.reader).await?;
+        let builder = read_string(&mut self.reader).await?;
+        let args = read_string_list(&mut self.reader).await?;
         let env_count = read_u64(&mut self.reader).await?;
+        let mut env = std::collections::BTreeMap::new();
         for _ in 0..env_count {
-            let _k = read_string(&mut self.reader).await?;
-            let _v = read_string(&mut self.reader).await?;
+            let k = read_string(&mut self.reader).await?;
+            let v = read_string(&mut self.reader).await?;
+            env.insert(k, v);
         }
         let mode = read_u64(&mut self.reader).await?;
         if mode > 2 {
@@ -225,13 +227,26 @@ where
                 let target = DerivedPath::Built { drv: drv_path.clone(), outputs: OutputsSpec::All };
                 self.realize_observed(vec![target], mode).await?.remove(0)
             }
-            _ => BuildOutcome::with_status(
+            _ if mode != 0 => BuildOutcome::with_status(
                 BuildStatus::MiscFailure,
                 format!(
-                    "sui-daemon builds a derivation sent by the client only when '{}' is valid in the store with the same outputs",
+                    "sui-daemon does not implement build mode '{}' for '{}'",
+                    if mode == 1 { "repair" } else { "check" },
                     drv_path.to_absolute_path()
                 ),
             ),
+            _ => {
+                let drv = sui_compat::derivation::Derivation {
+                    outputs,
+                    input_derivations: std::collections::BTreeMap::new(),
+                    input_sources: input_sources.iter().map(StorePath::to_absolute_path).collect(),
+                    system,
+                    builder,
+                    args,
+                    env,
+                };
+                self.build_basic_observed(drv_path.clone(), drv).await?
+            }
         };
         self.finish().await?;
         self.write_build_result(&outcome).await

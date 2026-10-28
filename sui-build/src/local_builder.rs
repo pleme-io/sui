@@ -226,6 +226,11 @@ impl LocalBuilder {
         self.build_one(drv, None, None, &worker, None).await
     }
 
+    pub async fn build_basic(&self, drv: &Derivation, deriver: &str) -> Result<BuildResult, BuildError> {
+        let worker = Worker::start(&self.sink);
+        self.build_one(drv, None, Some(deriver), &worker, None).await
+    }
+
     /// Rebuild `drv` and compare each output with what the store records
     /// (`nix-store --realise --check`). Every output must be valid already;
     /// the rebuild goes to scratch paths, is compared with the hashes

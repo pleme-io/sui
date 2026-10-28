@@ -180,11 +180,17 @@ struct Session {
     version: u64,
     dirs: Option<(std::path::PathBuf, std::path::PathBuf)>,
     caches: Vec<Arc<sui_store::BinaryCacheStore>>,
+    drvs: Option<Arc<dyn super::DrvRealizer>>,
 }
 
 impl Session {
     fn new(store: TestStore) -> Self {
-        Self { store: Arc::new(store), trust: TrustLevel::Trusted, version: PROTOCOL_VERSION, dirs: None, caches: Vec::new() }
+        Self { store: Arc::new(store), trust: TrustLevel::Trusted, version: PROTOCOL_VERSION, dirs: None, caches: Vec::new(), drvs: None }
+    }
+
+    fn realizer(mut self, drvs: Arc<dyn super::DrvRealizer>) -> Self {
+        self.drvs = Some(drvs);
+        self
     }
 
     fn untrusted(mut self) -> Self {
@@ -207,6 +213,9 @@ impl Session {
             .with_caches(self.caches.clone());
         if let Some((store, state)) = &self.dirs {
             conn = conn.with_dirs(store, state);
+        }
+        if let Some(drvs) = &self.drvs {
+            conn = conn.with_realizer(drvs.clone());
         }
         conn.client_version = self.version;
         conn.run().await.unwrap();
@@ -609,7 +618,7 @@ async fn build_paths_acks_valid_targets_and_reports_a_missing_one_without_closin
 
 impl Session {
     fn clone_untrusted(&self) -> Self {
-        Self { store: self.store.clone(), trust: TrustLevel::NotTrusted, version: self.version, dirs: self.dirs.clone(), caches: self.caches.clone() }
+        Self { store: self.store.clone(), trust: TrustLevel::NotTrusted, version: self.version, dirs: self.dirs.clone(), caches: self.caches.clone(), drvs: self.drvs.clone() }
     }
 }
 
@@ -703,10 +712,88 @@ async fn build_derivation_refuses_untrusted_input_addressed_and_builds_a_stored_
     r.string();
     r.string();
     r.end();
-    let mut r = session.run(build_derivation_request(C_DRV, B_TEXT)).await;
+    let mut r = session.realizer(Arc::new(StoredOnly)).run(build_derivation_request(C_DRV, B_TEXT)).await;
     r.last();
     assert_eq!(r.u64(), 9);
-    assert!(r.string().contains("valid in the store with the same outputs"));
+    let e = r.string();
+    assert!(e.contains("as sent by the client"), "{e}");
+}
+
+struct StoredOnly;
+
+impl super::DrvRealizer for StoredOnly {
+    fn realize<'a>(
+        &'a self,
+        drv_path: &'a str,
+        _sink: SharedSink,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<String>, String>> + Send + 'a>> {
+        Box::pin(async move { Err(format!("realize of '{drv_path}' was not expected")) })
+    }
+}
+
+struct BuildsSent {
+    store: Arc<TestStore>,
+    got: Mutex<Vec<(String, sui_compat::derivation::Derivation)>>,
+}
+
+impl super::DrvRealizer for BuildsSent {
+    fn realize<'a>(
+        &'a self,
+        drv_path: &'a str,
+        _sink: SharedSink,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<String>, String>> + Send + 'a>> {
+        Box::pin(async move { Err(format!("realize of a stored '{drv_path}' was not expected")) })
+    }
+
+    fn build_basic<'a>(
+        &'a self,
+        drv: &'a sui_compat::derivation::Derivation,
+        drv_path: &'a str,
+        _sink: SharedSink,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<String>, String>> + Send + 'a>> {
+        Box::pin(async move {
+            self.got.lock().unwrap().push((drv_path.to_string(), drv.clone()));
+            let outs: Vec<String> = drv.outputs.values().map(|o| o.path.clone()).collect();
+            for o in &outs {
+                self.store.add(o);
+            }
+            Ok(outs)
+        })
+    }
+}
+
+#[tokio::test]
+async fn build_derivation_builds_a_derivation_the_builder_has_never_seen_as_cppnix_remote_builds_need() {
+    let store = Arc::new(TestStore::default().with(A_OUT));
+    let realizer = Arc::new(BuildsSent { store: store.clone(), got: Mutex::new(Vec::new()) });
+    let session = Session { store: store.clone(), ..Session::new(TestStore::default()) }.realizer(realizer.clone());
+    let mut r = session.clone_untrusted().run(build_derivation_request(C_DRV, C_TEXT)).await;
+    assert!(r.error().contains("not privileged to build input-addressed derivations"));
+    r.end();
+    assert!(realizer.got.lock().unwrap().is_empty());
+
+    let mut r = session.run(build_derivation_request(C_DRV, C_TEXT)).await;
+    r.last();
+    assert_eq!(r.u64(), 0, "Built");
+    assert_eq!(r.string(), "");
+    for _ in 0..6 {
+        r.u64();
+    }
+    assert_eq!(r.u64(), 1);
+    let id = r.string();
+    let realisation = sui_compat::realisation::Realisation::from_json(&r.string()).unwrap();
+    assert!(id.ends_with("!out"), "{id}");
+    assert_eq!(realisation.out_path, C_OUT.rsplit('/').next().unwrap());
+    r.end();
+    assert!(store.has(C_OUT));
+    let got = realizer.got.lock().unwrap();
+    assert_eq!(got.len(), 1);
+    let (path, drv) = &got[0];
+    let sent = sui_compat::derivation::Derivation::parse(C_TEXT.as_bytes()).unwrap();
+    assert_eq!(path, C_DRV);
+    assert!(drv.input_derivations.is_empty());
+    assert_eq!((&drv.outputs, &drv.input_sources, &drv.system, &drv.builder, &drv.args, &drv.env),
+               (&sent.outputs, &sent.input_sources, &sent.system, &sent.builder, &sent.args, &sent.env));
 }
 
 #[tokio::test]

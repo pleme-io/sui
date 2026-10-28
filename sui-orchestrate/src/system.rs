@@ -1293,6 +1293,33 @@ async fn realize_closure(
     }
 }
 
+pub async fn build_basic_observed(
+    drv: &sui_compat::derivation::Derivation,
+    drv_path: &str,
+    sink: sui_compat::activity::SharedSink,
+) -> Result<Vec<String>, SystemError> {
+    use sui_store::StoreAccess;
+    let Some(StoreAccess::Direct(_writable)) = StoreAccess::detect() else {
+        return Err(SystemError::RebuildFailed(format!(
+            "building '{drv_path}' as sent by the client needs write access to the local store"
+        )));
+    };
+    let store = sui_store::LocalStore::open_rw(NIX_DB_PATH)
+        .await
+        .map_err(|e| SystemError::RebuildFailed(format!("store open ({NIX_DB_PATH}): {e}")))?;
+    let store: std::sync::Arc<dyn sui_store::Store> = std::sync::Arc::new(store);
+    let sandbox = sui_build::sandbox::for_host(sui_build::sandbox::SandboxMode::from_nix_conf());
+    let builder = sui_build::LocalBuilder::new(store, sandbox).with_sink(sink);
+    let result = tokio::time::timeout(realize_bound(), builder.build_basic(drv, drv_path))
+        .await
+        .map_err(|_elapsed| SystemError::RebuildFailed(format!("build of {drv_path} exceeded its bound")))?
+        .map_err(|e| SystemError::RebuildFailed(format!("build {drv_path}: {e}")))?;
+    if !result.success {
+        return Err(SystemError::RebuildFailed(format!("build failed for {drv_path}:\n{}", result.log)));
+    }
+    Ok(result.outputs.iter().map(|o| o.to_absolute_path()).collect())
+}
+
 /// Information about a single system generation.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct GenerationInfo {

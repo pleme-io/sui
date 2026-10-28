@@ -27,6 +27,15 @@ pub trait DrvRealizer: Send + Sync {
         drv_path: &'a str,
         sink: SharedSink,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<String>, String>> + Send + 'a>>;
+
+    fn build_basic<'a>(
+        &'a self,
+        _drv: &'a Derivation,
+        drv_path: &'a str,
+        _sink: SharedSink,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<String>, String>> + Send + 'a>> {
+        Box::pin(async move { Err(format!("this realizer cannot build '{drv_path}' as sent by the client")) })
+    }
 }
 
 /// The local pipeline: [`sui_orchestrate::realize_drv_observed`].
@@ -42,6 +51,15 @@ impl DrvRealizer for OrchestrateRealizer {
         Box::pin(async move {
             sui_orchestrate::realize_drv_observed(drv_path, sink).await.map_err(|e| e.to_string())
         })
+    }
+
+    fn build_basic<'a>(
+        &'a self,
+        drv: &'a Derivation,
+        drv_path: &'a str,
+        sink: SharedSink,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<String>, String>> + Send + 'a>> {
+        Box::pin(async move { sui_orchestrate::build_basic_observed(drv, drv_path, sink).await.map_err(|e| e.to_string()) })
     }
 }
 
@@ -94,15 +112,30 @@ where
     /// before the operation's `STDERR_LAST`.
     pub(super) async fn realize_observed(&mut self, targets: Vec<DerivedPath>, mode: u64) -> Result<Vec<BuildOutcome>, ConnectionError> {
         let realizer = self.realizer();
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let sink: SharedSink = Arc::new(FrameSink(tx));
-        let mut task = tokio::spawn(async move {
+        self.observed(move |sink| async move {
             let mut outcomes = Vec::with_capacity(targets.len());
             for target in &targets {
                 outcomes.push(realizer.realize(target, mode, &sink).await);
             }
             outcomes
-        });
+        })
+        .await
+    }
+
+    pub(super) async fn build_basic_observed(&mut self, drv_path: StorePath, drv: Derivation) -> Result<BuildOutcome, ConnectionError> {
+        let realizer = self.realizer();
+        self.observed(move |sink| async move { realizer.build_basic(&drv_path, &drv, &sink).await }).await
+    }
+
+    async fn observed<T, F, Fut>(&mut self, work: F) -> Result<T, ConnectionError>
+    where
+        T: Send + 'static,
+        F: FnOnce(SharedSink) -> Fut,
+        Fut: Future<Output = T> + Send + 'static,
+    {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let sink: SharedSink = Arc::new(FrameSink(tx));
+        let mut task = tokio::spawn(work(sink));
         loop {
             tokio::select! {
                 biased;
@@ -201,6 +234,33 @@ impl<S: Store + 'static> Realizer<S> {
         Ok(true)
     }
 
+    pub(super) async fn build_basic(&self, drv_path: &StorePath, drv: &Derivation, sink: &SharedSink) -> BuildOutcome {
+        let wanted: Vec<(String, String)> = drv.outputs.iter().map(|(n, o)| (n.clone(), o.path.clone())).collect();
+        let realisations = |status: BuildStatus, times_built: u64, start: u64| -> BuildOutcome {
+            match basic_realisations(drv, drv_path, &wanted) {
+                Ok(built) => BuildOutcome { status, error: String::new(), times_built, start, stop: now(), built },
+                Err(e) => BuildOutcome::with_status(BuildStatus::MiscFailure, e),
+            }
+        };
+        match self.all_valid(&wanted).await {
+            Ok(true) => return realisations(BuildStatus::AlreadyValid, 0, now()),
+            Ok(false) => {}
+            Err(e) => return BuildOutcome::with_status(BuildStatus::MiscFailure, e.to_string()),
+        }
+        let start = now();
+        if let Err(e) = self.drvs.build_basic(drv, &drv_path.to_absolute_path(), sink.clone()).await {
+            return BuildOutcome { start, stop: now(), ..BuildOutcome::with_status(BuildStatus::MiscFailure, e) };
+        }
+        match self.all_valid(&wanted).await {
+            Ok(true) => realisations(BuildStatus::Built, 1, start),
+            Ok(false) => BuildOutcome::with_status(
+                BuildStatus::MiscFailure,
+                format!("building '{}' left an output invalid", drv_path.to_absolute_path()),
+            ),
+            Err(e) => BuildOutcome::with_status(BuildStatus::MiscFailure, e.to_string()),
+        }
+    }
+
     pub(super) async fn realize(&self, target: &DerivedPath, mode: u64, sink: &SharedSink) -> BuildOutcome {
         match self.realize_inner(target, mode, sink).await {
             Ok(outcome) => outcome,
@@ -287,4 +347,24 @@ impl<S: Store + 'static> Realizer<S> {
             }
         }
     }
+}
+
+fn basic_realisations(drv: &Derivation, drv_path: &StorePath, outputs: &[(String, String)]) -> Result<Vec<Realisation>, String> {
+    let mut memo = std::collections::HashMap::new();
+    let mut load = |p: &str| -> Result<Derivation, sui_compat::derivation::DerivationError> {
+        Err(sui_compat::derivation::DerivationError::Parse { pos: 0, message: format!("'{p}' is not an input of a derivation sent by the client") })
+    };
+    let hashes = sui_compat::derivation::output_hashes_modulo(drv, true, &mut load, &mut memo).map_err(|e| e.to_string())?;
+    outputs
+        .iter()
+        .map(|(name, path)| {
+            let hex = hashes.get(name).ok_or_else(|| format!("no hash for output '{name}' of '{}'", drv_path.to_absolute_path()))?;
+            Ok(Realisation {
+                id: DrvOutput { drv_hash: format!("sha256:{hex}"), output_name: name.clone() },
+                out_path: path.rsplit('/').next().unwrap_or(path).to_string(),
+                signatures: BTreeSet::new(),
+                dependent_realisations: std::collections::BTreeMap::new(),
+            })
+        })
+        .collect()
 }
