@@ -392,7 +392,7 @@ impl LocalBuilder {
             let output_path = &output.path;
 
             if let Some((_, scratch)) = redirects.get(output_name) {
-                let produced = Path::new(scratch).exists();
+                let produced = std::fs::symlink_metadata(scratch).is_ok();
                 if produced && let Some(checks) = check.as_deref_mut() {
                     let recorded = match StorePath::from_absolute_path(output_path) {
                         Ok(sp) => self.store.query_path_info(&sp).await.ok().flatten(),
@@ -423,7 +423,7 @@ impl LocalBuilder {
             }
 
             // Check if the output path actually exists on disk
-            if !Path::new(output_path).exists() {
+            if std::fs::symlink_metadata(output_path).is_err() {
                 log.push(&format!(
                     "output '{output_name}' at {output_path} was not created by builder"
                 ));
@@ -684,7 +684,7 @@ fn scan_refs(candidates: &[String], output_path: &str) -> Vec<String> {
     if hash_strs.is_empty() {
         return Vec::new();
     }
-    let found = if Path::new(output_path).is_dir() {
+    let found = if !std::fs::symlink_metadata(output_path).is_ok_and(|m| m.is_file()) {
         reference_scan::scan_directory(output_path, &hash_strs).unwrap_or_default()
     } else {
         reference_scan::scan_file(output_path, &hash_strs).unwrap_or_default()
@@ -1920,6 +1920,31 @@ mod tests {
         let dep = "/nix/store/sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6-dep-1.0".to_string();
         assert!(scan_refs(&[dep], output_file.to_str().unwrap()).is_empty());
         assert!(scan_refs(&[], output_file.to_str().unwrap()).is_empty());
+    }
+
+    #[test]
+    fn scan_refs_reads_a_dangling_symlink_output_by_its_target() {
+        let tmp = tempfile::tempdir().unwrap();
+        let output = tmp.path().join("output");
+        let dep = "/nix/store/sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6-absent-dep".to_string();
+        std::os::unix::fs::symlink(format!("{dep}/bin/x"), &output).unwrap();
+        assert_eq!(scan_refs(&[dep.clone()], output.to_str().unwrap()), vec![dep]);
+    }
+
+    #[tokio::test]
+    async fn a_dangling_symlink_output_is_a_produced_output() {
+        let tmp = tempfile::tempdir().unwrap();
+        let out = tmp.path().join("out");
+        let builder = LocalBuilder::new(Arc::new(MockStore::new()), Box::new(NoSandbox))
+            .with_build_dir(tmp.path().join("build").to_str().unwrap().to_string());
+        let drv = make_drv(
+            "/bin/sh",
+            &["-c", &format!("/bin/ln -s /nonexistent/kube/config {}", out.display())],
+            out.to_str().unwrap(),
+        );
+        let result = builder.build(&drv).await.unwrap();
+        assert!(result.is_success(), "{}", result.log);
+        assert_eq!(std::fs::read_link(&out).unwrap(), Path::new("/nonexistent/kube/config"));
     }
 
     #[tokio::test]

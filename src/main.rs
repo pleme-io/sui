@@ -1585,7 +1585,7 @@ async fn store_realise(
     if ignore_unknown {
         let mut kept = Vec::new();
         for (p, o) in wanted {
-            if p.ends_with(".drv") || std::path::Path::new(&p).exists() {
+            if p.ends_with(".drv") || std::fs::symlink_metadata(&p).is_ok() {
                 kept.push((p, o));
             }
         }
@@ -1608,7 +1608,7 @@ async fn store_realise(
             for (p, _) in &wanted {
                 if p.ends_with(".drv") {
                     sui_orchestrate::realize_drv(p).await.map_err(|e| fail(e.to_string()))?;
-                } else if !std::path::Path::new(p).exists() {
+                } else if std::fs::symlink_metadata(p).is_err() {
                     return Err(fail(format!("path '{p}' does not exist and cannot be created")));
                 }
             }
