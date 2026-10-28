@@ -55,7 +55,13 @@ where
                 let paths = self.read_path_set().await?;
                 if lock && write_allowed {
                     for p in &paths {
-                        super::temp_roots::add(&self.state_dir, self.connection_id.id(), &p.to_absolute_path()).map_err(op_err)?;
+                        match self.store.add_temp_root(p).await {
+                            Ok(()) => {}
+                            Err(e) if e.is_not_supported() => {
+                                super::temp_roots::add(&self.state_dir, self.connection_id.id(), &p.to_absolute_path()).map_err(op_err)?;
+                            }
+                            Err(e) => return Err(e.into()),
+                        }
                     }
                 }
                 if substitute && write_allowed && !self.caches.is_empty() {

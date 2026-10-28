@@ -438,6 +438,10 @@ pub trait Store: Send + Sync {
         self.add_nar_at(info, nar).await
     }
 
+    async fn add_temp_root(&self, _path: &StorePath) -> StoreResult<()> {
+        Err(StoreError::NotSupported("add_temp_root is kept by the caller for this backend".to_string()))
+    }
+
     async fn query_derivation_output_map(&self, _drv: &StorePath) -> StoreResult<Option<Vec<(String, String)>>> {
         Err(StoreError::NotSupported(
             "query_derivation_output_map not implemented for this backend".to_string(),

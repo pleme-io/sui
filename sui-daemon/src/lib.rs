@@ -28,6 +28,7 @@ pub mod connection;
 pub mod server;
 pub mod stdio;
 pub mod trust;
+pub mod worker_store;
 
 // ── L1 graph protocol (additive, coexists with cppnix worker protocol) ──
 //

@@ -184,3 +184,86 @@ async fn a_cppnix_client_uses_sui_as_an_ssh_ng_store() {
     let (copied, _) = run(&["path-info", "--json", "--store", &format!("local?root={}", root.display()), &path]);
     assert_eq!(field(&local, "narHash"), field(&copied, "narHash"));
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn nix_store_serve_reaches_the_daemon_for_a_user_without_the_local_store() {
+    let d = daemon(OnePath).await;
+    let program = legacy(d.dir.path(), "nix-store");
+    let store = format!("unix://{}", d.socket.display());
+    let mut child = Command::new(&program)
+        .args(["--serve", "--store", &store])
+        .env_remove("SUI_CONFIG")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let (status, stderr) = tokio::task::spawn_blocking(move || {
+        let mut stdin = child.stdin.take().unwrap();
+        let mut stdout = child.stdout.take().unwrap();
+        wire::write_u64(&mut stdin, wire::SERVE_MAGIC_1).unwrap();
+        wire::write_u64(&mut stdin, wire::SERVE_PROTOCOL_VERSION).unwrap();
+        stdin.flush().unwrap();
+        assert_eq!(wire::read_u64(&mut stdout).unwrap(), wire::SERVE_MAGIC_2);
+        assert_eq!(wire::read_u64(&mut stdout).unwrap(), wire::SERVE_PROTOCOL_VERSION);
+        wire::write_u64(&mut stdin, wire::ServeCommand::QueryValidPaths as u64).unwrap();
+        wire::write_u64(&mut stdin, 0).unwrap();
+        wire::write_u64(&mut stdin, 0).unwrap();
+        wire::write_string_list(&mut stdin, &[KNOWN, "/nix/store/11bgd045z0d4icpbc2yyz4gx48ak44la-absent"]).unwrap();
+        stdin.flush().unwrap();
+        assert_eq!(wire::read_string_list(&mut stdout).unwrap(), vec![KNOWN.to_string()]);
+        wire::write_u64(&mut stdin, wire::ServeCommand::QueryPathInfos as u64).unwrap();
+        wire::write_string_list(&mut stdin, &[KNOWN]).unwrap();
+        stdin.flush().unwrap();
+        assert_eq!(wire::read_string(&mut stdout).unwrap(), KNOWN);
+        assert_eq!(wire::read_string(&mut stdout).unwrap(), "");
+        assert!(wire::read_string_list(&mut stdout).unwrap().is_empty());
+        assert_eq!(wire::read_u64(&mut stdout).unwrap(), 120);
+        assert_eq!(wire::read_u64(&mut stdout).unwrap(), 120);
+        assert_eq!(wire::read_string(&mut stdout).unwrap(), "sha256:1b8m03r63zqhnjf7l5wnldhh7c134ap5vpj0850ymkq1iyzicy5s");
+        drop(stdin);
+        let mut rest = Vec::new();
+        stdout.read_to_end(&mut rest).unwrap();
+        let status = child.wait().unwrap();
+        let mut stderr = String::new();
+        child.stderr.take().unwrap().read_to_string(&mut stderr).unwrap();
+        (status, stderr)
+    })
+    .await
+    .unwrap();
+    assert!(status.success(), "exit {status:?}: {stderr}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cppnix_client_uses_sui_as_an_ssh_store() {
+    let Some(nix) = cppnix() else {
+        eprintln!("skip: no cppnix oracle or no local nix db");
+        return;
+    };
+    let real = sui_store::LocalStore::open("/nix/var/nix/db/db.sqlite").await.unwrap();
+    let d = daemon(real).await;
+    let program = legacy(d.dir.path(), "nix-store");
+    let url = format!(
+        "ssh://localhost?remote-program={}&remote-store=unix://{}",
+        program.display(),
+        d.socket.display()
+    );
+    let run = |args: &[&str]| {
+        let out = Command::new(&nix).args(args).env("NIX_CONFIG", "experimental-features = nix-command").output().unwrap();
+        assert!(out.status.success(), "nix {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    let leaf = d.dir.path().join("sui-serve-leaf");
+    std::fs::write(&leaf, b"sui legacy serve protocol\n").unwrap();
+    let path = run(&["store", "add-file", &leaf.display().to_string()]).trim().to_string();
+    let hash = |json: &str| -> serde_json::Value {
+        let v: serde_json::Value = serde_json::from_str(json).unwrap();
+        v.as_object().and_then(|o| o.values().next().cloned()).unwrap()["narHash"].clone()
+    };
+    let local = run(&["path-info", "--json", &path]);
+    assert_eq!(hash(&local), hash(&run(&["path-info", "--json", "--store", &url, &path])));
+    let root = std::fs::canonicalize(d.dir.path()).unwrap().join("copy-root");
+    let to = format!("local?root={}", root.display());
+    run(&["copy", "--no-check-sigs", "--from", &url, "--to", &to, &path]);
+    assert_eq!(hash(&local), hash(&run(&["path-info", "--json", "--store", &to, &path])));
+}

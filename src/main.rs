@@ -2556,11 +2556,17 @@ async fn store_serve(write: bool) -> Result<(), CliError> {
     )
     .map_err(|e| refuse(e.to_string()))?;
     if let StdioBackend::Forward(socket) = backend {
-        return Err(refuse(format!(
-            "this user reaches the store only through the daemon at {}, and sui does not yet bridge the serve protocol to it; \
-             connect as a user that can open the local store (ssh://root@host) or use ssh-ng://",
-            socket.display()
-        )));
+        let worker = sui_store::worker_client::WorkerConn::connect(&socket, None).map_err(|e| refuse(e.to_string()))?;
+        let store = sui_daemon::worker_store::WorkerStore::new(worker);
+        let realizer = store.realizer();
+        let mut conn = sui_daemon::Connection::new(
+            std::sync::Arc::new(store),
+            tokio::io::stdin(),
+            tokio::io::stdout(),
+            sui_daemon::TrustLevel::Trusted,
+        )
+        .with_realizer(realizer);
+        return conn.serve(write).await.map_err(|e| refuse(e.to_string()));
     }
     let store = LocalStore::open_rw(NIX_DB_PATH).await.map_err(|e| CliError::StoreOpen { path: NIX_DB_PATH, source: e })?;
     let signatures = sui_compat::nix_conf::NixConfig::load()
