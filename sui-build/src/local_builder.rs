@@ -136,6 +136,11 @@ pub fn compare_rebuilt(
     })
 }
 
+enum RemoteOrLocal {
+    Local(BuildError),
+    Connect(String),
+}
+
 /// A builder that executes derivations locally with sandbox isolation.
 pub struct LocalBuilder {
     store: Arc<dyn Store>,
@@ -143,6 +148,7 @@ pub struct LocalBuilder {
     build_dir_base: String,
     sink: SharedSink,
     max_jobs: Option<usize>,
+    offload: Option<Arc<crate::offload::Offload>>,
 }
 
 struct RunningBuild<'a> {
@@ -189,6 +195,26 @@ impl LocalBuilder {
                 .into_owned(),
             sink: activity::noop_sink(),
             max_jobs: None,
+            offload: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_offload(mut self, offload: crate::offload::Offload) -> Self {
+        if offload.policy.active() || offload.policy.host.max_jobs == 0 {
+            self.offload = Some(Arc::new(offload));
+        }
+        self
+    }
+
+    #[must_use]
+    pub fn with_offload_from_nix_conf(self) -> Self {
+        match crate::offload::OffloadPolicy::from_nix_conf() {
+            Ok(policy) => self.with_offload(crate::offload::Offload::new(policy)),
+            Err(e) => {
+                tracing::warn!("remote builders disabled: {e}");
+                self
+            }
         }
     }
 
@@ -462,6 +488,102 @@ impl LocalBuilder {
             log.finish(),
             start.elapsed().as_secs_f64(),
         ))
+    }
+
+    async fn build_remote(
+        &self,
+        offload: &Arc<crate::offload::Offload>,
+        machine: usize,
+        drv_path: &str,
+        drv: &Derivation,
+        index: &std::collections::HashMap<&str, &Derivation>,
+        worker: &Worker,
+    ) -> Result<BuildResult, RemoteOrLocal> {
+        use crate::offload::{fs_closure, run_remote_job, RemoteFailure, RemoteJob};
+        let start = std::time::Instant::now();
+        let uri = offload.policy.machines[machine].store_uri.raw.clone();
+        let failed = |message: String| {
+            Ok(BuildResult::failure(
+                format!("build of '{drv_path}' on '{uri}' failed: {message}"),
+                message,
+                1,
+                start.elapsed().as_secs_f64(),
+            ))
+        };
+        let mut roots = drv.input_sources.clone();
+        for (input, outputs) in &drv.input_derivations {
+            let parsed;
+            let input_drv = match index.get(input.as_str()) {
+                Some(d) => *d,
+                None => match std::fs::read(input).map_err(|e| e.to_string()).and_then(|b| Derivation::parse(&b).map_err(|e| e.to_string())) {
+                    Ok(d) => {
+                        parsed = d;
+                        &parsed
+                    }
+                    Err(e) => return failed(format!("reading input derivation '{input}': {e}")),
+                },
+            };
+            for o in outputs {
+                match input_drv.outputs.get(o) {
+                    Some(out) if !out.path.is_empty() => roots.push(out.path.clone()),
+                    _ => return failed(format!("input derivation '{input}' has no known output '{o}'")),
+                }
+            }
+        }
+        let inputs = match fs_closure(self.store.as_ref(), &roots).await {
+            Ok(i) => i,
+            Err(e) => return failed(e),
+        };
+        let drv_closure = match fs_closure(self.store.as_ref(), &[drv_path.to_string()]).await {
+            Ok(i) => i,
+            Err(e) => return failed(e),
+        };
+        let mut wanted = Vec::new();
+        for out in drv.outputs.values() {
+            let valid = match StorePath::from_absolute_path(&out.path) {
+                Ok(sp) => self.store.is_valid_path(&sp).await.unwrap_or(false),
+                Err(_) => false,
+            };
+            if !valid {
+                wanted.push(out.path.clone());
+            }
+        }
+        if let Err(e) = self.clear_invalid_outputs(drv).await {
+            return failed(e.to_string());
+        }
+        let mut running = RunningBuild::start(worker, drv_path);
+        let substitute = offload.policy.builders_use_substitutes;
+        let job = RemoteJob { drv_path: drv_path.to_string(), drv: drv.clone(), inputs, drv_closure, wanted, substitute };
+        let remote = offload.clone();
+        let fetched = tokio::task::spawn_blocking(move || {
+            let m = &remote.policy.machines[machine];
+            let (mut conn, guard) = remote.connector.open(m, &remote.policy).map_err(|e| RemoteFailure::Connect(e.to_string()))?;
+            let result = run_remote_job(&mut conn, &job, remote.policy.build_options, &remote.policy.real_store_dir);
+            drop(conn);
+            drop(guard);
+            result
+        })
+        .await
+        .map_err(|e| RemoteOrLocal::Local(BuildError::Failed(format!("remote build task for {drv_path}: {e}"))))?;
+        let fetched = match fetched {
+            Ok(f) => f,
+            Err(RemoteFailure::Connect(message)) => return Err(RemoteOrLocal::Connect(message)),
+            Err(RemoteFailure::Build(message)) => return failed(message),
+        };
+        let mut outputs = Vec::new();
+        for (info, nar) in fetched {
+            if let Err(e) = self.store.add_to_store_nar(&info, &nar, false).await {
+                return failed(format!("copying '{}' back: {e}", info.path));
+            }
+        }
+        for out in drv.outputs.values() {
+            if let Ok(sp) = StorePath::from_absolute_path(&out.path) {
+                outputs.push(sp);
+            }
+        }
+        running.succeeded = true;
+        drop(running);
+        Ok(BuildResult::success(outputs, format!("built '{drv_path}' on '{uri}'"), start.elapsed().as_secs_f64()))
     }
 
     /// Check whether all outputs of a derivation already exist in the store.
@@ -745,21 +867,81 @@ impl LocalBuilder {
         }
         let mut ready: std::collections::VecDeque<&str> =
             order.iter().filter(|(p, _)| waiting[p] == 0).map(|(p, _)| *p).collect();
-        let jobs = self.max_jobs.unwrap_or_else(max_jobs);
+        let jobs = match (&self.max_jobs, &self.offload) {
+            (Some(j), _) => *j,
+            (None, Some(o)) => o.policy.host.max_jobs,
+            (None, None) => max_jobs(),
+        };
         let mut running = futures::stream::FuturesUnordered::new();
+        let mut local_running = 0usize;
         let mut failure: Option<(String, BuildResult)> = None;
         loop {
-            while failure.is_none() && running.len() < jobs {
+            let mut deferred: std::collections::VecDeque<&str> = std::collections::VecDeque::new();
+            while failure.is_none() {
                 let Some(drv_path) = ready.pop_front() else { break };
                 let drv = index[drv_path];
-                log.push(&format!("building {drv_path}"));
-                tracing::info!(drv_path, "building locally");
+                let local_free = local_running < jobs;
+                let placement = match &self.offload {
+                    Some(o) => o.place(drv, local_free),
+                    None => crate::offload::Placement::Local,
+                };
                 let index = &index;
                 let worker = &worker;
-                running.push(async move { (drv_path, self.build_one(drv, Some(index), Some(drv_path), worker, None).await) });
+                match placement {
+                    crate::offload::Placement::Remote(machine) => {
+                        let offload = self.offload.clone().expect("a remote placement has an offload");
+                        log.push(&format!("building {drv_path} on {}", offload.policy.machines[machine].store_uri.raw));
+                        tracing::info!(drv_path, machine = %offload.policy.machines[machine].store_uri.raw, "building remotely");
+                        running.push(futures::FutureExt::boxed(async move {
+                            let done = self.build_remote(&offload, machine, drv_path, drv, index, worker).await;
+                            (drv_path, Some(machine), done)
+                        }));
+                    }
+                    crate::offload::Placement::Local if local_free => {
+                        local_running += 1;
+                        log.push(&format!("building {drv_path}"));
+                        tracing::info!(drv_path, "building locally");
+                        running.push(futures::FutureExt::boxed(async move {
+                            let done = self.build_one(drv, Some(index), Some(drv_path), worker, None).await.map_err(RemoteOrLocal::Local);
+                            (drv_path, None, done)
+                        }));
+                    }
+                    crate::offload::Placement::Local | crate::offload::Placement::Postpone => deferred.push_back(drv_path),
+                    crate::offload::Placement::Unbuildable(message) => {
+                        failure = Some((drv_path.to_string(), BuildResult::failure(message.clone(), message, 1, 0.0)));
+                    }
+                }
             }
-            let Some((drv_path, result)) = futures::StreamExt::next(&mut running).await else { break };
-            let result = result?;
+            deferred.extend(ready.drain(..));
+            ready = deferred;
+            let Some((drv_path, machine, result)) = futures::StreamExt::next(&mut running).await else {
+                if failure.is_none() && let Some(stuck) = ready.front() {
+                    let message = format!("waiting for a machine to build '{stuck}', but no build is running that could free one");
+                    failure = Some(((*stuck).to_string(), BuildResult::failure(message.clone(), message, 1, 0.0)));
+                }
+                break;
+            };
+            match machine {
+                Some(m) => {
+                    if let Some(o) = &self.offload {
+                        o.release(m);
+                    }
+                }
+                None => local_running -= 1,
+            }
+            let result = match result {
+                Ok(r) => r,
+                Err(RemoteOrLocal::Local(e)) => return Err(e),
+                Err(RemoteOrLocal::Connect(message)) => {
+                    if let (Some(o), Some(m)) = (&self.offload, machine) {
+                        o.disable(m);
+                        tracing::warn!("cannot build on '{}': {message}", o.policy.machines[m].store_uri.raw);
+                        log.push(&format!("cannot build on '{}': {message}", o.policy.machines[m].store_uri.raw));
+                    }
+                    ready.push_front(drv_path);
+                    continue;
+                }
+            };
             if !result.success {
                 log.push(&format!("FAILED: {drv_path}"));
                 failure.get_or_insert((drv_path.to_string(), result));

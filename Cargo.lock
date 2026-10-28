@@ -6980,6 +6980,7 @@ name = "sui-store"
 version = "0.1.236"
 dependencies = [
  "async-trait",
+ "base64",
  "ed25519-dalek",
  "reqwest 0.12.28",
  "sea-orm",

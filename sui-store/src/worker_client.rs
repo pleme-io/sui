@@ -9,7 +9,7 @@
 //!
 //! Mirrors CppNix `remote-store.cc` at protocol 1.37.
 
-use std::io::{BufReader, BufWriter, Write};
+use std::io::{BufReader, BufWriter, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -142,11 +142,15 @@ impl From<wire::WireError> for WorkerError {
     }
 }
 
+pub type Transport = (Box<dyn Read + Send>, Box<dyn Write + Send>);
+
 /// A connected, handshaked worker-protocol client.
 pub struct WorkerConn {
-    reader: BufReader<UnixStream>,
-    writer: BufWriter<UnixStream>,
+    reader: BufReader<Box<dyn Read + Send>>,
+    writer: BufWriter<Box<dyn Write + Send>>,
     sink: SharedSink,
+    minor: u64,
+    trusted: Option<bool>,
 }
 
 impl std::fmt::Debug for WorkerConn {
@@ -189,9 +193,36 @@ impl WorkerConn {
     }
 
     fn unopened(stream: UnixStream) -> Result<Self, WorkerError> {
-        let reader = BufReader::new(stream.try_clone()?);
-        let writer = BufWriter::new(stream);
-        Ok(Self { reader, writer, sink: activity::noop_sink() })
+        let reader: Box<dyn Read + Send> = Box::new(stream.try_clone()?);
+        let writer: Box<dyn Write + Send> = Box::new(stream);
+        Ok(Self::from_transport((reader, writer)))
+    }
+
+    fn from_transport((reader, writer): Transport) -> Self {
+        Self {
+            reader: BufReader::new(reader),
+            writer: BufWriter::new(writer),
+            sink: activity::noop_sink(),
+            minor: PROTOCOL_VERSION & 0xff,
+            trusted: None,
+        }
+    }
+
+    pub fn over_transport(transport: Transport, options: ClientOptions) -> Result<Self, WorkerError> {
+        let mut conn = Self::from_transport(transport);
+        conn.handshake()?;
+        conn.set_options(options)?;
+        Ok(conn)
+    }
+
+    #[must_use]
+    pub fn minor(&self) -> u64 {
+        self.minor
+    }
+
+    #[must_use]
+    pub fn trusted(&self) -> Option<bool> {
+        self.trusted
     }
 
     /// Deliver the daemon's log and activity frames to `sink` instead of
@@ -237,13 +268,25 @@ impl WorkerConn {
         if magic2 != WORKER_MAGIC_2 {
             return Err(WorkerError::Protocol(format!("bad server magic {magic2:#x}")));
         }
-        let _server_version = self.read_u64()?;
+        let server_version = self.read_u64()?;
+        if server_version >> 8 != 1 || server_version & 0xff < 21 {
+            return Err(WorkerError::Protocol(format!("unsupported daemon protocol {}.{}", server_version >> 8, server_version & 0xff)));
+        }
+        self.minor = (server_version & 0xff).min(PROTOCOL_VERSION & 0xff);
         self.u64(PROTOCOL_VERSION)?;
-        self.u64(0)?; // cpu affinity (obsolete)
-        self.u64(0)?; // reserve space (obsolete)
+        self.u64(0)?;
+        self.u64(0)?;
         self.writer.flush()?;
-        let _daemon_version = self.read_str()?;
-        let _trusted = self.read_u64()?;
+        if self.minor >= 33 {
+            let _daemon_version = self.read_str()?;
+        }
+        if self.minor >= 35 {
+            self.trusted = match self.read_u64()? {
+                1 => Some(true),
+                2 => Some(false),
+                _ => None,
+            };
+        }
         self.drain_stderr()
     }
 
@@ -260,41 +303,25 @@ impl WorkerConn {
         })
     }
 
-    /// Drain stderr frames until `STDERR_LAST`. An error frame becomes
-    /// [`WorkerError::Daemon`]; log and activity frames go to the sink.
     fn drain_stderr(&mut self) -> Result<(), WorkerError> {
-        loop {
-            let msg = self.read_u64()?;
-            match msg {
-                m if m == StderrMsg::Last as u64 => return Ok(()),
-                m if m == StderrMsg::Error as u64 => {
-                    return Err(WorkerError::Daemon(self.read_error_frame()?));
-                }
-                other => match activity::read_frame(&mut self.reader, other)? {
-                    Some(event) => self.sink.emit(event),
-                    None => {
-                        return Err(WorkerError::Protocol(format!(
-                            "unexpected stderr frame {other:#x}"
-                        )));
-                    }
-                },
-            }
-        }
+        drain_stderr(&mut self.reader, &self.sink, self.minor)
     }
 
-    /// The body of an error frame (proto >= 26 struct form) → its message.
-    fn read_error_frame(&mut self) -> Result<String, WorkerError> {
-        let _type = self.read_str()?;
-        let _level = self.read_u64()?;
-        let _name = self.read_str()?;
-        let msg = self.read_str()?;
-        let _have_pos = self.read_u64()?;
-        let ntraces = self.read_u64()?;
-        for _ in 0..ntraces {
-            let _have_pos = self.read_u64()?;
-            let _hint = self.read_str()?;
-        }
-        Ok(msg)
+    fn call_streaming(
+        &mut self,
+        op: WorkerOp,
+        args: impl FnOnce(&mut BufWriter<Box<dyn Write + Send>>) -> Result<(), WorkerError> + Send,
+    ) -> Result<(), WorkerError> {
+        self.u64(op as u64)?;
+        let minor = self.minor;
+        let Self { reader, writer, sink, .. } = self;
+        std::thread::scope(|s| {
+            let drained = s.spawn(move || drain_stderr(reader, sink, minor));
+            let wrote = args(writer).and_then(|()| Ok(writer.flush()?));
+            let drained = drained.join().map_err(|_| WorkerError::Protocol("stderr reader panicked".into()))?;
+            drained?;
+            wrote
+        })
     }
 
     /// `IsValidPath`.
@@ -427,5 +454,269 @@ impl WorkerConn {
         self.call(WorkerOp::AddIndirectRoot, |c| c.str(link))?;
         let _ack = self.read_u64()?;
         Ok(())
+    }
+
+    pub fn query_valid_paths(&mut self, paths: &[String], substitute: bool) -> Result<Vec<String>, WorkerError> {
+        let minor = self.minor;
+        self.call(WorkerOp::QueryValidPaths, |c| {
+            wire::write_string_list(&mut c.writer, paths)?;
+            if minor >= 27 {
+                c.u64(u64::from(substitute))?;
+            }
+            Ok(())
+        })?;
+        Ok(wire::read_string_list(&mut self.reader)?)
+    }
+
+    pub fn query_path_info(&mut self, path: &str) -> Result<Option<RemotePathInfo>, WorkerError> {
+        self.call(WorkerOp::QueryPathInfo, |c| c.str(path))?;
+        if self.read_u64()? == 0 {
+            return Ok(None);
+        }
+        Ok(Some(RemotePathInfo {
+            path: path.to_string(),
+            deriver: self.read_str()?,
+            nar_hash: self.read_str()?,
+            references: wire::read_string_list(&mut self.reader)?,
+            registration_time: self.read_u64()?,
+            nar_size: self.read_u64()?,
+            ultimate: self.read_u64()? != 0,
+            sigs: wire::read_string_list(&mut self.reader)?,
+            ca: self.read_str()?,
+        }))
+    }
+
+    pub fn add_to_store_nar(&mut self, info: &RemotePathInfo, nar: &[u8], dont_check_sigs: bool) -> Result<(), WorkerError> {
+        if self.minor < 23 {
+            return Err(WorkerError::Protocol(format!("AddToStoreNar needs protocol 1.23, the daemon speaks 1.{}", self.minor)));
+        }
+        self.call_streaming(WorkerOp::AddToStoreNar, |w| {
+            write_path_info(w, info)?;
+            wire::write_u64(w, 0)?;
+            wire::write_u64(w, u64::from(dont_check_sigs))?;
+            let mut frames = FrameWriter { inner: w, buf: Vec::with_capacity(FRAME) };
+            frames.write_all(nar)?;
+            frames.finish()
+        })
+    }
+
+    pub fn add_multiple_to_store<I>(&mut self, count: usize, mut items: I, dont_check_sigs: bool) -> Result<(), WorkerError>
+    where
+        I: FnMut(usize) -> Result<(RemotePathInfo, Vec<u8>), WorkerError> + Send,
+    {
+        if self.minor < 32 {
+            for i in 0..count {
+                let (info, nar) = items(i)?;
+                self.add_to_store_nar(&info, &nar, dont_check_sigs)?;
+            }
+            return Ok(());
+        }
+        self.call_streaming(WorkerOp::AddMultipleToStore, |w| {
+            wire::write_u64(w, 0)?;
+            wire::write_u64(w, u64::from(dont_check_sigs))?;
+            let mut frames = FrameWriter { inner: w, buf: Vec::with_capacity(FRAME) };
+            wire::write_u64(&mut frames, count as u64)?;
+            for i in 0..count {
+                let (info, nar) = items(i)?;
+                write_path_info(&mut frames, &info)?;
+                frames.write_all(&nar)?;
+            }
+            frames.finish()
+        })
+    }
+
+    pub fn nar_from_path(&mut self, path: &str) -> Result<Vec<u8>, WorkerError> {
+        self.call(WorkerOp::NarFromPath, |c| c.str(path))?;
+        read_nar_bytes(&mut self.reader, path)
+    }
+
+    pub fn build_derivation(
+        &mut self,
+        drv_path: &str,
+        drv: &sui_compat::derivation::Derivation,
+        input_srcs: &[String],
+    ) -> Result<RemoteBuildResult, WorkerError> {
+        let minor = self.minor;
+        self.call(WorkerOp::BuildDerivation, |c| {
+            c.str(drv_path)?;
+            write_basic_derivation(&mut c.writer, drv, input_srcs)?;
+            c.u64(0)
+        })?;
+        let status = self.read_u64()?;
+        let error_msg = self.read_str()?;
+        if minor >= 29 {
+            for _ in 0..4 {
+                self.read_u64()?;
+            }
+        }
+        if minor >= 37 {
+            for _ in 0..2 {
+                if self.read_u64()? != 0 {
+                    self.read_u64()?;
+                }
+            }
+        }
+        if minor >= 28 {
+            let n = self.read_u64()?;
+            for _ in 0..n {
+                self.read_str()?;
+                self.read_str()?;
+            }
+        }
+        Ok(RemoteBuildResult { status, error_msg })
+    }
+}
+
+fn drain_stderr(reader: &mut impl Read, sink: &SharedSink, minor: u64) -> Result<(), WorkerError> {
+    loop {
+        let msg = wire::read_u64(reader)?;
+        match msg {
+            m if m == StderrMsg::Last as u64 => return Ok(()),
+            m if m == StderrMsg::Error as u64 => return Err(WorkerError::Daemon(read_error_frame(reader, minor)?)),
+            other => match activity::read_frame(reader, other)? {
+                Some(event) => sink.emit(event),
+                None => return Err(WorkerError::Protocol(format!("unexpected stderr frame {other:#x}"))),
+            },
+        }
+    }
+}
+
+fn read_error_frame(reader: &mut impl Read, minor: u64) -> Result<String, WorkerError> {
+    if minor < 26 {
+        let msg = wire::read_string(reader)?;
+        let _status = wire::read_u64(reader)?;
+        return Ok(msg);
+    }
+    let _type = wire::read_string(reader)?;
+    let _level = wire::read_u64(reader)?;
+    let _name = wire::read_string(reader)?;
+    let msg = wire::read_string(reader)?;
+    let _have_pos = wire::read_u64(reader)?;
+    let ntraces = wire::read_u64(reader)?;
+    for _ in 0..ntraces {
+        let _have_pos = wire::read_u64(reader)?;
+        let _hint = wire::read_string(reader)?;
+    }
+    Ok(msg)
+}
+
+pub(crate) fn write_path_info(w: &mut impl Write, info: &RemotePathInfo) -> Result<(), WorkerError> {
+    let hash = info.nar_hash.split_once(':').map_or(info.nar_hash.as_str(), |(_, h)| h);
+    wire::write_string(w, &info.path)?;
+    wire::write_string(w, &info.deriver)?;
+    wire::write_string(w, hash)?;
+    wire::write_string_list(w, &info.references)?;
+    wire::write_u64(w, info.registration_time)?;
+    wire::write_u64(w, info.nar_size)?;
+    wire::write_u64(w, u64::from(info.ultimate))?;
+    wire::write_string_list(w, &info.sigs)?;
+    wire::write_string(w, &info.ca)?;
+    Ok(())
+}
+
+const FRAME: usize = 1 << 20;
+
+struct FrameWriter<'a, W: Write> {
+    inner: &'a mut W,
+    buf: Vec<u8>,
+}
+
+impl<W: Write> FrameWriter<'_, W> {
+    fn emit(&mut self) -> std::io::Result<()> {
+        if !self.buf.is_empty() {
+            self.inner.write_all(&(self.buf.len() as u64).to_le_bytes())?;
+            self.inner.write_all(&self.buf)?;
+            self.buf.clear();
+        }
+        Ok(())
+    }
+
+    fn finish(mut self) -> Result<(), WorkerError> {
+        self.emit()?;
+        self.inner.write_all(&0u64.to_le_bytes())?;
+        Ok(())
+    }
+}
+
+impl<W: Write> Write for FrameWriter<'_, W> {
+    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+        self.buf.extend_from_slice(data);
+        if self.buf.len() >= FRAME {
+            self.emit()?;
+        }
+        Ok(data.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+pub(crate) fn read_nar_bytes(reader: &mut impl Read, path: &str) -> Result<Vec<u8>, WorkerError> {
+    let mut tee = Tee { inner: reader, seen: Vec::new() };
+    sui_compat::nar::NarReader::read_complete(&mut tee).map_err(|e| WorkerError::Protocol(format!("NAR of {path}: {e}")))?;
+    Ok(tee.seen)
+}
+
+pub(crate) fn write_basic_derivation(
+    w: &mut impl Write,
+    drv: &sui_compat::derivation::Derivation,
+    input_srcs: &[String],
+) -> Result<(), WorkerError> {
+    wire::write_u64(w, drv.outputs.len() as u64)?;
+    for (name, out) in &drv.outputs {
+        wire::write_string(w, name)?;
+        wire::write_string(w, &out.path)?;
+        wire::write_string(w, &out.hash_algo)?;
+        wire::write_string(w, &out.hash)?;
+    }
+    wire::write_string_list(w, input_srcs)?;
+    wire::write_string(w, &drv.system)?;
+    wire::write_string(w, &drv.builder)?;
+    wire::write_string_list(w, &drv.args)?;
+    wire::write_u64(w, drv.env.len() as u64)?;
+    for (k, v) in &drv.env {
+        wire::write_string(w, k)?;
+        wire::write_string(w, v)?;
+    }
+    Ok(())
+}
+
+struct Tee<'a, R: Read> {
+    inner: &'a mut R,
+    seen: Vec<u8>,
+}
+
+impl<R: Read> Read for Tee<'_, R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.seen.extend_from_slice(&buf[..n]);
+        Ok(n)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemotePathInfo {
+    pub path: String,
+    pub deriver: String,
+    pub nar_hash: String,
+    pub references: Vec<String>,
+    pub registration_time: u64,
+    pub nar_size: u64,
+    pub ultimate: bool,
+    pub sigs: Vec<String>,
+    pub ca: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteBuildResult {
+    pub status: u64,
+    pub error_msg: String,
+}
+
+impl RemoteBuildResult {
+    #[must_use]
+    pub fn success(&self) -> bool {
+        matches!(self.status, 0 | 1 | 2 | 13)
     }
 }

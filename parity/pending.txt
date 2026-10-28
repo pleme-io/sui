@@ -1,7 +1,7 @@
 # pending-parity: <row id> — <reason>. One line per cppnix row sui does not implement.
 # The gate (src/parity_matrix.rs) fails on an unwaived missing row, on a waived row sui implements,
 # on a waiver naming no row, and when the count differs from pending-ceiling. The ceiling only falls.
-pending-ceiling: 1766
+pending-ceiling: 1751
 pending-parity: nix-command:nix bundle — cli_coverage grades it Stub
 pending-parity: nix-command:nix config check — no `sui config check` subcommand
 pending-parity: nix-command:nix develop — cli_coverage grades it Stub
@@ -1168,8 +1168,6 @@ pending-parity: setting:bash-prompt-suffix — no sui source names "bash-prompt-
 pending-parity: setting:build-dir — no sui source names "build-dir"
 pending-parity: setting:build-hook — no sui source names "build-hook"
 pending-parity: setting:build-poll-interval — no sui source names "build-poll-interval"
-pending-parity: setting:builders — no sui source names "builders"
-pending-parity: setting:builders-use-substitutes — no sui source names "builders-use-substitutes"
 pending-parity: setting:commit-lock-file-summary — no sui source names "commit-lock-file-summary"
 pending-parity: setting:compress-build-log — no sui source names "compress-build-log"
 pending-parity: setting:darwin-log-sandbox-violations — no sui source names "darwin-log-sandbox-violations"
@@ -1183,7 +1181,6 @@ pending-parity: setting:eval-profiler — no sui source names "eval-profiler"
 pending-parity: setting:eval-profiler-frequency — no sui source names "eval-profiler-frequency"
 pending-parity: setting:eval-system — no sui source names "eval-system"
 pending-parity: setting:experimental-features — no sui source names "experimental-features"
-pending-parity: setting:extra-platforms — no sui source names "extra-platforms"
 pending-parity: setting:fsync-metadata — no sui source names "fsync-metadata"
 pending-parity: setting:fsync-store-paths — no sui source names "fsync-store-paths"
 pending-parity: setting:gc-reserved-space — no sui source names "gc-reserved-space"
@@ -1198,11 +1195,9 @@ pending-parity: setting:json-log-path — no sui source names "json-log-path"
 pending-parity: setting:keep-build-log — no sui source names "keep-build-log"
 pending-parity: setting:keep-derivations — no sui source names "keep-derivations"
 pending-parity: setting:keep-env-derivations — no sui source names "keep-env-derivations"
-pending-parity: setting:keep-failed — no sui source names "keep-failed"
 pending-parity: setting:keep-going — no sui source names "keep-going"
 pending-parity: setting:keep-outputs — no sui source names "keep-outputs"
 pending-parity: setting:log-lines — no sui source names "log-lines"
-pending-parity: setting:max-build-log-size — no sui source names "max-build-log-size"
 pending-parity: setting:max-call-depth — no sui source names "max-call-depth"
 pending-parity: setting:max-free — no sui source names "max-free"
 pending-parity: setting:max-substitution-jobs — no sui source names "max-substitution-jobs"
@@ -1233,7 +1228,6 @@ pending-parity: setting:start-id — no sui source names "start-id"
 pending-parity: setting:substitute — no sui source names "substitute"
 pending-parity: setting:substituters — no sui source names "substituters"
 pending-parity: setting:sync-before-registering — no sui source names "sync-before-registering"
-pending-parity: setting:system-features — no sui source names "system-features"
 pending-parity: setting:tarball-ttl — no sui source names "tarball-ttl"
 pending-parity: setting:trace-function-calls — no sui source names "trace-function-calls"
 pending-parity: setting:trace-import-from-derivation — no sui source names "trace-import-from-derivation"
@@ -1727,14 +1721,6 @@ pending-parity: xp-feature:recursive-nix — no sui source names "recursive-nix"
 pending-parity: xp-feature:verified-fetches — no sui source names "verified-fetches"
 pending-parity: builtin:fetchClosure — absent from sui-eval's builtins attrset
 pending-parity: builtin:outputOf — absent from sui-eval's builtins attrset
-pending-parity: machines-field:mandatoryFeatures — no sui claim for this row
-pending-parity: machines-field:maxJobs — no sui claim for this row
-pending-parity: machines-field:speedFactor — no sui claim for this row
-pending-parity: machines-field:sshKey — no sui claim for this row
-pending-parity: machines-field:sshPublicHostKey — no sui claim for this row
-pending-parity: machines-field:storeUri — no sui claim for this row
-pending-parity: machines-field:supportedFeatures — no sui claim for this row
-pending-parity: machines-field:systemTypes — no sui claim for this row
 pending-parity: env-var:EDITOR — no sui source names "EDITOR"
 pending-parity: env-var:GC_INITIAL_HEAP_SIZE — no sui source names "GC_INITIAL_HEAP_SIZE"
 pending-parity: env-var:IN_SYSTEMD — no sui source names "IN_SYSTEMD"
@@ -1759,7 +1745,6 @@ pending-parity: env-var:NIX_REMOTE_SYSTEMS — no sui source names "NIX_REMOTE_S
 pending-parity: env-var:NIX_SHOW_STATS — no sui source names "NIX_SHOW_STATS"
 pending-parity: env-var:NIX_SHOW_STATS_PATH — no sui source names "NIX_SHOW_STATS_PATH"
 pending-parity: env-var:NIX_SHOW_SYMBOLS — no sui source names "NIX_SHOW_SYMBOLS"
-pending-parity: env-var:NIX_SSHOPTS — no sui source names "NIX_SSHOPTS"
 pending-parity: env-var:NIX_SSL_CERT_FILE — no sui source names "NIX_SSL_CERT_FILE"
 pending-parity: env-var:NIX_STATE_DIR — no sui source names "NIX_STATE_DIR"
 pending-parity: env-var:NIX_STATE_HOME — no sui source names "NIX_STATE_HOME"

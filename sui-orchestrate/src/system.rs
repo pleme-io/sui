@@ -1224,7 +1224,7 @@ async fn realize_closure(
 
             let sandbox = sui_build::sandbox::for_host(sui_build::sandbox::SandboxMode::from_nix_conf());
 
-            let builder = sui_build::LocalBuilder::new(store, sandbox).with_sink(sink);
+            let builder = sui_build::LocalBuilder::new(store, sandbox).with_sink(sink).with_offload_from_nix_conf();
             // Substitute-first: the substitutor pulls already-built paths from the
             // cache; the builder only builds what the cache can't supply.
             let build = builder.build_closure(&closure, Some(&substitutor));

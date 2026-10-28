@@ -27,6 +27,7 @@ sha1 = "0.10"
 xz2 = "0.1"
 zstd = "0.13"
 ed25519-dalek.workspace = true
+base64.workspace = true
 # The real Postgres adapter for `PgStore` (durable, content-addressed store).
 # Runtime query API only (no `query!` macro) so it builds offline without a
 # DATABASE_URL. Off by default — the mockable `PgBackend` core needs no driver.

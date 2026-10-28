@@ -9854,7 +9854,7 @@ fn build_ifd_realizer() -> Result<IfdRealizer, String> {
 
             let sandbox = sandbox::for_host(sandbox::SandboxMode::from_nix_conf());
 
-            let builder = LocalBuilder::new(store, sandbox);
+            let builder = LocalBuilder::new(store, sandbox).with_offload_from_nix_conf();
             Ok(IfdRealizer::Direct { rt, builder, substitutor })
         }
         Some(StoreAccess::Daemon(store)) => Ok(IfdRealizer::Daemon { rt, store }),

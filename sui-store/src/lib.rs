@@ -31,6 +31,8 @@ pub mod path_lock;
 pub mod pg;
 pub mod profile;
 pub mod query;
+pub mod serve_client;
+pub mod ssh_store;
 pub mod substitute;
 pub mod traits;
 pub mod worker_client;

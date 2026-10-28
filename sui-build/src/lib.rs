@@ -16,6 +16,7 @@ pub mod closure;
 pub mod convergence_builder;
 pub mod export_graph;
 pub mod local_builder;
+pub mod offload;
 pub mod reference_scan;
 pub mod repair;
 pub mod sandbox;

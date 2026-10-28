@@ -11,6 +11,7 @@ pub mod drv_graph;
 pub mod flake;
 pub mod flake_ref;
 pub mod hash;
+pub mod machines;
 pub mod nar;
 pub mod nar_compression;
 pub mod narinfo;

@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "12611c7c4b9cd61a7f934d259659f16ec86cf766f9cc2d3a1c00ac054b0c401b",
+  "cargo_lock_sha256": "04acd09564e5556ff9d6d2b34ac3b6b0e541688c0c798fd440827065a75e4294",
   "manifest_sha256": {
     "Cargo.toml": "22bdbbb5706c5292c4fd4d314907f67641bf35e4ed2a1587f3589da04e74b1b1",
     "canteiro-types/Cargo.toml": "140edf011d225b89a3a8b8cc15d5212e84c056493e7c8a5b488d1c7e88847388",
@@ -32,7 +32,7 @@
     "sui-registry/Cargo.toml": "ccc4b72ef2e615726d1d271e25171107d5c2cd467db300e8483e7864146402e2",
     "sui-resolve/Cargo.toml": "4c0e6027421517fe0f767296a0f468f7bd20fd8f396ea129aca19304cc2c6b50",
     "sui-spec/Cargo.toml": "399b422687d3f829655470bcf19217eb4028aac56751573d37911e4de0c538b1",
-    "sui-store/Cargo.toml": "9c0e9261212f0d6415868b677dd5bf6130bdfbe510973b02d984593fa38cdc9a",
+    "sui-store/Cargo.toml": "a430140175cf9e0177f3910448c0d963e319b774885bf7cb47c26379c22d8ca4",
     "sui-supercacheci/Cargo.toml": "87a985275575ac75557dfb1e71f06ca32390e4aea5a1921409f9165361f7e272"
   },
   "target_resolves": {
@@ -27497,6 +27497,16 @@
             "optional": false,
             "target": null,
             "tree": "host"
+          },
+          {
+            "name": "base64",
+            "package_key": "base64-0.22.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
           },
           {
             "name": "ed25519_dalek",

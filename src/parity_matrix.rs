@@ -149,6 +149,14 @@ pub const CLAIMS: &[(&str, &str)] = &[
     ("fetcher:tarball", "sui-eval Fetcher::fetch `tarball` arm"),
     ("fetcher:file", "sui-eval Fetcher::fetch `file` arm"),
     ("fetcher:indirect", "sui-eval flake_registry resolves `indirect` refs through the registries"),
+    ("machines-field:storeUri", "sui-compat machines::StoreUri::parse, schemeless hosts become ssh://"),
+    ("machines-field:systemTypes", "sui-compat machines column 1, defaulting to this system"),
+    ("machines-field:sshKey", "sui-compat machines column 2, passed as ssh -i by sui-store ssh_store::invocation"),
+    ("machines-field:maxJobs", "sui-compat machines column 3, the per-machine slot count in sui-build offload::OffloadPolicy::place"),
+    ("machines-field:speedFactor", "sui-compat machines column 4, load per speed factor in sui-build offload::OffloadPolicy::place"),
+    ("machines-field:supportedFeatures", "sui-compat machines column 5, Machine::all_supported"),
+    ("machines-field:mandatoryFeatures", "sui-compat machines column 6, Machine::mandatory_met"),
+    ("machines-field:sshPublicHostKey", "sui-compat machines column 7 (base64 checked), pinned as UserKnownHostsFile by ssh_store::invocation"),
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
