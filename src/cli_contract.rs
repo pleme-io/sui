@@ -328,6 +328,10 @@ pub const CONTRACT: &[(&[&str], &str, Honour)] = &[
     // ── run ─────────────────────────────────────────────────────────────
     (&["run"], "installable", H),
     (&["run"], "args", H),
+    (&["shell"], "installables", H),
+    (&["shell"], "command", H),
+    (&["env", "shell"], "installables", H),
+    (&["env", "shell"], "command", H),
     // ── search ──────────────────────────────────────────────────────────
     (&["search"], "flake_ref", H),
     (&["search"], "query", H),

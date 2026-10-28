@@ -45,6 +45,20 @@
   :notes "Execute a flake app installable")
 
 (defsui-command
+  :name "shell"
+  :nix-equivalent "nix shell"
+  :maturity Working
+  :substrate ("flake" "derivation")
+  :notes "Builds the installables' outputsToInstall, puts their bin dirs and propagated-user-env-packages first on PATH, execs -c COMMAND or $SHELL, as cppnix")
+
+(defsui-command
+  :name "env shell"
+  :nix-equivalent "nix env shell"
+  :maturity Working
+  :substrate ("flake" "derivation")
+  :notes "The same command as `shell`; cppnix 2.31 makes `nix shell` its alias")
+
+(defsui-command
   :name "repl"
   :nix-equivalent "nix repl"
   :maturity Stub

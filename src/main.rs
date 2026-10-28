@@ -222,6 +222,10 @@ enum Commands {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+    /// Run a shell or a command with the installables' bin directories on PATH.
+    Shell(ShellArgs),
+    /// Manipulate the process environment.
+    Env { #[command(subcommand)] command: EnvCommands },
     Search { flake_ref: String, query: String },
     Profile { #[command(subcommand)] command: ProfileCommands },
     Repl { flake_ref: Option<String>, #[arg(long)] file: Option<String> },
@@ -796,6 +800,20 @@ enum StoreCommands {
         #[arg(long)]
         json: bool,
     },
+}
+
+#[derive(clap::Args)]
+struct ShellArgs {
+    installables: Vec<String>,
+    /// Run this command and its arguments instead of $SHELL.
+    #[arg(short = 'c', long = "command", num_args = 1.., allow_hyphen_values = true)]
+    command: Vec<String>,
+}
+
+#[derive(Subcommand)]
+enum EnvCommands {
+    /// Run a shell or a command with the installables' bin directories on PATH.
+    Shell(ShellArgs),
 }
 
 #[derive(Subcommand)]
@@ -9096,6 +9114,9 @@ async fn main() -> Result<(), CliError> {
             let err = std::os::unix::process::CommandExt::exec(std::process::Command::new(&program).args(&args));
             return Err(CliError::Orchestrate { operation: "run", message: format!("exec {program}: {err}") });
         }
+        Commands::Shell(args) | Commands::Env { command: EnvCommands::Shell(args) } => {
+            return cmd_shell(&args);
+        }
         Commands::Search { flake_ref, query } => {
             cmd_search(&flake_ref, &query)?;
         }
@@ -9773,6 +9794,114 @@ fn derivation_program(pkg: &sui_eval::value::NixAttrs, label: &str, operation: &
         sui_eval::realize::realize_output(&drv, &out).map_err(|e| fail(format!("realize {drv}: {e}")))?;
     }
     Ok(format!("{out}/bin/{program}"))
+}
+
+fn installable_out_paths(installable: &str) -> Result<Vec<String>, CliError> {
+    let fail = |message: String| CliError::Orchestrate { operation: "shell", message };
+    if let Some(store) = sui::installable::StoreInstallable::parse(installable)
+        .or_else(|| sui::installable::StoreInstallable::follow_links(installable))
+    {
+        return match store {
+            sui::installable::StoreInstallable::Path(path) => Ok(vec![path]),
+            sui::installable::StoreInstallable::Derivation(drv) => {
+                Err(fail(format!("{drv}: a derivation installable is not supported by `shell` yet; name its output path")))
+            }
+        };
+    }
+    let with_attr = if installable.contains('#') { installable.to_string() } else { format!("{installable}#") };
+    let flake_ref = sui_compat::flake_ref::FlakeRef::parse(&with_attr).map_err(|e| fail(format!("flake ref parse: {e}")))?;
+    let flake_dir = sui_eval::fetcher::resolve_flake_dir(&flake_ref).map_err(|e| fail(format!("fetch: {e}")))?;
+    let attr = if flake_ref.attribute.is_empty() { "default".to_string() } else { flake_ref.attribute.clone() };
+    let system = current_system();
+    let label = installable.to_string();
+    on_eval_stack("sui-shell-eval", move || -> Result<Vec<String>, CliError> {
+        let fail = |message: String| CliError::Orchestrate { operation: "shell", message };
+        let force = |v: &sui_eval::Value| sui_eval::eval::force_value(v).map_err(|e| fail(format!("{label}: {e}")));
+        let result = sui_eval::builtins::evaluate_flake(&flake_dir).map_err(|e| fail(format!("eval: {e}")))?;
+        let segments: Vec<&str> = attr.split('.').collect();
+        let candidates = [
+            [&["packages", system.as_str()][..], &segments].concat(),
+            [&["legacyPackages", system.as_str()][..], &segments].concat(),
+            segments.clone(),
+        ];
+        let Some(found) = candidates.iter().find_map(|path| sui_eval::builtins::navigate_attrs(&result, path).ok()) else {
+            return Err(fail(format!(
+                "flake '{label}' does not provide attribute 'packages.{system}.{attr}', 'legacyPackages.{system}.{attr}' or '{attr}'"
+            )));
+        };
+        let sui_eval::Value::Attrs(pkg) = force(&found)? else {
+            return Err(fail(format!("{label} is not a derivation")));
+        };
+        let text = |attrs: &sui_eval::value::NixAttrs, key: &str| -> Result<Option<String>, CliError> {
+            match attrs.get(key) {
+                Some(v) => Ok(force(&v)?.as_string().ok().map(str::to_string)),
+                None => Ok(None),
+            }
+        };
+        let to_install = match pkg.get("meta").map(|m| force(&m)).transpose()? {
+            Some(sui_eval::Value::Attrs(meta)) => match meta.get("outputsToInstall").map(|o| force(&o)).transpose()? {
+                Some(sui_eval::Value::List(list)) => {
+                    list.iter().map(|o| force(o).map(|v| v.as_string().map(str::to_string).unwrap_or_default())).collect::<Result<Vec<_>, _>>()?
+                }
+                _ => Vec::new(),
+            },
+            _ => Vec::new(),
+        };
+        let outputs = if to_install.is_empty() { vec![text(&pkg, "outputName")?.unwrap_or_else(|| "out".into())] } else { to_install };
+        let drv = text(&pkg, "drvPath")?;
+        let mut paths = Vec::new();
+        for output in outputs {
+            let out = match pkg.get(&output).map(|o| force(&o)).transpose()? {
+                Some(sui_eval::Value::Attrs(o)) => text(&o, "outPath")?,
+                _ if output == "out" => text(&pkg, "outPath")?,
+                _ => None,
+            }
+            .ok_or_else(|| fail(format!("{label} has no output '{output}'")))?;
+            if std::fs::symlink_metadata(&out).is_err() {
+                let drv = drv.clone().ok_or_else(|| fail(format!("{label} has no drvPath")))?;
+                sui_eval::realize::realize_output(&drv, &out).map_err(|e| fail(format!("realize {drv}: {e}")))?;
+            }
+            paths.push(out);
+        }
+        Ok(paths)
+    })?
+}
+
+fn cmd_shell(args: &ShellArgs) -> Result<(), CliError> {
+    let installables = if args.installables.is_empty() { vec![".".to_string()] } else { args.installables.clone() };
+    let mut todo = std::collections::VecDeque::new();
+    for installable in &installables {
+        todo.extend(installable_out_paths(installable)?);
+    }
+    let mut done = std::collections::BTreeSet::new();
+    let mut additions = Vec::new();
+    while let Some(path) = todo.pop_front() {
+        if !done.insert(path.clone()) {
+            continue;
+        }
+        let bin = format!("{path}/bin");
+        if std::path::Path::new(&bin).exists() {
+            additions.push(bin);
+        }
+        let propagated = std::path::Path::new(&path).join("nix-support/propagated-user-env-packages");
+        if std::fs::metadata(&propagated).is_ok_and(|m| m.is_file()) {
+            let listed = std::fs::read_to_string(&propagated)?;
+            todo.extend(listed.split_whitespace().map(str::to_string));
+        }
+    }
+    let unix_path: Vec<String> = additions
+        .into_iter()
+        .chain(std::env::var("PATH").unwrap_or_default().split(':').filter(|p| !p.is_empty()).map(str::to_string))
+        .collect();
+    let command = if args.command.is_empty() {
+        vec![std::env::var("SHELL").unwrap_or_else(|_| "bash".into())]
+    } else {
+        args.command.clone()
+    };
+    let path = unix_path.join(":");
+    let program = command[0].clone();
+    let err = std::os::unix::process::CommandExt::exec(std::process::Command::new(&program).args(&command[1..]).env("PATH", &path));
+    Err(CliError::Orchestrate { operation: "shell", message: format!("exec {program}: {err}") })
 }
 
 fn find_flake_root(start: &std::path::Path) -> Result<std::path::PathBuf, CliError> {

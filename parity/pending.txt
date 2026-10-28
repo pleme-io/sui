@@ -1,13 +1,11 @@
 # pending-parity: <row id> — <reason>. One line per cppnix row sui does not implement.
 # The gate (src/parity_matrix.rs) fails on an unwaived missing row, on a waived row sui implements,
 # on a waiver naming no row, and when the count differs from pending-ceiling. The ceiling only falls.
-pending-ceiling: 1745
+pending-ceiling: 1740
 pending-parity: nix-command:nix bundle — cli_coverage grades it Stub
 pending-parity: nix-command:nix config check — no `sui config check` subcommand
 pending-parity: nix-command:nix develop — cli_coverage grades it Stub
 pending-parity: nix-command:nix edit — cli_coverage grades it Stub
-pending-parity: nix-command:nix env — no `sui env` subcommand
-pending-parity: nix-command:nix env shell — no `sui env shell` subcommand
 pending-parity: nix-command:nix flake info — no `sui flake info` subcommand
 pending-parity: nix-command:nix flake prefetch-inputs — no `sui flake prefetch-inputs` subcommand
 pending-parity: nix-command:nix formatter — no `sui formatter` subcommand
@@ -197,34 +195,32 @@ pending-parity: nix-flag:nix edit --recreate-lock-file — cli_coverage grades i
 pending-parity: nix-flag:nix edit --reference-lock-file — cli_coverage grades it Stub
 pending-parity: nix-flag:nix edit --repair — cli_coverage grades it Stub
 pending-parity: nix-flag:nix edit --update-input — cli_coverage grades it Stub
-pending-parity: nix-flag:nix env shell --arg — no `sui env shell` subcommand
-pending-parity: nix-flag:nix env shell --arg-from-file — no `sui env shell` subcommand
-pending-parity: nix-flag:nix env shell --arg-from-stdin — no `sui env shell` subcommand
-pending-parity: nix-flag:nix env shell --argstr — no `sui env shell` subcommand
-pending-parity: nix-flag:nix env shell --command — no `sui env shell` subcommand
-pending-parity: nix-flag:nix env shell --commit-lock-file — no `sui env shell` subcommand
-pending-parity: nix-flag:nix env shell --debugger — no `sui env shell` subcommand
-pending-parity: nix-flag:nix env shell --eval-store — no `sui env shell` subcommand
-pending-parity: nix-flag:nix env shell --expr — no `sui env shell` subcommand
-pending-parity: nix-flag:nix env shell --file — no `sui env shell` subcommand
-pending-parity: nix-flag:nix env shell --ignore-env — no `sui env shell` subcommand
-pending-parity: nix-flag:nix env shell --impure — no `sui env shell` subcommand
-pending-parity: nix-flag:nix env shell --include — no `sui env shell` subcommand
-pending-parity: nix-flag:nix env shell --inputs-from — no `sui env shell` subcommand
-pending-parity: nix-flag:nix env shell --keep-env-var — no `sui env shell` subcommand
-pending-parity: nix-flag:nix env shell --no-registries — no `sui env shell` subcommand
-pending-parity: nix-flag:nix env shell --no-update-lock-file — no `sui env shell` subcommand
-pending-parity: nix-flag:nix env shell --no-write-lock-file — no `sui env shell` subcommand
-pending-parity: nix-flag:nix env shell --output-lock-file — no `sui env shell` subcommand
-pending-parity: nix-flag:nix env shell --override-flake — no `sui env shell` subcommand
-pending-parity: nix-flag:nix env shell --override-input — no `sui env shell` subcommand
-pending-parity: nix-flag:nix env shell --recreate-lock-file — no `sui env shell` subcommand
-pending-parity: nix-flag:nix env shell --reference-lock-file — no `sui env shell` subcommand
-pending-parity: nix-flag:nix env shell --repair — no `sui env shell` subcommand
-pending-parity: nix-flag:nix env shell --set-env-var — no `sui env shell` subcommand
-pending-parity: nix-flag:nix env shell --stdin — no `sui env shell` subcommand
-pending-parity: nix-flag:nix env shell --unset-env-var — no `sui env shell` subcommand
-pending-parity: nix-flag:nix env shell --update-input — no `sui env shell` subcommand
+pending-parity: nix-flag:nix env shell --arg — `sui env shell` declares no --arg
+pending-parity: nix-flag:nix env shell --arg-from-file — `sui env shell` declares no --arg-from-file
+pending-parity: nix-flag:nix env shell --arg-from-stdin — `sui env shell` declares no --arg-from-stdin
+pending-parity: nix-flag:nix env shell --argstr — `sui env shell` declares no --argstr
+pending-parity: nix-flag:nix env shell --commit-lock-file — `sui env shell` declares no --commit-lock-file
+pending-parity: nix-flag:nix env shell --debugger — `sui env shell` declares no --debugger
+pending-parity: nix-flag:nix env shell --eval-store — `sui env shell` declares no --eval-store
+pending-parity: nix-flag:nix env shell --expr — `sui env shell` declares no --expr
+pending-parity: nix-flag:nix env shell --file — `sui env shell` declares no --file
+pending-parity: nix-flag:nix env shell --ignore-env — `sui env shell` declares no --ignore-env
+pending-parity: nix-flag:nix env shell --include — `sui env shell` declares no --include
+pending-parity: nix-flag:nix env shell --inputs-from — `sui env shell` declares no --inputs-from
+pending-parity: nix-flag:nix env shell --keep-env-var — `sui env shell` declares no --keep-env-var
+pending-parity: nix-flag:nix env shell --no-registries — `sui env shell` declares no --no-registries
+pending-parity: nix-flag:nix env shell --no-update-lock-file — `sui env shell` declares no --no-update-lock-file
+pending-parity: nix-flag:nix env shell --no-write-lock-file — `sui env shell` declares no --no-write-lock-file
+pending-parity: nix-flag:nix env shell --output-lock-file — `sui env shell` declares no --output-lock-file
+pending-parity: nix-flag:nix env shell --override-flake — `sui env shell` declares no --override-flake
+pending-parity: nix-flag:nix env shell --override-input — `sui env shell` declares no --override-input
+pending-parity: nix-flag:nix env shell --recreate-lock-file — `sui env shell` declares no --recreate-lock-file
+pending-parity: nix-flag:nix env shell --reference-lock-file — `sui env shell` declares no --reference-lock-file
+pending-parity: nix-flag:nix env shell --repair — `sui env shell` declares no --repair
+pending-parity: nix-flag:nix env shell --set-env-var — `sui env shell` declares no --set-env-var
+pending-parity: nix-flag:nix env shell --stdin — `sui env shell` declares no --stdin
+pending-parity: nix-flag:nix env shell --unset-env-var — `sui env shell` declares no --unset-env-var
+pending-parity: nix-flag:nix env shell --update-input — `sui env shell` declares no --update-input
 pending-parity: nix-flag:nix eval --arg — `sui eval` declares no --arg
 pending-parity: nix-flag:nix eval --arg-from-file — `sui eval` declares no --arg-from-file
 pending-parity: nix-flag:nix eval --arg-from-stdin — `sui eval` declares no --arg-from-stdin
@@ -1744,6 +1740,5 @@ pending-parity: env-var:NIX_STATE_DIR — no sui source names "NIX_STATE_DIR"
 pending-parity: env-var:NIX_STATE_HOME — no sui source names "NIX_STATE_HOME"
 pending-parity: env-var:NOCOLOR — no sui source names "NOCOLOR"
 pending-parity: env-var:PRINT_PATH — no sui source names "PRINT_PATH"
-pending-parity: env-var:SHELL — no sui source names "SHELL"
 pending-parity: env-var:USERPROFILE — no sui source names "USERPROFILE"
 pending-parity: env-var:XDG_DATA_HOME — no sui source names "XDG_DATA_HOME"
