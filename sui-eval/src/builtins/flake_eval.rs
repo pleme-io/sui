@@ -42,7 +42,29 @@ struct FlakeContext {
 /// are resolved against THIS lock (see [`FlakeContext`]), never their own.
 pub fn evaluate_flake(flake_dir: &std::path::Path) -> Result<Value, EvalError> {
     let tree = crate::git_tree::tracked_tree(flake_dir)?;
-    evaluate_flake_ctx(&tree, None)
+    evaluate_flake_ctx(&tree, root_lock_override(flake_dir)?)
+}
+
+static ROOT_LOCK_OVERRIDE: std::sync::Mutex<Option<(std::path::PathBuf, String)>> = std::sync::Mutex::new(None);
+
+fn canonical_dir(dir: &std::path::Path) -> std::path::PathBuf {
+    dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf())
+}
+
+pub fn set_root_lock_override(flake_dir: &std::path::Path, lock_json: String) {
+    *ROOT_LOCK_OVERRIDE.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some((canonical_dir(flake_dir), lock_json));
+}
+
+fn root_lock_override(flake_dir: &std::path::Path) -> Result<Option<FlakeContext>, EvalError> {
+    let guard = ROOT_LOCK_OVERRIDE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some((dir, json)) = guard.as_ref() else { return Ok(None) };
+    if *dir != canonical_dir(flake_dir) {
+        return Ok(None);
+    }
+    let lock = sui_compat::flake::FlakeLock::parse(json)
+        .map_err(|e| EvalError::TypeError(format!("getFlake: invalid overridden lock: {e}")))?;
+    let node_name = lock.root.clone();
+    Ok(Some(FlakeContext { lock: std::rc::Rc::new(lock), node_name }))
 }
 
 /// Depth-guarded flake evaluation with an optional inherited lock context.
@@ -168,7 +190,12 @@ fn evaluate_flake_inner(
                     if locked.source_type == "path" {
                         let p = locked.path.clone().unwrap_or_default();
                         read_dir = Some(std::path::PathBuf::from(&p));
-                        p
+                        match &locked.nar_hash {
+                            Some(_) if p.starts_with('/') && std::path::Path::new(&p).is_dir() => sui_compat::source::nar_hash_source_tree(std::path::Path::new(&p), "source")
+                                .map_err(|e| EvalError::TypeError(format!("nar-hashing flake input '{input_name}' tree at {p}: {e}")))?
+                                .store_path,
+                            _ => p,
+                        }
                     } else {
                         // Byte-parity root (marquee darwin proof, 2026-07-11):
                         // CppNix copies every fetched flake input tree INTO the

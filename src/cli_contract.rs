@@ -277,6 +277,7 @@ pub const CONTRACT: &[(&[&str], &str, Honour)] = &[
     (&["eval"], "read_only", H),
     (&["eval"], "apply", H),
     (&["eval"], "file_flag", H),
+    (&["eval"], "override_input", H),
     // ── instantiate ─────────────────────────────────────────────────────
     (&["instantiate"], "files", H),
     (&["instantiate"], "expr", H),
@@ -301,6 +302,7 @@ pub const CONTRACT: &[(&[&str], &str, Honour)] = &[
     // Names the link base `link_build_outputs` creates and registers as an
     // indirect GC root (CppNix `addPermRoot`).
     (&["build"], "out_link", H),
+    (&["build"], "override_input", H),
     (
         &["build"],
         "rebuild",
@@ -591,7 +593,9 @@ pub const CONTRACT: &[(&[&str], &str, Honour)] = &[
     (&["flake", "show"], "json", H),
     (&["flake", "update"], "inputs", H),
     (&["flake", "check"], "flake_ref", H),
+    (&["flake", "check"], "override_input", H),
     (&["flake", "lock"], "flake_ref", H),
+    (&["flake", "lock"], "override_input", H),
     (
         &["flake", "check"],
         "no_build",

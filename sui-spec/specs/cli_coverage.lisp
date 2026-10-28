@@ -14,14 +14,14 @@
   :nix-equivalent "nix eval"
   :maturity Working
   :substrate ("flake")
-  :notes "Expression + flake evaluation, JSON / raw output, --apply, -f")
+  :notes "Expression + flake evaluation, JSON / raw output, --apply, -f, --override-input")
 
 (defsui-command
   :name "build"
   :nix-equivalent "nix build"
   :maturity Working
   :substrate ("derivation" "fetcher" "substituter")
-  :notes "Derivation realization with --no-link / --print-out-paths / --dry-run / --out-link")
+  :notes "Derivation realization with --no-link / --print-out-paths / --dry-run / --out-link / --override-input")
 
 (defsui-command
   :name "instantiate"

@@ -75,7 +75,7 @@ pub use derivation::build_derivation;
 /// `SUI_PARITY_STRICT` un-blinding collector — enumerate swallowed
 /// force-error drops for the byte-parity campaign (default unchanged).
 pub use derivation::parity_strict;
-pub use flake_eval::{evaluate_flake, evaluate_flake_attr};
+pub use flake_eval::{evaluate_flake, evaluate_flake_attr, set_root_lock_override};
 pub(crate) use flake_eval::{FLAKE_EVAL_DEPTH, MAX_FLAKE_EVAL_DEPTH};
 pub use import_cache::clear_import_cache;
 pub(crate) use import_cache::IMPORT_CACHE;

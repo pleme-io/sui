@@ -112,6 +112,8 @@ enum Commands {
         #[arg(long)] apply: Option<String>,
         /// Evaluate this Nix file; the positional argument is then an attribute path in it.
         #[arg(long = "file", short = 'f')] file_flag: Option<String>,
+        /// Use this flake ref for the named input, without writing flake.lock.
+        #[arg(long, num_args = 2, value_names = ["INPUT_PATH", "FLAKE_URL"], action = clap::ArgAction::Append)] override_input: Vec<String>,
     },
     Build {
         installable: Option<String>,
@@ -130,6 +132,8 @@ enum Commands {
         #[arg(short = 'o', long)] out_link: Option<String>,
         /// [REFUSED] Force a rebuild to check reproducibility.
         #[arg(long)] rebuild: bool,
+        /// Use this flake ref for the named input, without writing flake.lock.
+        #[arg(long, num_args = 2, value_names = ["INPUT_PATH", "FLAKE_URL"], action = clap::ArgAction::Append)] override_input: Vec<String>,
     },
     /// Instantiate Nix files or expressions: print each selection's `.drv`
     /// path, its value (`--eval`), or build it (`--realise`). The engine behind
@@ -805,9 +809,13 @@ enum FlakeCommands {
     Check {
         flake_ref: Option<String>,
         #[arg(long)] no_build: bool,
+        /// Use this flake ref for the named input, without writing flake.lock.
+        #[arg(long, num_args = 2, value_names = ["INPUT_PATH", "FLAKE_URL"], action = clap::ArgAction::Append)] override_input: Vec<String>,
     },
     Lock {
         flake_ref: Option<String>,
+        /// Lock the named input to this flake ref; the declared ref stays the original.
+        #[arg(long, num_args = 2, value_names = ["INPUT_PATH", "FLAKE_URL"], action = clap::ArgAction::Append)] override_input: Vec<String>,
     },
     Metadata { flake_ref: Option<String>, #[arg(long)] json: bool },
     Init { #[arg(short = 't', long)] template: Option<String> },
@@ -7611,7 +7619,7 @@ async fn main() -> Result<(), CliError> {
             }
         }
 
-        Commands::Eval { expression, json, raw, expr_flag, max_force_depth, no_eval_cache, read_only, apply, file_flag } => {
+        Commands::Eval { expression, json, raw, expr_flag, max_force_depth, no_eval_cache, read_only, apply, file_flag, override_input } => {
             let (expression, expr_flag) = match file_flag {
                 Some(file) => {
                     let selection = sui::installable::Selection {
@@ -7642,7 +7650,11 @@ async fn main() -> Result<(), CliError> {
                 (Some(raw), _) => raw,
                 (None, Some(s)) => match s.split_once('#') {
                     Some((flake, attr)) => {
-                        installable_flake_ref = Some(flake.to_string());
+                        if override_input.is_empty() {
+                            installable_flake_ref = Some(flake.to_string());
+                        } else {
+                            apply_override_inputs(&resolve_flake_dir(Some(flake))?, &override_input)?;
+                        }
                         format!(
                             "(builtins.getFlake \"{}\").{}",
                             normalize_flake_ref(flake),
@@ -7973,7 +7985,7 @@ async fn main() -> Result<(), CliError> {
             }
         }
 
-        Commands::Build { installable: installable_opt, file, expr, no_link, print_out_paths, json, dry_run, out_link, rebuild: _ } => {
+        Commands::Build { installable: installable_opt, file, expr, no_link, print_out_paths, json, dry_run, out_link, rebuild: _, override_input } => {
             let request = BuildRequest { no_link, print_out_paths, json, dry_run, out_link };
             let source = match (file, expr) {
                 (Some(f), _) => Some(sui::installable::Source::File(sui::installable::resolve_file(&f, &std::env::current_dir()?))),
@@ -8036,6 +8048,7 @@ async fn main() -> Result<(), CliError> {
                         message: format!("fetch: {e}"),
                     }
                 })?;
+                apply_override_inputs(&flake_dir, &override_input)?;
                 let attr = flake_ref.attribute.clone();
                 let drv_path = on_eval_stack("sui-build-eval", move || -> Result<Result<String, String>, CliError> {
                     let err = |stage: &str, e: String| CliError::Orchestrate { operation: "build", message: format!("{stage}: {e}") };
@@ -8226,8 +8239,9 @@ async fn main() -> Result<(), CliError> {
                     }
                 }
             }
-            FlakeCommands::Check { flake_ref, no_build: _ } => {
+            FlakeCommands::Check { flake_ref, no_build: _, override_input } => {
                 let flake_dir = resolve_flake_dir(flake_ref.as_deref())?;
+                apply_override_inputs(&flake_dir, &override_input)?;
                 let result =
                     sui_eval::flake_lock::check_flake(&flake_dir).map_err(|e| {
                         CliError::Orchestrate {
@@ -8244,9 +8258,10 @@ async fn main() -> Result<(), CliError> {
                     std::process::exit(1);
                 }
             }
-            FlakeCommands::Lock { flake_ref } => {
+            FlakeCommands::Lock { flake_ref, override_input } => {
                 let flake_dir = resolve_flake_dir(flake_ref.as_deref())?;
-                let locked = sui_eval::flake_locker::lock_flake(&flake_dir, &sui_eval::flake_locker::LockFlags::default())
+                let flags = sui_eval::flake_locker::LockFlags { overrides: override_input_flags(&override_input)?, ..Default::default() };
+                let locked = sui_eval::flake_locker::lock_flake(&flake_dir, &flags)
                     .map_err(|e| CliError::Orchestrate { operation: "flake lock", message: e.to_string() })?;
                 for warning in &locked.warnings {
                     eprintln!("warning: {warning}");
@@ -10057,6 +10072,59 @@ fn install_ifd_hook() -> sui_eval::realize::RealizeHookGuard {
 /// three handlers were not blocked, they simply never called it. Routing
 /// them there is the real fix; this is the honest floor until then, and it
 /// converts a wrong answer into a clear one.
+fn override_input_flags(pairs: &[String]) -> Result<Vec<(Vec<String>, String)>, CliError> {
+    let cwd = std::env::current_dir()?;
+    pairs
+        .chunks(2)
+        .map(|pair| {
+            let (input, url) = (&pair[0], pair.get(1).map_or("", String::as_str));
+            Ok((sui_eval::flake_locker::parse_input_path(input), absolute_override_url(url, &cwd)?))
+        })
+        .collect()
+}
+
+fn absolute_override_url(url: &str, cwd: &std::path::Path) -> Result<String, CliError> {
+    let (explicit, rest) = url.strip_prefix("path:").map_or((false, url), |r| (true, r));
+    let is_path = explicit || rest.starts_with('/') || rest.starts_with("./") || rest.starts_with("../") || rest == "." || rest == "..";
+    if !is_path {
+        return Ok(url.to_string());
+    }
+    let joined = if rest.starts_with('/') { rest.to_string() } else { format!("{}/{rest}", cwd.display()) };
+    let abs = sui_compat::canon_path::CanonPath::new(&joined).as_str().to_string();
+    if !explicit && std::path::Path::new(&abs).ancestors().any(|d| d.join(".git").exists()) {
+        return Err(CliError::NotImplemented(format!(
+            "--override-input {url}: a bare path inside a git work tree is a git+file input in cppnix, which sui does not lock yet; pass path:{abs}"
+        )));
+    }
+    Ok(format!("path:{abs}"))
+}
+
+fn flake_ref_display(flake_dir: &std::path::Path) -> String {
+    let dir = flake_dir.canonicalize().unwrap_or_else(|_| flake_dir.to_path_buf());
+    if dir.ancestors().any(|d| d.join(".git").exists()) {
+        format!("git+file://{}", dir.display())
+    } else {
+        format!("path:{}", dir.display())
+    }
+}
+
+fn apply_override_inputs(flake_dir: &std::path::Path, pairs: &[String]) -> Result<(), CliError> {
+    if pairs.is_empty() {
+        return Ok(());
+    }
+    let flags = sui_eval::flake_locker::LockFlags { overrides: override_input_flags(pairs)?, ..Default::default() };
+    let locked = sui_eval::flake_locker::lock_flake(flake_dir, &flags)
+        .map_err(|e| CliError::Orchestrate { operation: "override-input", message: e.to_string() })?;
+    for warning in &locked.warnings {
+        eprintln!("warning: {warning}");
+    }
+    if locked.changed {
+        eprintln!("warning: not writing modified lock file of flake '{}':\n{}", flake_ref_display(flake_dir), locked.diff.trim_end());
+    }
+    sui_eval::builtins::set_root_lock_override(flake_dir, locked.json);
+    Ok(())
+}
+
 fn resolve_flake_dir(flake_ref: Option<&str>) -> Result<std::path::PathBuf, CliError> {
     let raw = match flake_ref {
         None | Some("") | Some(".") => return Ok(std::env::current_dir()?),
