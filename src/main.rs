@@ -147,6 +147,8 @@ enum Commands {
         #[arg(short = 'A', long = "attr")] attrs: Vec<String>,
         /// Print each selection's value instead of its `.drv` path.
         #[arg(long)] eval: bool,
+        /// Print the parsed expression as cppnix shows it, without evaluating it.
+        #[arg(long)] parse: bool,
         /// Force the whole value (sui always does).
         #[arg(long)] strict: bool,
         /// Print values as JSON.
@@ -8101,8 +8103,11 @@ async fn main() -> Result<(), CliError> {
             }
         }
 
-        Commands::Instantiate { files, expr, attrs, eval, strict: _, json, realise, no_link, out_link } => {
+        Commands::Instantiate { files, expr, attrs, eval, parse, strict: _, json, realise, no_link, out_link } => {
             let cwd = std::env::current_dir()?;
+            if parse {
+                return parse_and_show(&files, expr, &cwd);
+            }
             let no_files = files.is_empty();
             let (drvs, rest): (Vec<String>, Vec<String>) = files
                 .into_iter()
@@ -9950,6 +9955,31 @@ fn cmd_shell(args: &ShellArgs) -> Result<(), CliError> {
     let program = command[0].clone();
     let err = std::os::unix::process::CommandExt::exec(std::process::Command::new(&program).args(&command[1..]).env("PATH", &path));
     Err(CliError::Orchestrate { operation: "shell", message: format!("exec {program}: {err}") })
+}
+
+fn parse_and_show(files: &[String], expr: bool, cwd: &std::path::Path) -> Result<(), CliError> {
+    let globals = sui::parse_show::globals();
+    let inputs: Vec<String> = if files.is_empty() && !expr { vec!["default.nix".into()] } else { files.to_vec() };
+    for input in inputs {
+        let (source, base, origin) = if expr {
+            (input.clone(), cwd.to_path_buf(), "«string»".to_string())
+        } else {
+            let path = cwd.join(&input);
+            let path = if path.is_dir() { path.join("default.nix") } else { path };
+            let source = std::fs::read_to_string(&path)
+                .map_err(|e| CliError::Orchestrate { operation: "parse", message: format!("reading {}: {e}", path.display()) })?;
+            let base = path.parent().map_or_else(|| cwd.to_path_buf(), std::path::Path::to_path_buf);
+            (source, base, path.display().to_string())
+        };
+        match sui::parse_show::Shower::new(&base, globals.clone()).show(&source) {
+            Ok(shown) => println!("{shown}"),
+            Err(e) => {
+                eprintln!("{}", e.render(&source, &origin));
+                std::process::exit(1);
+            }
+        }
+    }
+    Ok(())
 }
 
 fn find_flake_root(start: &std::path::Path) -> Result<std::path::PathBuf, CliError> {

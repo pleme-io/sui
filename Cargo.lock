@@ -4436,6 +4436,8 @@ dependencies = [
  "prost",
  "rand 0.8.6",
  "regex",
+ "rnix",
+ "rowan",
  "serde",
  "serde_json",
  "sha2",

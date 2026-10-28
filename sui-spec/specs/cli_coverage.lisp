@@ -28,7 +28,7 @@
   :nix-equivalent "nix-instantiate"
   :maturity Working
   :substrate ("derivation")
-  :notes "The engine behind nix-instantiate and nix-build (--realise): files, -f/--file, --expr, -A and --apply, as cppnix")
+  :notes "The engine behind nix-instantiate and nix-build (--realise): files, -f/--file, --expr, -A and --apply, and --parse printing the expression as cppnix's show, as cppnix")
 
 (defsui-command
   :name "develop"

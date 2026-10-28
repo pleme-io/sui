@@ -284,6 +284,7 @@ pub const CONTRACT: &[(&[&str], &str, Honour)] = &[
     (&["instantiate"], "attrs", H),
     (&["instantiate"], "eval", H),
     // Vacuous: sui forces the whole value on every eval.
+    (&["instantiate"], "parse", H),
     (&["instantiate"], "strict", H),
     (&["instantiate"], "json", H),
     (&["instantiate"], "realise", H),

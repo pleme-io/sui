@@ -12,6 +12,7 @@ pub mod flake_archive;
 pub mod dev_env;
 pub mod child_usage;
 pub mod flip_probe;
+pub mod parse_show;
 
 /// Default path to the Nix `SQLite` database.
 pub const NIX_DB_PATH: &str = "/nix/var/nix/db/db.sqlite";

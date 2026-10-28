@@ -1,8 +1,8 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "2ff2a6e38eb195e6c4fda7d3760a74cb0e7d2dd2d8d38ed4a696f55fc2184d29",
+  "cargo_lock_sha256": "5d15a7d4303bc1827968ce2ed09cf53cc1c2aa5020bcda6003ee23ebed60ce2b",
   "manifest_sha256": {
-    "Cargo.toml": "0d435607eb6dd3309008fa4439d8638ed18f79bdb30e0a3884904d4b9459a9dd",
+    "Cargo.toml": "2714b00a8b2d3137787d066cd111db552216337d6578e1c333b8a86eff9b3e6b",
     "canteiro-types/Cargo.toml": "140edf011d225b89a3a8b8cc15d5212e84c056493e7c8a5b488d1c7e88847388",
     "sui-bigorna/Cargo.toml": "271fc14c6a889aa1386124ef2ed91bee58f437241fd91d1f2da549c496112270",
     "sui-build/Cargo.toml": "201469821dceb1d6a1d813f7fe91d6cd1cdfc3afd4291920743d080fb1b35d23",
@@ -15700,6 +15700,26 @@
           {
             "name": "regex",
             "package_key": "regex-1.12.4",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "rnix",
+            "package_key": "rnix-0.14.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "rowan",
+            "package_key": "rowan-0.16.1",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
