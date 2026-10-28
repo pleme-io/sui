@@ -1,7 +1,7 @@
 # pending-parity: <row id> — <reason>. One line per cppnix row sui does not implement.
 # The gate (src/parity_matrix.rs) fails on an unwaived missing row, on a waived row sui implements,
 # on a waiver naming no row, and when the count differs from pending-ceiling. The ceiling only falls.
-pending-ceiling: 1747
+pending-ceiling: 1745
 pending-parity: nix-command:nix bundle — cli_coverage grades it Stub
 pending-parity: nix-command:nix config check — no `sui config check` subcommand
 pending-parity: nix-command:nix develop — cli_coverage grades it Stub
@@ -10,7 +10,6 @@ pending-parity: nix-command:nix env — no `sui env` subcommand
 pending-parity: nix-command:nix env shell — no `sui env shell` subcommand
 pending-parity: nix-command:nix flake info — no `sui flake info` subcommand
 pending-parity: nix-command:nix flake prefetch-inputs — no `sui flake prefetch-inputs` subcommand
-pending-parity: nix-command:nix fmt — cli_coverage grades it Stub
 pending-parity: nix-command:nix formatter — no `sui formatter` subcommand
 pending-parity: nix-command:nix formatter build — no `sui formatter build` subcommand
 pending-parity: nix-command:nix formatter run — no `sui formatter run` subcommand
@@ -472,31 +471,30 @@ pending-parity: nix-flag:nix flake update --recreate-lock-file — `sui flake up
 pending-parity: nix-flag:nix flake update --reference-lock-file — `sui flake update` declares no --reference-lock-file
 pending-parity: nix-flag:nix flake update --repair — `sui flake update` declares no --repair
 pending-parity: nix-flag:nix flake update --update-input — `sui flake update` declares no --update-input
-pending-parity: nix-flag:nix fmt --arg — cli_coverage grades it Stub
-pending-parity: nix-flag:nix fmt --arg-from-file — cli_coverage grades it Stub
-pending-parity: nix-flag:nix fmt --arg-from-stdin — cli_coverage grades it Stub
-pending-parity: nix-flag:nix fmt --argstr — cli_coverage grades it Stub
-pending-parity: nix-flag:nix fmt --commit-lock-file — cli_coverage grades it Stub
-pending-parity: nix-flag:nix fmt --debugger — cli_coverage grades it Stub
-pending-parity: nix-flag:nix fmt --eval-store — cli_coverage grades it Stub
-pending-parity: nix-flag:nix fmt --expr — cli_coverage grades it Stub
-pending-parity: nix-flag:nix fmt --file — cli_coverage grades it Stub
-pending-parity: nix-flag:nix fmt --impure — cli_coverage grades it Stub
-pending-parity: nix-flag:nix fmt --include — cli_coverage grades it Stub
-pending-parity: nix-flag:nix fmt --inputs-from — cli_coverage grades it Stub
-pending-parity: nix-flag:nix fmt --json — cli_coverage grades it Stub
-pending-parity: nix-flag:nix fmt --no-pretty — cli_coverage grades it Stub
-pending-parity: nix-flag:nix fmt --no-registries — cli_coverage grades it Stub
-pending-parity: nix-flag:nix fmt --no-update-lock-file — cli_coverage grades it Stub
-pending-parity: nix-flag:nix fmt --no-write-lock-file — cli_coverage grades it Stub
-pending-parity: nix-flag:nix fmt --output-lock-file — cli_coverage grades it Stub
-pending-parity: nix-flag:nix fmt --override-flake — cli_coverage grades it Stub
-pending-parity: nix-flag:nix fmt --override-input — cli_coverage grades it Stub
-pending-parity: nix-flag:nix fmt --pretty — cli_coverage grades it Stub
-pending-parity: nix-flag:nix fmt --recreate-lock-file — cli_coverage grades it Stub
-pending-parity: nix-flag:nix fmt --reference-lock-file — cli_coverage grades it Stub
-pending-parity: nix-flag:nix fmt --repair — cli_coverage grades it Stub
-pending-parity: nix-flag:nix fmt --update-input — cli_coverage grades it Stub
+pending-parity: nix-flag:nix fmt --arg — `sui fmt` declares no --arg
+pending-parity: nix-flag:nix fmt --arg-from-file — `sui fmt` declares no --arg-from-file
+pending-parity: nix-flag:nix fmt --arg-from-stdin — `sui fmt` declares no --arg-from-stdin
+pending-parity: nix-flag:nix fmt --argstr — `sui fmt` declares no --argstr
+pending-parity: nix-flag:nix fmt --commit-lock-file — `sui fmt` declares no --commit-lock-file
+pending-parity: nix-flag:nix fmt --debugger — `sui fmt` declares no --debugger
+pending-parity: nix-flag:nix fmt --eval-store — `sui fmt` declares no --eval-store
+pending-parity: nix-flag:nix fmt --expr — `sui fmt` declares no --expr
+pending-parity: nix-flag:nix fmt --file — `sui fmt` declares no --file
+pending-parity: nix-flag:nix fmt --include — `sui fmt` declares no --include
+pending-parity: nix-flag:nix fmt --inputs-from — `sui fmt` declares no --inputs-from
+pending-parity: nix-flag:nix fmt --json — `sui fmt` declares no --json
+pending-parity: nix-flag:nix fmt --no-pretty — `sui fmt` declares no --no-pretty
+pending-parity: nix-flag:nix fmt --no-registries — `sui fmt` declares no --no-registries
+pending-parity: nix-flag:nix fmt --no-update-lock-file — `sui fmt` declares no --no-update-lock-file
+pending-parity: nix-flag:nix fmt --no-write-lock-file — `sui fmt` declares no --no-write-lock-file
+pending-parity: nix-flag:nix fmt --output-lock-file — `sui fmt` declares no --output-lock-file
+pending-parity: nix-flag:nix fmt --override-flake — `sui fmt` declares no --override-flake
+pending-parity: nix-flag:nix fmt --override-input — `sui fmt` declares no --override-input
+pending-parity: nix-flag:nix fmt --pretty — `sui fmt` declares no --pretty
+pending-parity: nix-flag:nix fmt --recreate-lock-file — `sui fmt` declares no --recreate-lock-file
+pending-parity: nix-flag:nix fmt --reference-lock-file — `sui fmt` declares no --reference-lock-file
+pending-parity: nix-flag:nix fmt --repair — `sui fmt` declares no --repair
+pending-parity: nix-flag:nix fmt --update-input — `sui fmt` declares no --update-input
 pending-parity: nix-flag:nix formatter build --arg — no `sui formatter build` subcommand
 pending-parity: nix-flag:nix formatter build --arg-from-file — no `sui formatter build` subcommand
 pending-parity: nix-flag:nix formatter build --arg-from-stdin — no `sui formatter build` subcommand

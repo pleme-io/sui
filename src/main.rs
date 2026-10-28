@@ -264,7 +264,8 @@ enum Commands {
     Log { installable: String },
     #[command(name = "store-diff-closures", aliases = ["diff-closures"])] DiffClosures { before: String, after: String },
     #[command(name = "upgrade-nix")] UpgradeNix { #[arg(long)] nix_store_paths_url: Option<String> },
-    Fmt { files: Vec<String>, #[arg(long)] check: bool },
+    /// Run the flake's `formatter.<system>` with these arguments.
+    Fmt { args: Vec<String> },
     Registry { #[command(subcommand)] command: RegistryCommands },
     /// Run as a NATS build agent (ro platform builder)
     Agent {
@@ -9215,7 +9216,9 @@ async fn main() -> Result<(), CliError> {
         Commands::Log { installable } => { return Err(CliError::NotImplemented(format!("log {installable}"))); }
         Commands::DiffClosures { before, after } => { return Err(CliError::NotImplemented(format!("diff-closures {before} {after}"))); }
         Commands::UpgradeNix { .. } => { return Err(CliError::NotImplemented("upgrade-nix".into())); }
-        Commands::Fmt { files, check } => { return Err(CliError::NotImplemented(format!("fmt ({}){}", if check { "check" } else { "format" }, if files.is_empty() { String::new() } else { format!(" {}", files.join(" ")) }))); }
+        Commands::Fmt { args } => {
+            return cmd_fmt(&args);
+        }
         Commands::Registry { command } => match command {
             RegistryCommands::List { json } => {
                 registry_list(json)?;
@@ -9738,32 +9741,78 @@ fn package_program(result: &sui_eval::Value, system: &str, attr: &str) -> Result
         path.extend(attr.split('.'));
         let Ok(found) = sui_eval::builtins::navigate_attrs(result, &path) else { continue };
         let sui_eval::Value::Attrs(pkg) = force(&found)? else { continue };
-        let text = |key: &str| -> Result<Option<String>, CliError> {
-            match pkg.get(key) {
-                Some(v) => Ok(force(&v)?.as_string().ok().map(str::to_string)),
-                None => Ok(None),
-            }
-        };
-        let main_program = match pkg.get("meta") {
-            Some(meta) => match force(&meta)? {
-                sui_eval::Value::Attrs(m) => match m.get("mainProgram") {
-                    Some(v) => force(&v)?.as_string().ok().map(str::to_string),
-                    None => None,
-                },
-                _ => None,
-            },
-            None => None,
-        };
-        let name = text("name")?.unwrap_or_default();
-        let program = main_program.or(text("pname")?).unwrap_or_else(|| drv_name_without_version(&name));
-        let out = text("outPath")?.ok_or_else(|| fail(format!("{prefix}.{system}.{attr} has no outPath")))?;
-        if !std::path::Path::new(&out).exists() {
-            let drv = text("drvPath")?.ok_or_else(|| fail(format!("{prefix}.{system}.{attr} has no drvPath")))?;
-            sui_eval::realize::realize_output(&drv, &out).map_err(|e| fail(format!("realize {drv}: {e}")))?;
-        }
-        return Ok(Some(format!("{out}/bin/{program}")));
+        return derivation_program(&pkg, &format!("{prefix}.{system}.{attr}"), "run").map(Some);
     }
     Ok(None)
+}
+
+fn derivation_program(pkg: &sui_eval::value::NixAttrs, label: &str, operation: &'static str) -> Result<String, CliError> {
+    let fail = |message: String| CliError::Orchestrate { operation, message };
+    let force = |v: &sui_eval::Value| sui_eval::eval::force_value(v).map_err(|e| fail(format!("{label}: {e}")));
+    let text = |key: &str| -> Result<Option<String>, CliError> {
+        match pkg.get(key) {
+            Some(v) => Ok(force(&v)?.as_string().ok().map(str::to_string)),
+            None => Ok(None),
+        }
+    };
+    let main_program = match pkg.get("meta") {
+        Some(meta) => match force(&meta)? {
+            sui_eval::Value::Attrs(m) => match m.get("mainProgram") {
+                Some(v) => force(&v)?.as_string().ok().map(str::to_string),
+                None => None,
+            },
+            _ => None,
+        },
+        None => None,
+    };
+    let name = text("name")?.unwrap_or_default();
+    let program = main_program.or(text("pname")?).unwrap_or_else(|| drv_name_without_version(&name));
+    let out = text("outPath")?.ok_or_else(|| fail(format!("{label} has no outPath")))?;
+    if std::fs::symlink_metadata(&out).is_err() {
+        let drv = text("drvPath")?.ok_or_else(|| fail(format!("{label} has no drvPath")))?;
+        sui_eval::realize::realize_output(&drv, &out).map_err(|e| fail(format!("realize {drv}: {e}")))?;
+    }
+    Ok(format!("{out}/bin/{program}"))
+}
+
+fn find_flake_root(start: &std::path::Path) -> Result<std::path::PathBuf, CliError> {
+    let mut dir = start.to_path_buf();
+    if !dir.join("flake.nix").exists() {
+        eprintln!("path {:?} does not contain a 'flake.nix', searching up", dir.display().to_string());
+    }
+    loop {
+        if dir.join("flake.nix").exists() {
+            return Ok(dir);
+        }
+        if dir.join(".git").exists() || !dir.pop() {
+            return Err(CliError::MissingArgument(format!(
+                "path {:?} is not part of a flake (neither it nor its parent directories contain a 'flake.nix' file)",
+                start.display().to_string()
+            )));
+        }
+    }
+}
+
+fn cmd_fmt(args: &[String]) -> Result<(), CliError> {
+    let flake_dir = find_flake_root(&std::env::current_dir()?)?;
+    let system = current_system();
+    let attr = format!("formatter.{system}");
+    let dir = flake_dir.clone();
+    let program = on_eval_stack("sui-fmt-eval", move || -> Result<String, CliError> {
+        let fail = |message: String| CliError::Orchestrate { operation: "fmt", message };
+        let result = sui_eval::builtins::evaluate_flake(&dir).map_err(|e| fail(format!("eval: {e}")))?;
+        let found = sui_eval::builtins::navigate_attrs(&result, &["formatter", &system]).map_err(|_| {
+            fail(format!("flake 'path:{}' does not provide attribute 'formatter.{system}'", dir.display()))
+        })?;
+        let sui_eval::Value::Attrs(pkg) = sui_eval::eval::force_value(&found).map_err(|e| fail(format!("formatter.{system}: {e}")))? else {
+            return Err(fail(format!("formatter.{system} is not a derivation")));
+        };
+        derivation_program(&pkg, &format!("formatter.{system}"), "fmt")
+    })??;
+    let err = std::os::unix::process::CommandExt::exec(
+        std::process::Command::new(&program).args(args).env("PRJ_ROOT", &flake_dir),
+    );
+    Err(CliError::Orchestrate { operation: "fmt", message: format!("exec {program} ({attr}): {err}") })
 }
 
 #[cfg(test)]

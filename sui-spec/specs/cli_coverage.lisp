@@ -131,9 +131,9 @@
 (defsui-command
   :name "fmt"
   :nix-equivalent "nix fmt"
-  :maturity Stub
-  :substrate ()
-  :notes "Format Nix files via flake formatter attr")
+  :maturity Working
+  :substrate ("flake")
+  :notes "Finds the flake upward from the cwd, builds formatter.<system> and execs it with the arguments and PRJ_ROOT, as cppnix")
 
 (defsui-command
   :name "search"
