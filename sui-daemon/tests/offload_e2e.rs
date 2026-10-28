@@ -176,6 +176,59 @@ async fn a_foreign_derivation_builds_on_the_remote_and_its_output_comes_back_reg
     assert_eq!(std::fs::read(local.real(OUT)).unwrap(), b"built remotely\n");
 }
 
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::Digest as _;
+    sha2::Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
+}
+
+#[test]
+#[ignore = "needs SUI_OFFLOAD_PROOF_MACHINE, a machines line naming a reachable builder"]
+fn proof_a_real_builder_builds_a_derivation_and_sends_its_output_back() {
+    let Ok(line) = std::env::var("SUI_OFFLOAD_PROOF_MACHINE") else { return };
+    let system = std::env::var("SUI_OFFLOAD_PROOF_SYSTEM").unwrap_or_else(|_| "aarch64-darwin".into());
+    let none = |_: &std::path::Path| -> std::io::Result<String> { Err(std::io::ErrorKind::NotFound.into()) };
+    let machine = sui_compat::machines::parse_config(&BTreeSet::from([system.clone()]), &line, &none).unwrap().remove(0);
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+    let name = format!("sui-offload-proof-{nanos}");
+    let mut drv = Derivation {
+        outputs: BTreeMap::from([("out".to_string(), DerivationOutput { path: String::new(), hash_algo: String::new(), hash: String::new() })]),
+        input_derivations: BTreeMap::new(),
+        input_sources: vec![],
+        system: system.clone(),
+        builder: "/bin/sh".into(),
+        args: vec!["-c".into(), format!("echo built-by-a-remote-builder-{nanos} > $out")],
+        env: BTreeMap::from([
+            ("builder".to_string(), "/bin/sh".to_string()),
+            ("name".to_string(), name.clone()),
+            ("out".to_string(), String::new()),
+            ("system".to_string(), system),
+        ]),
+    };
+    let out = sui_compat::store_path::compute_output_path(&sha256_hex(drv.masked().serialize().as_bytes()), "out", &name);
+    drv.outputs.get_mut("out").unwrap().path = out.clone();
+    drv.env.insert("out".into(), out.clone());
+    let drv_path = sui_compat::store_path::make_store_path_in(
+        sui_compat::store_path::DEFAULT_STORE_DIR,
+        "text",
+        &format!("sha256:{}", sha256_hex(drv.serialize().as_bytes())),
+        &format!("{name}.drv"),
+    );
+    let options = ClientOptions { max_jobs: 1, max_silent_time: 0, build_cores: 0 };
+    let mut session = sui_store::ssh_store::open_remote(&machine, &sui_store::ssh_store::SshOptions::from_env(), options).unwrap();
+    let job = sui_build::offload::RemoteJob { drv_path: drv_path.clone(), drv, inputs: vec![], drv_closure: vec![], wanted: vec![out.clone()], substitute: false };
+    let fetched = sui_build::offload::run_remote_job(&mut session.conn, &job, sui_store::serve_client::BuildOptions::default(), std::path::Path::new("/nix/store"))
+        .unwrap_or_else(|e| panic!("{e:?}: {}", session.child.stderr_text()));
+    assert_eq!(fetched.len(), 1);
+    let (info, nar) = &fetched[0];
+    assert_eq!(info.path, out);
+    assert_eq!(info.nar_hash, format!("sha256:{}", NixHash::of(HashAlgorithm::Sha256, nar).to_nix32()));
+    let scratch = tempfile::tempdir().unwrap();
+    sui_compat::nar::unpack_nar(nar, &scratch.path().join("out")).unwrap();
+    let text = std::fs::read_to_string(scratch.path().join("out")).unwrap();
+    assert_eq!(text, format!("built-by-a-remote-builder-{nanos}\n"));
+    eprintln!("{} built {drv_path} -> {out}: {}", machine.store_uri.raw, text.trim());
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_unreachable_builder_is_disabled_and_the_build_falls_back_to_the_next_machine() {
     struct Refuses;

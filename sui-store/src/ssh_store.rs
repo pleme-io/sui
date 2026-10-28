@@ -15,6 +15,7 @@ pub struct SshInvocation {
     pub args: Vec<String>,
     pub known_hosts: Option<(PathBuf, String)>,
     pub fake: bool,
+    pub master_check: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -114,7 +115,7 @@ pub fn invocation(machine: &Machine, opts: &SshOptions, scratch: &std::path::Pat
     if authority == "localhost" {
         let mut it = command.into_iter();
         let program = it.next().unwrap_or_default();
-        return SshInvocation { program, args: it.collect(), known_hosts: None, fake: true };
+        return SshInvocation { program, args: it.collect(), known_hosts: None, fake: true, master_check: None };
     }
     let key = uri.params.get("ssh-key").cloned().unwrap_or_else(|| machine.ssh_key.clone());
     let host_key = uri
@@ -148,11 +149,25 @@ pub fn invocation(machine: &Machine, opts: &SshOptions, scratch: &std::path::Pat
     if let Some(t) = opts.connect_timeout {
         args.push(format!("-oConnectTimeout={}", t.as_secs().max(1)));
     }
+    let mut master_check = vec!["-O".to_string(), "check".to_string(), uri.host_and_user()];
+    master_check.extend(args.iter().skip(2).cloned());
     args.push("-oPermitLocalCommand=yes".to_string());
     args.push("-oLocalCommand=echo started".to_string());
     args.push("--".to_string());
     args.extend(command);
-    SshInvocation { program: "ssh".to_string(), args, known_hosts, fake: false }
+    SshInvocation { program: "ssh".to_string(), args, known_hosts, fake: false, master_check: Some(master_check) }
+}
+
+fn master_running(inv: &SshInvocation) -> bool {
+    inv.master_check.as_ref().is_some_and(|check| {
+        Command::new(&inv.program)
+            .args(check)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    })
 }
 
 pub struct SshChild {
@@ -184,6 +199,7 @@ pub fn spawn(inv: &SshInvocation) -> Result<(Pipes, SshChild), WorkerError> {
     if let Some((file, line)) = &inv.known_hosts {
         std::fs::write(file, line)?;
     }
+    let await_started = !inv.fake && !master_running(inv);
     let mut command = Command::new(&inv.program);
     command
         .args(&inv.args)
@@ -214,7 +230,7 @@ pub fn spawn(inv: &SshInvocation) -> Result<(Pipes, SshChild), WorkerError> {
     let stdout = child.stdout.take().ok_or_else(|| WorkerError::Protocol("ssh child has no stdout".into()))?;
     let guard = SshChild { child, stderr, known_hosts: inv.known_hosts.as_ref().map(|(f, _)| f.clone()) };
     let mut reader = BufReader::new(stdout);
-    if !inv.fake {
+    if await_started {
         let mut line = String::new();
         let _ = reader.read_line(&mut line);
         if line.trim_end() != "started" {
@@ -405,11 +421,36 @@ mod tests {
             args: vec!["-c".into(), "echo nope >&2; exit 255".into()],
             known_hosts: None,
             fake: false,
+            master_check: Some(vec!["-c".into(), "exit 255".into()]),
         };
         let start = std::time::Instant::now();
         let err = spawn(&inv).err().expect("no started line is a failure");
         assert!(err.to_string().contains("failed to start SSH connection"), "{err}");
         assert!(err.to_string().contains("nope"), "{err}");
         assert!(start.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn a_running_control_master_means_no_started_line_is_awaited() {
+        let inv = SshInvocation {
+            program: "sh".into(),
+            args: vec!["-c".into(), "printf proto".into()],
+            known_hosts: None,
+            fake: false,
+            master_check: Some(vec!["-c".into(), "exit 0".into()]),
+        };
+        let ((mut reader, _writer), _child) = spawn(&inv).expect("a mux client prints no started line");
+        let mut got = String::new();
+        reader.read_to_string(&mut got).unwrap();
+        assert_eq!(got, "proto");
+    }
+
+    #[test]
+    fn the_master_check_carries_the_connection_options() {
+        let inv = invocation(&machine("ssh-ng://root@cid:2222 aarch64-darwin /k/id"), &opts(), std::path::Path::new("/tmp"));
+        assert_eq!(
+            inv.master_check.unwrap(),
+            ["-O", "check", "root@cid", "-oBatchMode=yes", "-i", "/k/id", "-p2222", "-oConnectTimeout=5"]
+        );
     }
 }
