@@ -130,6 +130,22 @@ struct Fold {
     board: Board<String>,
     kinds: HashMap<u64, ActivityType>,
     parents: HashMap<u64, u64>,
+    names: HashMap<u64, String>,
+}
+
+static PRINT_BUILD_LOGS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_print_build_logs(on: bool) {
+    PRINT_BUILD_LOGS.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn print_build_logs() -> bool {
+    PRINT_BUILD_LOGS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+#[must_use]
+pub fn build_log_line(name: &str, line: &str) -> String {
+    format!("{name}> {line}")
 }
 
 impl Fold {
@@ -142,6 +158,7 @@ impl Fold {
                     ActivityType::Build => {
                         let drv = text_field(&fields, 0).unwrap_or_default().to_string();
                         let name = display_name(&drv);
+                        self.names.insert(id, name.clone());
                         self.board.begin(id, Some(&drv), name, LaneKind::Work, now);
                     }
                     ActivityType::Substitute => {
@@ -152,6 +169,11 @@ impl Fold {
                 }
             }
             ActivityEvent::Result { id, result, fields } => match (result, self.kinds.get(&id).copied()) {
+                (ResultType::BuildLogLine, Some(ActivityType::Build)) if print_build_logs() => {
+                    if let (Some(name), Some(line)) = (self.names.get(&id), text_field(&fields, 0)) {
+                        let _ = live.commit(&vec![Fragment::plain(build_log_line(name, line))]);
+                    }
+                }
                 (ResultType::SetPhase, _) => {
                     if let Some(phase) = text_field(&fields, 0) {
                         self.board.phase(id, phase);
@@ -176,6 +198,7 @@ impl Fold {
                 _ => {}
             },
             ActivityEvent::Stop { id } => {
+                self.names.remove(&id);
                 self.kinds.remove(&id);
                 self.parents.remove(&id);
                 if let Some(finished) = self.board.end(id, true, now) {
@@ -204,7 +227,7 @@ fn paint(rx: &mpsc::Receiver<Msg>, labels: Labels) {
     let caps = Capability::cached(Stream::Stderr);
     let mut live = Live::stderr();
     let start = Instant::now();
-    let mut fold = Fold { board: Board::new(labels), kinds: HashMap::new(), parents: HashMap::new() };
+    let mut fold = Fold { board: Board::new(labels), kinds: HashMap::new(), parents: HashMap::new(), names: HashMap::new() };
     loop {
         match rx.recv_timeout(Duration::from_millis(80)) {
             Ok(Msg::Plan(inputs)) => {
@@ -276,7 +299,7 @@ mod tests {
     #[test]
     fn transfer_bytes_land_on_the_substitution_that_owns_them() {
         let labels = Labels { owner: "sui".into(), verb: "v".into(), target: "t".into(), work: "w".into(), transfer: "f".into() };
-        let mut fold = Fold { board: Board::new(labels), kinds: HashMap::new(), parents: HashMap::new() };
+        let mut fold = Fold { board: Board::new(labels), kinds: HashMap::new(), parents: HashMap::new(), names: HashMap::new() };
         let caps = Capability::plain();
         let mut live = Live::new(kazari::MockEnvironment::new(caps));
         let start = |id, activity, fields, parent| ActivityEvent::Start {
@@ -301,5 +324,31 @@ mod tests {
         assert_eq!(fold.board.lanes[&1].name, "src");
         fold.apply(ActivityEvent::Stop { id: 1 }, Duration::from_secs(1), &mut live, &caps);
         assert_eq!((fold.board.transferred, fold.board.bytes), (1, 100));
+    }
+
+    #[test]
+    fn print_build_logs_streams_each_build_line_prefixed_with_the_derivation_name() {
+        let labels = || Labels { owner: "sui".into(), verb: "v".into(), target: "t".into(), work: "w".into(), transfer: "f".into() };
+        let caps = Capability::plain();
+        let run = |on: bool| {
+            set_print_build_logs(on);
+            let mut fold = Fold { board: Board::new(labels()), kinds: HashMap::new(), parents: HashMap::new(), names: HashMap::new() };
+            let mut live = Live::new(kazari::MockEnvironment::new(caps));
+            let drv = "/nix/store/0123456789abcdfghijklmnpqrsvwxc-fail8.drv".to_string();
+            fold.apply(
+                ActivityEvent::Start { id: 7, level: sui_compat::activity::Verbosity::Info, activity: ActivityType::Build, text: String::new(), fields: vec![Field::String(drv)], parent: 0 },
+                Duration::ZERO,
+                &mut live,
+                &caps,
+            );
+            for line in ["ok - test 1", "ok - test 2"] {
+                fold.apply(ActivityEvent::Result { id: 7, result: ResultType::BuildLogLine, fields: vec![Field::String(line.into())] }, Duration::ZERO, &mut live, &caps);
+            }
+            live.env().rendered()
+        };
+        let shown = run(true);
+        assert!(shown.contains("fail8> ok - test 1") && shown.contains("fail8> ok - test 2"), "{shown}");
+        assert!(!run(false).contains("fail8> ok - test 1"));
+        set_print_build_logs(false);
     }
 }

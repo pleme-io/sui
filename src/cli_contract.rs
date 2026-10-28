@@ -128,16 +128,7 @@ pub const CONTRACT: &[(&[&str], &str, Honour)] = &[
     (&[], "vm", H),
     (&[], "no_vm", H),
     (&[], "show_trace", H),
-    (
-        &[],
-        "print_build_logs",
-        Honour::Refused {
-            since: NOW,
-            reason: "-L/--print-build-logs asks sui to BREAK the silence around a build; sui \
-                     reads it nowhere, so the operator gets exactly the silence the flag exists \
-                     to end and concludes the build printed nothing",
-        },
-    ),
+    (&[], "print_build_logs", H),
     // The eleven flags below were absorbed so `alias nix=sui` would PARSE every
     // `nix …` invocation. Absorb-and-ignore is precisely the defect this module
     // exists to remove: parsing a flag is not honouring it. The destination is
@@ -1125,11 +1116,11 @@ mod tests {
 
     #[test]
     fn refuses_a_supplied_refused_flag() {
-        let m = matches_from(&["sui", "-L", "store", "ping"]);
-        let err = enforce(&m).expect_err("-L must be refused");
+        let m = matches_from(&["sui", "--offline", "store", "ping"]);
+        let err = enforce(&m).expect_err("--offline must be refused");
         let msg = err.to_string();
-        assert!(msg.contains("print_build_logs"), "{msg}");
-        assert!(msg.contains("silence"), "the reason must survive to the operator: {msg}");
+        assert!(msg.contains("offline"), "{msg}");
+        assert!(msg.contains("network"), "the reason must survive to the operator: {msg}");
     }
 
     #[test]

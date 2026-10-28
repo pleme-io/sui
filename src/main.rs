@@ -36,7 +36,7 @@ struct Cli {
     #[arg(long, global = true, conflicts_with = "vm")] no_vm: bool,
     /// Emit an evaluation trace (equivalent to SUI_TRACE_EVAL=1).
     #[arg(long, global = true)] show_trace: bool,
-    /// [REFUSED] Print build logs to stderr.
+    /// Print each build's full log to stderr as it runs, prefixed with the derivation name.
     #[arg(short = 'L', long, global = true)] print_build_logs: bool,
     // ── nix parse-compat globals ────────────────────────────────────────
     //
@@ -7277,6 +7277,7 @@ async fn main() -> Result<(), CliError> {
     if let Some(url) = &cli.store_url {
         sui_store::set_store_url(url);
     }
+    sui::build_face::set_print_build_logs(cli.print_build_logs);
 
     // `--show-trace` WAS A DEAD FLAG until 2026-07-20: declared as a global arg
     // and read by nothing. Passing it produced byte-identical output to omitting

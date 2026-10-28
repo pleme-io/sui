@@ -1,7 +1,7 @@
 # pending-parity: <row id> — <reason>. One line per cppnix row sui does not implement.
 # The gate (src/parity_matrix.rs) fails on an unwaived missing row, on a waived row sui implements,
 # on a waiver naming no row, and when the count differs from pending-ceiling. The ceiling only falls.
-pending-ceiling: 1736
+pending-ceiling: 1735
 pending-parity: nix-command:nix bundle — cli_coverage grades it Stub
 pending-parity: nix-command:nix config check — no `sui config check` subcommand
 pending-parity: nix-command:nix develop — cli_coverage grades it Stub
@@ -1135,7 +1135,6 @@ pending-parity: nix-global-flag:nix --debug — `sui ` declares no --debug
 pending-parity: nix-global-flag:nix --log-format — cli_contract refuses --log-format: selects a log format a downstream parser expects; sui emits its own format regardless, so a machine consumer parses the wrong shape
 pending-parity: nix-global-flag:nix --offline — cli_contract refuses --offline: the operator directs sui NOT to use the network; sui reads the flag nowhere, so a fetch or a substituter query happens anyway
 pending-parity: nix-global-flag:nix --option — cli_contract refuses --option: `--option <k> <v>` sets an arbitrary nix setting; sui applies none of them, so any setting the operator relied on is silently absent
-pending-parity: nix-global-flag:nix --print-build-logs — cli_contract refuses --print-build-logs: -L/--print-build-logs asks sui to BREAK the silence around a build; sui reads it nowhere, so the operator gets exactly the silence the flag exists to end and concludes the build printed nothing
 pending-parity: nix-global-flag:nix --refresh — `sui ` declares no --refresh
 pending-parity: nix-global-flag:nix --relaxed-sandbox — `sui ` declares no --relaxed-sandbox
 pending-parity: setting:abort-on-warn — no sui source names "abort-on-warn"

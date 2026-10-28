@@ -386,10 +386,7 @@ impl LocalBuilder {
         // 6. Check exit code
         if !result.is_success() {
             let stderr = result.stderr_lossy();
-            log.push(&format!("build failed with exit code {}", result.exit_code));
-            if !stderr.is_empty() {
-                log.push(&stderr);
-            }
+            log.push(&failure_message(deriver.unwrap_or_default(), drv, result.exit_code, &raw_log));
             let _ = std::fs::remove_dir_all(&build_dir);
             let _ = self.clear_invalid_outputs(drv).await;
             return Ok(BuildResult::failure(
@@ -714,6 +711,33 @@ fn scan_refs(candidates: &[String], output_path: &str) -> Vec<String> {
         .filter(|p| found.iter().any(|h| *h == hash_part(p)))
         .cloned()
         .collect()
+}
+
+const LOG_LINES: usize = 25;
+
+fn failure_message(drv_path: &str, drv: &Derivation, exit_code: i32, raw_log: &[u8]) -> String {
+    let mut msg = format!("Cannot build '{drv_path}'.\nReason: builder failed with exit code {exit_code}.");
+    let outputs: std::collections::BTreeSet<&str> = drv.outputs.values().map(|o| o.path.as_str()).filter(|p| !p.is_empty()).collect();
+    if !outputs.is_empty() {
+        msg.push_str("\nOutput paths:");
+        for p in outputs {
+            msg.push_str("\n  ");
+            msg.push_str(p);
+        }
+    }
+    let text = String::from_utf8_lossy(raw_log);
+    let lines: Vec<&str> = text.lines().collect();
+    if !lines.is_empty() {
+        let tail = &lines[lines.len().saturating_sub(LOG_LINES)..];
+        msg.push_str(&format!("\nLast {} log lines:\n", tail.len()));
+        for line in tail {
+            msg.push_str("> ");
+            msg.push_str(line);
+            msg.push('\n');
+        }
+        msg.push_str(&format!("For full logs, run:\n  nix log {drv_path}"));
+    }
+    msg
 }
 
 fn hash_part(path: &str) -> String {
@@ -1968,6 +1992,25 @@ mod tests {
         let bad_drv = "/nix/store/0123456789abcdfghijklmnpqrsvwxb-bad.drv";
         assert!(!builder.build_basic(&bad, bad_drv).await.unwrap().is_success());
         assert_eq!(crate::build_log::read(&logs, bad_drv).unwrap().unwrap(), b"ok - test 1\nnot ok - test 2\n");
+    }
+
+    #[tokio::test]
+    async fn a_failed_build_reports_cppnix_s_reason_and_the_last_25_lines_of_both_streams() {
+        let tmp = tempfile::tempdir().unwrap();
+        let builder = LocalBuilder::new(Arc::new(MockStore::new()), Box::new(NoSandbox))
+            .with_build_dir(tmp.path().join("build").to_str().unwrap().to_string());
+        let out = tmp.path().join("out");
+        let script = "i=1; while [ $i -le 30 ]; do echo ok - test $i; i=$((i+1)); done; echo not ok - boom >&2; exit 3";
+        let drv = make_drv("/bin/sh", &["-c", script], out.to_str().unwrap());
+        let drv_path = "/nix/store/0123456789abcdfghijklmnpqrsvwxc-fail8.drv";
+        let result = builder.build_basic(&drv, drv_path).await.unwrap();
+        assert!(!result.is_success());
+        let tail: String = (7..=30).map(|i| format!("> ok - test {i}\n")).collect();
+        let want = format!(
+            "Cannot build '{drv_path}'.\nReason: builder failed with exit code 3.\nOutput paths:\n  {}\nLast 25 log lines:\n{tail}> not ok - boom\nFor full logs, run:\n  nix log {drv_path}",
+            out.display()
+        );
+        assert!(result.log.contains(&want), "{}", result.log);
     }
 
     #[tokio::test]
