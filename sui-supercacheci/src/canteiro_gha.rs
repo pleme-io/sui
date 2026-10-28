@@ -142,7 +142,7 @@ pub enum EmitError {
     Decompose(#[from] DecomposeError),
     /// serde_yaml_ng failed to render the typed workflow.
     #[error("serializing the GHA workflow to YAML failed: {0}")]
-    Yaml(#[from] serde_yaml_ng::Error),
+    Yaml(#[from] serde_norway::Error),
 }
 
 /// The readable job display name (`canteiro · <node>`), built without
@@ -251,7 +251,7 @@ pub fn emit_gha(run: &CiRun) -> Result<GhaWorkflow, EmitError> {
 /// serialization failure.
 pub fn emit_gha_yaml(run: &CiRun) -> Result<String, EmitError> {
     let workflow = emit_gha(run)?;
-    let body = serde_yaml_ng::to_string(&workflow)?;
+    let body = serde_norway::to_string(&workflow)?;
     let mut out = String::from(HEADER);
     out.push('\n');
     out.push_str(&body);

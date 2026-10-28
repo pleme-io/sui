@@ -91,7 +91,7 @@ fn load<T: DeserializeOwned>(path: &Path) -> Result<T, String> {
     })?;
     let is_yaml = matches!(path.extension().and_then(|e| e.to_str()), Some("yaml" | "yml"));
     if is_yaml {
-        serde_yaml_ng::from_str(&raw).map_err(|e| e.to_string())
+        serde_norway::from_str(&raw).map_err(|e| e.to_string())
     } else {
         serde_json::from_str(&raw).map_err(|e| e.to_string())
     }

@@ -120,7 +120,7 @@ pub enum ConfigError {
         /// The file named by `PORTO_TIER`.
         path: PathBuf,
         /// The YAML/shape failure (unknown key, wrong type, …).
-        source: serde_yaml_ng::Error,
+        source: serde_norway::Error,
     },
 }
 
@@ -202,7 +202,7 @@ impl RegistryConfig {
             path: path.to_path_buf(),
             source,
         })?;
-        serde_yaml_ng::from_str(&raw).map_err(|source| ConfigError::Parse {
+        serde_norway::from_str(&raw).map_err(|source| ConfigError::Parse {
             path: path.to_path_buf(),
             source,
         })
@@ -294,7 +294,7 @@ mod tests {
         let json = r#"{ "listen": "0.0.0.0:5000", "bogus": true }"#;
         assert!(serde_json::from_str::<RegistryConfig>(json).is_err());
         let yaml = "layouts:\n  - repository: a\n    layout: /x\n    bogus: 1\n";
-        assert!(serde_yaml_ng::from_str::<RegistryConfig>(yaml).is_err());
+        assert!(serde_norway::from_str::<RegistryConfig>(yaml).is_err());
     }
 
     #[test]

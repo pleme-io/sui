@@ -226,7 +226,7 @@ name: bigorna-arm64
 platform: linux/arm64
 host_arch: arm64
 ";
-        let spec: NodeSpec = serde_yaml_ng::from_str(yaml).unwrap();
+        let spec: NodeSpec = serde_norway::from_str(yaml).unwrap();
         let node = NativeArchNode::try_from(spec).unwrap();
         assert_eq!(node.platform(), &Platform::linux_arm64());
     }

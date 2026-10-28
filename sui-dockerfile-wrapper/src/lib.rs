@@ -556,8 +556,8 @@ mod tests {
         // serde_yaml_ng exactly as it would through a `--config wrapper.yaml`
         // CLI flag.
         let cfg = config();
-        let yaml = serde_yaml_ng::to_string(&cfg).unwrap();
-        let parsed: WrapperConfig = serde_yaml_ng::from_str(&yaml).unwrap();
+        let yaml = serde_norway::to_string(&cfg).unwrap();
+        let parsed: WrapperConfig = serde_norway::from_str(&yaml).unwrap();
         assert_eq!(parsed, cfg);
     }
 

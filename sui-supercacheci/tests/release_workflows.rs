@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use serde_yaml_ng::Value;
+use serde_norway::Value;
 
 fn workflow(name: &str) -> Value {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -8,7 +8,7 @@ fn workflow(name: &str) -> Value {
         .join(name);
     let text =
         std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-    serde_yaml_ng::from_str(&text).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+    serde_norway::from_str(&text).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
 }
 
 fn at<'a>(v: &'a Value, keys: &[&str]) -> &'a Value {

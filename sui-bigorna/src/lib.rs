@@ -469,8 +469,8 @@ Platforms:        linux/arm64*
     #[test]
     fn config_roundtrips_through_yaml() {
         let cfg = config();
-        let yaml = serde_yaml_ng::to_string(&cfg).unwrap();
-        let back: BigornaConfig = serde_yaml_ng::from_str(&yaml).unwrap();
+        let yaml = serde_norway::to_string(&cfg).unwrap();
+        let back: BigornaConfig = serde_norway::from_str(&yaml).unwrap();
         assert_eq!(back, cfg);
     }
 }

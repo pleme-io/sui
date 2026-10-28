@@ -69,7 +69,7 @@ shigoto-scheduler.workspace = true
 # EMISSION — no `format!()` of YAML). GitHub then schedules those jobs onto
 # separate ARC workers; canteiro is the DAG source + emitter, NOT the cross-worker
 # runtime scheduler.
-serde_yaml_ng.workspace = true
+serde_norway.workspace = true
 
 # The freshness maintenance pass COMPOSES the real sui crates (never forks):
 # sui-cache's shipped root-set GC (gc::collect_garbage) over its StorageBackend

@@ -1,10 +1,10 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "a0e28bb6232231c9a878eb49107396b458e59abd2aa730b0038a18ebcb56055f",
+  "cargo_lock_sha256": "b57f2c7758c341f0808d6066ce2b05da7439db9e225e4d2bfd44be9792d1e0c3",
   "manifest_sha256": {
-    "Cargo.toml": "bcdb921f25e01ea1bdb436cfdeb07b95d9ef831a8294ff817d5a4ee26a7622b5",
+    "Cargo.toml": "9f75bbb59375353167b64269f225bfcbda90deceee358cf103f097d0d19fe6b7",
     "canteiro-types/Cargo.toml": "140edf011d225b89a3a8b8cc15d5212e84c056493e7c8a5b488d1c7e88847388",
-    "sui-bigorna/Cargo.toml": "c97c5d91369fe30b894299aaf4baac763f3a1f23d9ad51cb74d30cdeb7b8dc48",
+    "sui-bigorna/Cargo.toml": "271fc14c6a889aa1386124ef2ed91bee58f437241fd91d1f2da549c496112270",
     "sui-build/Cargo.toml": "159000b5e22f33e13b171da0e07f11c1e23204ac63fc5f93a44d0f1427a8d286",
     "sui-bytecode/Cargo.toml": "fea40d7d2b922a8987a8dcb3d35bb4072641f0d1fe95f6c6b6b9449c6659ee4b",
     "sui-cache-eval/Cargo.toml": "f16c2a3764aebcbc7d0583a9618dfadd596883dd4842c32b65843999034e5589",
@@ -14,12 +14,12 @@
     "sui-daemon-client/Cargo.toml": "d8acc61441eadccaf9bb426aa83dfdb71bc628ac13eb23bd2e73ac5fdfb0e477",
     "sui-daemon-frame/Cargo.toml": "391a8e59253c00d6886605ef104794d330d935cab6f7f13d335804258d4144e6",
     "sui-daemon-graph/Cargo.toml": "206356f44f08a819630a8057714643b7f13dfa63b8270759aec804cbcf28e6b6",
-    "sui-daemon/Cargo.toml": "5c4c1da53c32356e7774ab6396f82ecd83e0c00bd957c41cda5920c53374ba94",
+    "sui-daemon/Cargo.toml": "3c781f043044fbba2e2b362aed2506004b77bf26e9d2133a26cfd273cb70fad8",
     "sui-dockerfile-node-cache-daemon/Cargo.toml": "450da5660aa69749a8b4eeddac5a7bfaaa38ae36adcde0e969d356e970c1d9ea",
-    "sui-dockerfile-prewarmer/Cargo.toml": "d5a84d137aadbc380818f25d4d59f728939cc523837eb1c232104e1dec315b5e",
+    "sui-dockerfile-prewarmer/Cargo.toml": "2d2a26d3af7a0d767b10ead316b1e96770f3a5b658a44e0ffddb9e54f4286c2f",
     "sui-dockerfile-verify/Cargo.toml": "1b4114c0abb7761a054f8c20cc59885ef75bbbad021df12341177bf87f2f55f0",
-    "sui-dockerfile-wrapper/Cargo.toml": "b0e69fd6d4f62718b891000d3e61cb869cb0089f758888a378630e0d1e309261",
-    "sui-eval/Cargo.toml": "c27cfa4478a6bc84ace8f441187938fb881585e46bbab0c4828019270bdbe924",
+    "sui-dockerfile-wrapper/Cargo.toml": "72eb1b3f348b2f277b984c3c1d7158ddbbb68e50f2ede01c7567439c6d1ce989",
+    "sui-eval/Cargo.toml": "71d0390eb380c1694419e30b2a22db12561c26eec449e25306d08cc8541342a3",
     "sui-fmt/Cargo.toml": "c6b3ceec3b679871e1a63b78790e5a2cd8d7b40fa960fedd5575d9c4f969bd4b",
     "sui-graph-store/Cargo.toml": "a947a9ea34bb09798ae6433ac21d01deb57b2d854bc9774122ad7583f8fda257",
     "sui-intern/Cargo.toml": "50af7772869b3fb3118e90ef309e64dee2f65a443c4dee63554c9da212e959bc",
@@ -29,11 +29,11 @@
     "sui-normalize/Cargo.toml": "66f4852a80efeca3bd1b7f84e746823c2419cae5696222d98a177b519d821a79",
     "sui-orchestrate/Cargo.toml": "b474092b7e9b5723ad3dc466ad43708524fa6ad7da71bfa8bb6d239c4bd4213f",
     "sui-protocol/Cargo.toml": "1a7982ade5ce90d483969a23704b8f8858427ec7b575c766484175bb1632f6bd",
-    "sui-registry/Cargo.toml": "6b8f512f7e33fcfc39f730b49f9f7dca6f22940c6399e6c4eb87eb2080684a6e",
+    "sui-registry/Cargo.toml": "ccc4b72ef2e615726d1d271e25171107d5c2cd467db300e8483e7864146402e2",
     "sui-resolve/Cargo.toml": "4c0e6027421517fe0f767296a0f468f7bd20fd8f396ea129aca19304cc2c6b50",
     "sui-spec/Cargo.toml": "399b422687d3f829655470bcf19217eb4028aac56751573d37911e4de0c538b1",
     "sui-store/Cargo.toml": "9c0e9261212f0d6415868b677dd5bf6130bdfbe510973b02d984593fa38cdc9a",
-    "sui-supercacheci/Cargo.toml": "3a47f3d04935987db902f9c0e38b258f117c64b43dddd6a9e06a7977af1f8f39"
+    "sui-supercacheci/Cargo.toml": "87a985275575ac75557dfb1e71f06ca32390e4aea5a1921409f9165361f7e272"
   },
   "target_resolves": {
     "base": {
@@ -5239,16 +5239,6 @@
             "tree": "target"
           },
           {
-            "name": "serde_yaml",
-            "package_key": "serde_yaml-0.9.34+deprecated",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": true,
-            "target": null,
-            "tree": "target"
-          },
-          {
             "name": "toml",
             "package_key": "toml-0.8.23",
             "kind": "normal",
@@ -5285,9 +5275,7 @@
           "env",
           "parse-value",
           "pear",
-          "serde_yaml",
-          "toml",
-          "yaml"
+          "toml"
         ]
       },
       "filetime-0.2.29": {
@@ -8600,7 +8588,7 @@
           },
           {
             "name": "hashbrown",
-            "package_key": "hashbrown-0.17.1",
+            "package_key": "hashbrown-0.15.5",
             "kind": "normal",
             "features": [
               "default-hasher",
@@ -11879,21 +11867,9 @@
         ]
       },
       "hashbrown-0.17.1": {
-        "runtime_dependencies": [
-          {
-            "name": "foldhash",
-            "package_key": "foldhash-0.2.0",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": false,
-            "optional": true,
-            "target": null,
-            "tree": "target"
-          }
-        ],
+        "runtime_dependencies": [],
         "build_dependencies": [],
         "features": [
-          "default-hasher",
           "inline-more"
         ]
       },
@@ -20875,6 +20851,62 @@
         "build_dependencies": [],
         "features": []
       },
+      "serde_norway-0.9.42": {
+        "runtime_dependencies": [
+          {
+            "name": "indexmap",
+            "package_key": "indexmap-2.14.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "itoa",
+            "package_key": "itoa-1.0.18",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "ryu",
+            "package_key": "ryu-1.0.23",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "serde",
+            "package_key": "serde-1.0.229",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "unsafe_libyaml_norway",
+            "package_key": "unsafe-libyaml-norway-0.2.15",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": []
+      },
       "serde_path_to_error-0.1.20": {
         "runtime_dependencies": [
           {
@@ -20992,118 +21024,6 @@
           {
             "name": "serde",
             "package_key": "serde-1.0.229",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          }
-        ],
-        "build_dependencies": [],
-        "features": []
-      },
-      "serde_yaml-0.9.34+deprecated": {
-        "runtime_dependencies": [
-          {
-            "name": "indexmap",
-            "package_key": "indexmap-2.14.0",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "itoa",
-            "package_key": "itoa-1.0.18",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "ryu",
-            "package_key": "ryu-1.0.23",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "serde",
-            "package_key": "serde-1.0.229",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "unsafe_libyaml",
-            "package_key": "unsafe-libyaml-0.2.11",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          }
-        ],
-        "build_dependencies": [],
-        "features": []
-      },
-      "serde_yaml_ng-0.10.0": {
-        "runtime_dependencies": [
-          {
-            "name": "indexmap",
-            "package_key": "indexmap-2.14.0",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "itoa",
-            "package_key": "itoa-1.0.18",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "ryu",
-            "package_key": "ryu-1.0.23",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "serde",
-            "package_key": "serde-1.0.229",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "unsafe_libyaml",
-            "package_key": "unsafe-libyaml-0.2.11",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -21740,7 +21660,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "shikumi-0.1.1083": {
+      "shikumi-0.1.1084": {
         "runtime_dependencies": [
           {
             "name": "arc_swap",
@@ -21768,8 +21688,7 @@
             "kind": "normal",
             "features": [
               "env",
-              "toml",
-              "yaml"
+              "toml"
             ],
             "uses_default_features": true,
             "optional": false,
@@ -21851,8 +21770,8 @@
             "tree": "target"
           },
           {
-            "name": "serde_yaml",
-            "package_key": "serde_yaml-0.9.34+deprecated",
+            "name": "serde_norway",
+            "package_key": "serde_norway-0.9.42",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -24166,8 +24085,8 @@
             "tree": "target"
           },
           {
-            "name": "serde_yaml_ng",
-            "package_key": "serde_yaml_ng-0.10.0",
+            "name": "serde_norway",
+            "package_key": "serde_norway-0.9.42",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -24565,7 +24484,7 @@
           },
           {
             "name": "shikumi",
-            "package_key": "shikumi-0.1.1083",
+            "package_key": "shikumi-0.1.1084",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -25094,8 +25013,8 @@
             "tree": "target"
           },
           {
-            "name": "serde_yaml_ng",
-            "package_key": "serde_yaml_ng-0.10.0",
+            "name": "serde_norway",
+            "package_key": "serde_norway-0.9.42",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -25115,7 +25034,7 @@
           },
           {
             "name": "shikumi",
-            "package_key": "shikumi-0.1.1083",
+            "package_key": "shikumi-0.1.1084",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -25678,8 +25597,8 @@
             "tree": "target"
           },
           {
-            "name": "serde_yaml_ng",
-            "package_key": "serde_yaml_ng-0.10.0",
+            "name": "serde_norway",
+            "package_key": "serde_norway-0.9.42",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -25709,7 +25628,7 @@
           },
           {
             "name": "shikumi",
-            "package_key": "shikumi-0.1.1083",
+            "package_key": "shikumi-0.1.1084",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -25915,8 +25834,8 @@
             "tree": "target"
           },
           {
-            "name": "serde_yaml_ng",
-            "package_key": "serde_yaml_ng-0.10.0",
+            "name": "serde_norway",
+            "package_key": "serde_norway-0.9.42",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -26169,8 +26088,8 @@
             "tree": "target"
           },
           {
-            "name": "serde_yaml_ng",
-            "package_key": "serde_yaml_ng-0.10.0",
+            "name": "serde_norway",
+            "package_key": "serde_norway-0.9.42",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -26953,7 +26872,7 @@
           },
           {
             "name": "shikumi",
-            "package_key": "shikumi-0.1.1083",
+            "package_key": "shikumi-0.1.1084",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -27201,8 +27120,8 @@
             "tree": "target"
           },
           {
-            "name": "serde_yaml_ng",
-            "package_key": "serde_yaml_ng-0.10.0",
+            "name": "serde_norway",
+            "package_key": "serde_norway-0.9.42",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -27222,7 +27141,7 @@
           },
           {
             "name": "shikumi",
-            "package_key": "shikumi-0.1.1083",
+            "package_key": "shikumi-0.1.1084",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -27813,8 +27732,8 @@
             "tree": "target"
           },
           {
-            "name": "serde_yaml_ng",
-            "package_key": "serde_yaml_ng-0.10.0",
+            "name": "serde_norway",
+            "package_key": "serde_norway-0.9.42",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -27854,7 +27773,7 @@
           },
           {
             "name": "shikumi",
-            "package_key": "shikumi-0.1.1083",
+            "package_key": "shikumi-0.1.1084",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -31066,7 +30985,7 @@
           "default"
         ]
       },
-      "unsafe-libyaml-0.2.11": {
+      "unsafe-libyaml-norway-0.2.15": {
         "runtime_dependencies": [],
         "build_dependencies": [],
         "features": []
@@ -39744,6 +39663,9 @@
     "serde_nanos-0.1.4": {
       "edition": "2018"
     },
+    "serde_norway-0.9.42": {
+      "edition": "2021"
+    },
     "serde_path_to_error-0.1.20": {
       "edition": "2021"
     },
@@ -39756,12 +39678,6 @@
     },
     "serde_urlencoded-0.7.1": {
       "edition": "2018"
-    },
-    "serde_yaml-0.9.34+deprecated": {
-      "edition": "2021"
-    },
-    "serde_yaml_ng-0.10.0": {
-      "edition": "2021"
     },
     "sha1-0.10.6": {
       "edition": "2018"
@@ -39802,7 +39718,7 @@
     "shigoto-types-0.1.12": {
       "edition": "2024"
     },
-    "shikumi-0.1.1083": {
+    "shikumi-0.1.1084": {
       "edition": "2024"
     },
     "shlex-2.0.1": {
@@ -40410,7 +40326,7 @@
     "unicode-xid-0.2.6": {
       "edition": "2015"
     },
-    "unsafe-libyaml-0.2.11": {
+    "unsafe-libyaml-norway-0.2.15": {
       "edition": "2021",
       "binaries": [
         {

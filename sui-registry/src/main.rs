@@ -91,7 +91,7 @@ async fn porto() -> Result<(), PortoError> {
             Ok(())
         }
         Some("config-show") => {
-            let yaml = serde_yaml_ng::to_string(&RegistryConfig::load()?)
+            let yaml = serde_norway::to_string(&RegistryConfig::load()?)
                 .map_err(|e| PortoError::Render(e.to_string()))?;
             print!("{yaml}");
             Ok(())

@@ -23,7 +23,7 @@ pub(crate) fn register(sui_ext: &mut NixAttrs) {
     // YAML round-trip
     register_builtin(sui_ext, "fromYAML", |args| {
         let s = args[0].as_string()?;
-        let y: serde_yaml_ng::Value = serde_yaml_ng::from_str(s).map_err(|e| {
+        let y: serde_norway::Value = serde_norway::from_str(s).map_err(|e| {
             EvalError::TypeError(format!("sui.fromYAML: {e}"))
         })?;
         let j = serde_json::to_value(&y).map_err(|e| {
@@ -33,13 +33,13 @@ pub(crate) fn register(sui_ext: &mut NixAttrs) {
     });
     register_builtin(sui_ext, "toYAML", |args| {
         let j = args[0].to_json();
-        let y: serde_yaml_ng::Value = serde_yaml_ng::from_value(
-            serde_yaml_ng::to_value(&j).map_err(|e| {
+        let y: serde_norway::Value = serde_norway::from_value(
+            serde_norway::to_value(&j).map_err(|e| {
                 EvalError::TypeError(format!("sui.toYAML: json->yaml: {e}"))
             })?,
         )
         .map_err(|e| EvalError::TypeError(format!("sui.toYAML: {e}")))?;
-        let out = serde_yaml_ng::to_string(&y).map_err(|e| {
+        let out = serde_norway::to_string(&y).map_err(|e| {
             EvalError::TypeError(format!("sui.toYAML: serialize: {e}"))
         })?;
         Ok(Value::string(out))
