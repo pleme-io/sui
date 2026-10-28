@@ -185,6 +185,12 @@ where
     }
 
     #[must_use]
+    #[must_use]
+    pub fn with_state_dir(mut self, state_dir: impl Into<std::path::PathBuf>) -> Self {
+        self.state_dir = state_dir.into();
+        self
+    }
+
     pub fn with_dirs(mut self, store_dir: impl Into<std::path::PathBuf>, state_dir: impl Into<std::path::PathBuf>) -> Self {
         self.store_dir = store_dir.into();
         self.state_dir = state_dir.into();

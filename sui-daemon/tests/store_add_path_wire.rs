@@ -149,7 +149,7 @@ impl Fixture {
                 .expect("register fixture path");
         }
 
-        let config = DaemonConfig::with_socket_path(&socket);
+        let config = DaemonConfig::with_socket_path(&socket).with_state_dir(tmp.path().join("state"));
         let server = DaemonServer::new(config, store);
         let task = tokio::spawn(async move { server.run().await });
 
@@ -355,4 +355,65 @@ async fn add_to_store_nar_wire_registers_path() {
 
     let landed = fixture.store_dir.join("00000000000000000000000000000000-imported-pkg");
     assert_eq!(std::fs::read(&landed).unwrap(), b"nar import body");
+}
+
+fn add_text(c: &mut UnixStream, name: &str, text: &[u8], references: &[&str]) -> Result<String, String> {
+    write_u64(c, WorkerOp::AddTextToStore as u64);
+    write_string(c, name);
+    write_u64(c, text.len() as u64);
+    c.write_all(text).unwrap();
+    let pad = (8 - (text.len() % 8)) % 8;
+    c.write_all(&vec![0u8; pad]).unwrap();
+    write_u64(c, references.len() as u64);
+    for r in references {
+        write_string(c, r);
+    }
+    c.flush().unwrap();
+    loop {
+        match read_u64(c) {
+            STDERR_LAST => return Ok(read_string(c)),
+            0x63787470 => {
+                let _ty = read_string(c);
+                let _level = read_u64(c);
+                let _name = read_string(c);
+                let text = read_string(c);
+                let _pos = read_u64(c);
+                let traces = read_u64(c);
+                for _ in 0..traces {
+                    let _ = read_u64(c);
+                    let _ = read_string(c);
+                }
+                return Err(text);
+            }
+            0x6f6c6d67 => {
+                let _ = read_string(c);
+            }
+            other => panic!("unexpected stderr frame: {other:#x}"),
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_path_one_connection_added_survives_a_collection_on_another_until_it_closes() {
+    let fixture = Fixture::start().await;
+    let mut evaluator = fixture.connect();
+    let input = add_text(&mut evaluator, "input", b"input text", &[]).unwrap();
+
+    let mut collector = fixture.connect();
+    write_u64(&mut collector, WorkerOp::CollectGarbage as u64);
+    write_u64(&mut collector, 2);
+    write_u64(&mut collector, 0);
+    write_u64(&mut collector, 0);
+    write_u64(&mut collector, 0);
+    for _ in 0..3 {
+        write_u64(&mut collector, 0);
+    }
+    collector.flush().unwrap();
+    drain_to_stderr_last(&mut collector);
+    let deleted: Vec<String> = (0..read_u64(&mut collector)).map(|_| read_string(&mut collector)).collect();
+    let _freed = read_u64(&mut collector);
+    let _obsolete = read_u64(&mut collector);
+    assert!(!deleted.contains(&input), "the collector deleted {input}, which a live connection had just added");
+    assert!(std::path::Path::new(&input).exists());
+    drop(evaluator);
 }

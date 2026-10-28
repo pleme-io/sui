@@ -31,10 +31,12 @@ where
             let dump = read_framed_source(&mut self.reader).await?;
             let (method, algo) = ContentAddressMethod::parse_with_algo(&method).map_err(op_err)?;
             let references: Vec<String> = references.iter().map(|p| p.to_absolute_path()).collect();
+            self.root_ahead(&name, &dump, &method, algo, &references).await?;
             let info = self
                 .store
                 .add_to_store_from_dump(&name, &dump, &method, algo, &references, repair)
                 .await?;
+            self.hold_temp_root(&info.path).await?;
             self.finish().await?;
             return self.write_valid_path_info(&info).await;
         }
@@ -58,10 +60,38 @@ where
             ContentAddressMethod::Recursive => nar,
             _ => regular_contents(&nar).map_err(op_err)?,
         };
+        self.root_ahead(&name, &dump, &method, algo, &[]).await?;
         let info = self.store.add_to_store_from_dump(&name, &dump, &method, algo, &[], false).await?;
+        self.hold_temp_root(&info.path).await?;
         self.finish().await?;
         write_string(&mut self.writer, &info.path).await?;
         Ok(())
+    }
+
+    pub(super) async fn hold_temp_root(&self, path: &str) -> Result<(), ConnectionError> {
+        if let Ok(sp) = StorePath::from_absolute_path(path) {
+            match self.store.add_temp_root(&sp).await {
+                Ok(()) => return Ok(()),
+                Err(e) if e.is_not_supported() => {}
+                Err(e) => return Err(e.into()),
+            }
+        }
+        super::temp_roots::add(&self.state_dir, self.connection_id.id(), path).map_err(op_err)
+    }
+
+    async fn root_ahead(
+        &self,
+        name: &str,
+        dump: &[u8],
+        method: &ContentAddressMethod,
+        algo: HashAlgorithm,
+        references: &[String],
+    ) -> Result<(), ConnectionError> {
+        let store_dir = self.store_dir.to_string_lossy();
+        match make_fixed_output_path_from_ca(&store_dir, method, &NixHash::of(algo, dump), references, name) {
+            Ok(path) => self.hold_temp_root(&path).await,
+            Err(_) => Ok(()),
+        }
     }
 
     pub(super) async fn handle_add_text_to_store(&mut self) -> Result<(), ConnectionError> {
@@ -69,10 +99,12 @@ where
         let text = read_bytes(&mut self.reader).await?;
         let references = self.read_path_set().await?;
         let references: Vec<String> = references.iter().map(|p| p.to_absolute_path()).collect();
+        self.root_ahead(&name, &text, &ContentAddressMethod::Text, HashAlgorithm::Sha256, &references).await?;
         let info = self
             .store
             .add_to_store_from_dump(&name, &text, &ContentAddressMethod::Text, HashAlgorithm::Sha256, &references, false)
             .await?;
+        self.hold_temp_root(&info.path).await?;
         self.finish().await?;
         write_string(&mut self.writer, &info.path).await?;
         Ok(())
@@ -159,6 +191,7 @@ where
                 info.path
             )));
         }
+        self.hold_temp_root(&info.path).await?;
         self.store.add_to_store_nar(info, nar, repair).await?;
         Ok(())
     }

@@ -37,12 +37,20 @@ pub fn xdg_socket_path() -> PathBuf {
 pub struct DaemonConfig {
     /// Unix socket path to listen on.
     pub socket_path: PathBuf,
+    /// Where connections keep their temp roots (`<state>/temproots`).
+    pub state_dir: PathBuf,
+}
+
+#[must_use]
+pub fn default_state_dir() -> PathBuf {
+    std::env::var_os("NIX_STATE_DIR").map_or_else(|| PathBuf::from("/nix/var/nix"), PathBuf::from)
 }
 
 impl Default for DaemonConfig {
     fn default() -> Self {
         Self {
             socket_path: xdg_socket_path(),
+            state_dir: default_state_dir(),
         }
     }
 }
@@ -53,7 +61,14 @@ impl DaemonConfig {
     pub fn with_socket_path(path: impl Into<PathBuf>) -> Self {
         Self {
             socket_path: path.into(),
+            state_dir: default_state_dir(),
         }
+    }
+
+    #[must_use]
+    pub fn with_state_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.state_dir = dir.into();
+        self
     }
 
     /// Create a configuration using the Nix-compatible legacy socket path.
@@ -61,6 +76,7 @@ impl DaemonConfig {
     pub fn nix_compat() -> Self {
         Self {
             socket_path: PathBuf::from(DEFAULT_SOCKET_PATH),
+            state_dir: default_state_dir(),
         }
     }
 }
@@ -190,6 +206,7 @@ where
             let caches = self.caches.clone();
             let signatures = self.signatures.clone();
             let users = self.users.clone();
+            let state_dir = self.config.state_dir.clone();
 
             tokio::spawn(async move {
                 let trust = match resolve_trust(&stream, &users) {
@@ -203,7 +220,8 @@ where
 
                 let mut conn = Connection::new(store, reader, writer, trust)
                     .with_caches(caches)
-                    .with_signature_policy(signatures);
+                    .with_signature_policy(signatures)
+                    .with_state_dir(state_dir);
 
                 if let Err(e) = conn.handshake().await {
                     tracing::warn!("handshake failed: {e}");

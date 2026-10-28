@@ -175,6 +175,7 @@ impl Store for TestStore {
 }
 
 struct Session {
+    state: Arc<tempfile::TempDir>,
     store: Arc<TestStore>,
     trust: TrustLevel,
     version: u64,
@@ -185,7 +186,9 @@ struct Session {
 
 impl Session {
     fn new(store: TestStore) -> Self {
-        Self { store: Arc::new(store), trust: TrustLevel::Trusted, version: PROTOCOL_VERSION, dirs: None, caches: Vec::new(), drvs: None }
+        let state = Arc::new(tempfile::tempdir().unwrap());
+        let dirs = Some((std::path::PathBuf::from("/nix/store"), state.path().to_path_buf()));
+        Self { state, store: Arc::new(store), trust: TrustLevel::Trusted, version: PROTOCOL_VERSION, dirs, caches: Vec::new(), drvs: None }
     }
 
     fn realizer(mut self, drvs: Arc<dyn super::DrvRealizer>) -> Self {
@@ -465,8 +468,10 @@ async fn add_to_store_nar_checks_signatures_unless_a_trusted_client_waives_them(
     let store = Arc::new(TestStore::default());
     let mut policy = super::SignaturePolicy::default();
     policy.trusted_keys.push(key.to_public_string());
+    let state = tempfile::tempdir().unwrap();
     let mut conn = Connection::new(store.clone(), Cursor::new(add_to_store_nar(path, &nar, &[&sig], "", false)), Vec::<u8>::new(), TrustLevel::NotTrusted)
-        .with_signature_policy(policy);
+        .with_signature_policy(policy)
+        .with_dirs("/nix/store", state.path());
     conn.client_version = PROTOCOL_VERSION;
     conn.run().await.unwrap();
     let mut r = Reply(Cursor::new(conn.writer));
@@ -618,7 +623,7 @@ async fn build_paths_acks_valid_targets_and_reports_a_missing_one_without_closin
 
 impl Session {
     fn clone_untrusted(&self) -> Self {
-        Self { store: self.store.clone(), trust: TrustLevel::NotTrusted, version: self.version, dirs: self.dirs.clone(), caches: self.caches.clone(), drvs: self.drvs.clone() }
+        Self { state: self.state.clone(), store: self.store.clone(), trust: TrustLevel::NotTrusted, version: self.version, dirs: self.dirs.clone(), caches: self.caches.clone(), drvs: self.drvs.clone() }
     }
 }
 
@@ -1415,7 +1420,8 @@ async fn serve_session(store: Arc<TestStore>, drvs: Option<Arc<dyn super::DrvRea
     n(&mut input, wire::SERVE_MAGIC_1);
     n(&mut input, wire::SERVE_PROTOCOL_VERSION);
     input.extend(commands);
-    let mut conn = Connection::new(store, Cursor::new(input), Vec::<u8>::new(), TrustLevel::Trusted);
+    let state = tempfile::tempdir().unwrap();
+    let mut conn = Connection::new(store, Cursor::new(input), Vec::<u8>::new(), TrustLevel::Trusted).with_dirs("/nix/store", state.path());
     if let Some(d) = drvs {
         conn = conn.with_realizer(d);
     }
