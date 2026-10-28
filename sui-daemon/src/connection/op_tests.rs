@@ -1409,3 +1409,112 @@ async fn delete_dead_stops_once_max_freed_is_reached() {
     assert_ne!(first, second);
     r.end();
 }
+
+async fn serve_session(store: Arc<TestStore>, drvs: Option<Arc<dyn super::DrvRealizer>>, write: bool, commands: Vec<u8>) -> (Reply, Result<(), ConnectionError>) {
+    let mut input = Vec::new();
+    n(&mut input, wire::SERVE_MAGIC_1);
+    n(&mut input, wire::SERVE_PROTOCOL_VERSION);
+    input.extend(commands);
+    let mut conn = Connection::new(store, Cursor::new(input), Vec::<u8>::new(), TrustLevel::Trusted);
+    if let Some(d) = drvs {
+        conn = conn.with_realizer(d);
+    }
+    let result = conn.serve(write).await;
+    let mut r = Reply(Cursor::new(conn.writer));
+    assert_eq!(r.u64(), wire::SERVE_MAGIC_2);
+    assert_eq!(r.u64(), wire::SERVE_PROTOCOL_VERSION);
+    (r, result)
+}
+
+fn serve_cmd(cmd: wire::ServeCommand) -> Vec<u8> {
+    let mut buf = Vec::new();
+    n(&mut buf, cmd as u64);
+    buf
+}
+
+fn build_options(buf: &mut Vec<u8>) {
+    for v in [0, 0, 0, 0, 0, 0] {
+        n(buf, v);
+    }
+}
+
+#[tokio::test]
+async fn nix_store_serve_answers_queries_as_cppnix_legacy_ssh_clients_read_them() {
+    let store = Arc::new(TestStore::default().with(A_OUT));
+    let mut cmds = serve_cmd(wire::ServeCommand::QueryValidPaths);
+    n(&mut cmds, 0);
+    n(&mut cmds, 0);
+    list(&mut cmds, &[A_OUT, B_OUT]);
+    cmds.extend(serve_cmd(wire::ServeCommand::QueryPathInfos));
+    list(&mut cmds, &[A_OUT, B_OUT]);
+    cmds.extend(serve_cmd(wire::ServeCommand::QueryClosure));
+    n(&mut cmds, 0);
+    list(&mut cmds, &[A_OUT]);
+    let (mut r, result) = serve_session(store, None, false, cmds).await;
+    result.unwrap();
+    assert_eq!(r.strings(), vec![A_OUT.to_string()]);
+    assert_eq!(r.string(), A_OUT);
+    assert_eq!(r.string(), "");
+    assert!(r.strings().is_empty());
+    assert_eq!(r.u64(), 8);
+    assert_eq!(r.u64(), 8);
+    let hash = NixHash::of(HashAlgorithm::Sha256, A_OUT.as_bytes());
+    assert_eq!(r.string(), format!("sha256:{}", hash.to_nix32()));
+    assert_eq!(r.string(), "");
+    assert!(r.strings().is_empty());
+    assert_eq!(r.string(), "");
+    assert_eq!(r.strings(), vec![A_OUT.to_string()]);
+    r.end();
+}
+
+#[tokio::test]
+async fn nix_store_serve_refuses_writes_without_write_and_builds_a_sent_derivation_with_it() {
+    let store = Arc::new(TestStore::default().with(A_OUT));
+    let mut cmd = serve_cmd(wire::ServeCommand::BuildDerivation);
+    let request = build_derivation_request(C_DRV, C_TEXT);
+    cmd.extend_from_slice(&request[8..request.len() - 8]);
+    build_options(&mut cmd);
+
+    let (mut r, result) = serve_session(store.clone(), None, false, cmd.clone()).await;
+    assert!(result.unwrap_err().to_string().contains("building paths is not allowed"));
+    r.end();
+
+    let realizer = Arc::new(BuildsSent { store: store.clone(), got: Mutex::new(Vec::new()) });
+    let (mut r, result) = serve_session(store.clone(), Some(realizer.clone()), true, cmd).await;
+    result.unwrap();
+    assert_eq!(r.u64(), 0, "Built");
+    assert_eq!(r.string(), "");
+    assert_eq!(r.u64(), 1);
+    r.u64();
+    r.u64();
+    r.u64();
+    assert_eq!(r.u64(), 1);
+    assert!(r.string().ends_with("!out"));
+    r.string();
+    r.end();
+    assert!(store.has(C_OUT));
+    assert_eq!(realizer.got.lock().unwrap()[0].0, C_DRV);
+}
+
+#[tokio::test]
+async fn nix_store_serve_imports_a_nar_with_add_to_store_nar() {
+    let store = Arc::new(TestStore::default());
+    let nar = file_nar(b"served");
+    let path = "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-served";
+    let mut cmd = serve_cmd(wire::ServeCommand::AddToStoreNar);
+    s(&mut cmd, path);
+    s(&mut cmd, "");
+    s(&mut cmd, &format!("sha256:{}", NixHash::of(HashAlgorithm::Sha256, &nar).to_nix32()));
+    list(&mut cmd, &[]);
+    n(&mut cmd, 0);
+    n(&mut cmd, nar.len() as u64);
+    n(&mut cmd, 0);
+    list(&mut cmd, &[]);
+    s(&mut cmd, "");
+    cmd.extend_from_slice(&nar);
+    let (mut r, result) = serve_session(store.clone(), None, true, cmd).await;
+    result.unwrap();
+    assert_eq!(r.u64(), 1);
+    r.end();
+    assert_eq!(store.nars.lock().unwrap()[path], nar);
+}

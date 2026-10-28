@@ -17,6 +17,7 @@ mod gc;
 mod handshake;
 mod query;
 mod realize;
+mod serve;
 mod temp_roots;
 pub(crate) mod wire;
 
@@ -134,6 +135,7 @@ pub struct Connection<S, R, W> {
     verbosity: sui_compat::activity::Verbosity,
     drvs: Arc<dyn DrvRealizer>,
     connection_id: temp_roots::ConnectionRoots,
+    frames: bool,
 }
 
 impl<S, R, W> Connection<S, R, W>
@@ -159,6 +161,7 @@ where
             verbosity: sui_compat::activity::Verbosity::Info,
             drvs: Arc::new(OrchestrateRealizer),
             connection_id: temp_roots::ConnectionRoots::new(),
+            frames: true,
         }
     }
 

@@ -4,6 +4,7 @@ use sui_compat::content_address::{
     make_fixed_output_path_from_ca, parse_content_address, ContentAddressMethod,
 };
 use sui_compat::hash::{HashAlgorithm, NixHash};
+use sui_compat::store_path::StorePath;
 use sui_store::traits::{PathInfo, Store};
 
 use super::dispatch::{absolute, op_err};
@@ -178,6 +179,10 @@ where
     pub(super) async fn handle_nar_from_path(&mut self) -> Result<(), ConnectionError> {
         let sp = self.read_path().await?;
         self.finish().await?;
+        self.write_nar(&sp).await
+    }
+
+    pub(super) async fn write_nar(&mut self, sp: &StorePath) -> Result<(), ConnectionError> {
         let real = self.store_dir.join(sp.to_basename());
         let (tx, mut rx) = tokio::sync::mpsc::channel::<std::io::Result<Vec<u8>>>(16);
         let producer = tokio::task::spawn_blocking(move || {
@@ -202,7 +207,17 @@ where
     pub(super) async fn handle_export_path(&mut self) -> Result<(), ConnectionError> {
         let sp = self.read_path().await?;
         let _obsolete = read_u64(&mut self.reader).await?;
-        let info = self.require_info(&sp).await?;
+        let bytes = self.export_bytes(&sp).await?;
+        for chunk in bytes.chunks(CHUNK) {
+            write_stderr_data(&mut self.writer, chunk).await?;
+        }
+        self.finish().await?;
+        write_u64(&mut self.writer, 1).await?;
+        Ok(())
+    }
+
+    pub(super) async fn export_bytes(&self, sp: &StorePath) -> Result<Vec<u8>, ConnectionError> {
+        let info = self.require_info(sp).await?;
         let mut nar = Vec::new();
         sui_compat::nar::NarWriter::write_path(&mut nar, &self.store_dir.join(sp.to_basename())).map_err(op_err)?;
         let got = NixHash::of(HashAlgorithm::Sha256, &nar);
@@ -225,38 +240,19 @@ where
         sui_compat::wire::write_string_list(&mut trailer, &references).map_err(op_err)?;
         sui_compat::wire::write_string(&mut trailer, absolute(info.deriver.as_deref().unwrap_or(""))).map_err(op_err)?;
         sui_compat::wire::write_u64(&mut trailer, 0).map_err(op_err)?;
-        for chunk in nar.chunks(CHUNK) {
-            write_stderr_data(&mut self.writer, chunk).await?;
-        }
-        write_stderr_data(&mut self.writer, &trailer).await?;
-        self.finish().await?;
-        write_u64(&mut self.writer, 1).await?;
-        Ok(())
+        nar.extend_from_slice(&trailer);
+        Ok(nar)
     }
 
     pub(super) async fn handle_import_paths(&mut self) -> Result<(), ConnectionError> {
-        let mut entries = Vec::new();
-        {
-            let mut tunnel = Tunnel::new(&mut self.reader, &mut self.writer);
-            loop {
-                match source_u64(&mut tunnel).await? {
-                    0 => break,
-                    1 => {}
-                    _ => return Err(op_err("input doesn't look like something created by 'nix-store --export'")),
-                }
-                let nar = read_nar(&mut tunnel).await?;
-                if source_u64(&mut tunnel).await? != EXPORT_MAGIC {
-                    return Err(op_err("Nix archive cannot be imported; wrong format"));
-                }
-                let path = source_string(&mut tunnel).await?;
-                let references = source_string_list(&mut tunnel).await?;
-                let deriver = source_string(&mut tunnel).await?;
-                if source_u64(&mut tunnel).await? == 1 {
-                    source_string(&mut tunnel).await?;
-                }
-                entries.push((path, references, deriver, nar));
-            }
-        }
+        let entries = read_export_stream(&mut Tunnel::new(&mut self.reader, &mut self.writer)).await?;
+        let imported = self.import_exported(entries, !self.trusted()).await?;
+        self.finish().await?;
+        write_string_list(&mut self.writer, &imported).await?;
+        Ok(())
+    }
+
+    pub(super) async fn import_exported(&self, entries: Vec<Exported>, check_sigs: bool) -> Result<Vec<String>, ConnectionError> {
         let mut imported = Vec::with_capacity(entries.len());
         for (path, references, deriver, nar) in entries {
             self.parse_path(&path).map_err(|e| op_err(e.to_string()))?;
@@ -270,13 +266,36 @@ where
                 registration_time: registration_time_or_now(0),
                 content_address: None,
             };
-            self.import_path(&info, &nar, false, !self.trusted()).await?;
+            self.import_path(&info, &nar, false, check_sigs).await?;
             imported.push(path);
         }
-        self.finish().await?;
-        write_string_list(&mut self.writer, &imported).await?;
-        Ok(())
+        Ok(imported)
     }
+}
+
+pub(super) type Exported = (String, Vec<String>, String, Vec<u8>);
+
+pub(super) async fn read_export_stream(src: &mut impl super::wire::ByteSource) -> Result<Vec<Exported>, ConnectionError> {
+    let mut entries = Vec::new();
+    loop {
+        match source_u64(src).await? {
+            0 => break,
+            1 => {}
+            _ => return Err(op_err("input doesn't look like something created by 'nix-store --export'")),
+        }
+        let nar = read_nar(src).await?;
+        if source_u64(src).await? != EXPORT_MAGIC {
+            return Err(op_err("Nix archive cannot be imported; wrong format"));
+        }
+        let path = source_string(src).await?;
+        let references = source_string_list(src).await?;
+        let deriver = source_string(src).await?;
+        if source_u64(src).await? == 1 {
+            source_string(src).await?;
+        }
+        entries.push((path, references, deriver, nar));
+    }
+    Ok(entries)
 }
 
 const CHUNK: usize = 64 * 1024;

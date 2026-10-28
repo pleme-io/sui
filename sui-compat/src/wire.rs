@@ -11,6 +11,43 @@ pub const WORKER_MAGIC_1: u64 = 0x6e697863; // "nixc"
 /// Worker protocol magic: server responds with this.
 pub const WORKER_MAGIC_2: u64 = 0x6478696f; // "dxio"
 
+pub const SERVE_MAGIC_1: u64 = 0x390c_9deb;
+pub const SERVE_MAGIC_2: u64 = 0x5452_eecb;
+pub const SERVE_PROTOCOL_VERSION: u64 = (2 << 8) | 7;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u64)]
+pub enum ServeCommand {
+    QueryValidPaths = 1,
+    QueryPathInfos = 2,
+    DumpStorePath = 3,
+    ImportPaths = 4,
+    ExportPaths = 5,
+    BuildPaths = 6,
+    QueryClosure = 7,
+    BuildDerivation = 8,
+    AddToStoreNar = 9,
+}
+
+impl TryFrom<u64> for ServeCommand {
+    type Error = WireError;
+
+    fn try_from(v: u64) -> Result<Self, Self::Error> {
+        Ok(match v {
+            1 => Self::QueryValidPaths,
+            2 => Self::QueryPathInfos,
+            3 => Self::DumpStorePath,
+            4 => Self::ImportPaths,
+            5 => Self::ExportPaths,
+            6 => Self::BuildPaths,
+            7 => Self::QueryClosure,
+            8 => Self::BuildDerivation,
+            9 => Self::AddToStoreNar,
+            other => return Err(WireError::Protocol(format!("unknown serve command {other}"))),
+        })
+    }
+}
+
 /// Current protocol version (major.minor packed as u64).
 pub const PROTOCOL_VERSION: u64 = (1 << 8) | 37; // 1.37
 

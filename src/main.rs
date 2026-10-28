@@ -430,6 +430,11 @@ enum Commands {
 #[derive(Subcommand)]
 enum StoreCommands {
     PathInfo { path: String, #[arg(long)] json: bool },
+    /// cppnix's `nix-store --serve`: the legacy serve protocol on stdin and stdout, for ssh:// stores and builders.
+    Serve {
+        /// Allow commands that write to the store (import, build).
+        #[arg(long)] write: bool,
+    },
     /// cppnix's `nix-store --realise`: ensure store paths, build derivations,
     /// print what results (or the permanent roots made for it).
     Realise {
@@ -2535,6 +2540,41 @@ async fn store_ping() -> Result<(), CliError> {
     );
     println!("Trusted: {}", hs.trust_label());
     Ok(())
+}
+
+async fn store_serve(write: bool) -> Result<(), CliError> {
+    use sui_daemon::stdio::{StdioBackend, resolve_backend};
+    let refuse = |message: String| CliError::Orchestrate { operation: "nix-store --serve", message };
+    if !sui_daemon::ServeModes::load().legacy_serve {
+        return Err(refuse("serving the legacy serve protocol is switched off (sui.yaml serve.legacy_serve: false)".into()));
+    }
+    let store_url = sui_store::store_url();
+    let backend = resolve_backend(
+        store_url.as_deref(),
+        std::path::Path::new("/nix/var/nix"),
+        std::path::Path::new(sui_daemon::DEFAULT_SOCKET_PATH),
+    )
+    .map_err(|e| refuse(e.to_string()))?;
+    if let StdioBackend::Forward(socket) = backend {
+        return Err(refuse(format!(
+            "this user reaches the store only through the daemon at {}, and sui does not yet bridge the serve protocol to it; \
+             connect as a user that can open the local store (ssh://root@host) or use ssh-ng://",
+            socket.display()
+        )));
+    }
+    let store = LocalStore::open_rw(NIX_DB_PATH).await.map_err(|e| CliError::StoreOpen { path: NIX_DB_PATH, source: e })?;
+    let signatures = sui_compat::nix_conf::NixConfig::load()
+        .map(|c| sui_daemon::SignaturePolicy::from_nix_config(&c))
+        .unwrap_or_default();
+    let mut conn = sui_daemon::Connection::new(
+        std::sync::Arc::new(store),
+        tokio::io::stdin(),
+        tokio::io::stdout(),
+        sui_daemon::TrustLevel::Trusted,
+    )
+    .with_caches(sui_orchestrate::build_caches(&sui_orchestrate::get_substituters()))
+    .with_signature_policy(signatures);
+    conn.serve(write).await.map_err(|e| refuse(e.to_string()))
 }
 
 async fn daemon_stdio(force_trusted: bool, force_untrusted: bool, process_ops: bool) -> Result<(), CliError> {
@@ -7475,6 +7515,7 @@ async fn main() -> Result<(), CliError> {
                     store_make_content_addressed(&mp)?;
                 }
                 StoreCommands::Ping => { store_ping().await?; }
+                StoreCommands::Serve { write } => { store_serve(write).await?; }
                 StoreCommands::AddPath { path: p, name } => {
                     store_add_path(&p, name.as_deref()).await?;
                 }

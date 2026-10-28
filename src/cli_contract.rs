@@ -475,6 +475,7 @@ pub const CONTRACT: &[(&[&str], &str, Honour)] = &[
     (&["store", "delete"], "paths", H),
     // Wired before this pass: `store delete` REFUSES without it.
     (&["store", "delete"], "ignore_liveness", H),
+    (&["store", "serve"], "write", H),
     (&["store", "realise"], "paths", H),
     (&["store", "realise"], "add_root", H),
     (&["store", "realise"], "dry_run", H),

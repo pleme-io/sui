@@ -1,7 +1,7 @@
 # pending-parity: <row id> — <reason>. One line per cppnix row sui does not implement.
 # The gate (src/parity_matrix.rs) fails on an unwaived missing row, on a waived row sui implements,
 # on a waiver naming no row, and when the count differs from pending-ceiling. The ceiling only falls.
-pending-ceiling: 1777
+pending-ceiling: 1766
 pending-parity: nix-command:nix bundle — cli_coverage grades it Stub
 pending-parity: nix-command:nix config check — no `sui config check` subcommand
 pending-parity: nix-command:nix develop — cli_coverage grades it Stub
@@ -1276,7 +1276,6 @@ pending-parity: legacy-op:nix-store --realize — `sui store --realize x x`: une
 pending-parity: legacy-op:nix-store --register-validity — `sui store --register-validity x x`: unexpected argument found
 pending-parity: legacy-op:nix-store --repair-path — `sui store --repair-path x x`: unexpected argument found
 pending-parity: legacy-op:nix-store --restore — `sui store --restore x x`: unexpected argument found
-pending-parity: legacy-op:nix-store --serve — `sui store --serve x x`: unexpected argument found
 pending-parity: legacy-op:nix-store --verify-path — `sui store --verify-path x x`: unexpected argument found
 pending-parity: legacy-op:nix-store -A — `sui store -A x x`: unexpected argument found
 pending-parity: legacy-op:nix-store -l — `sui store -l x x`: unexpected argument found
@@ -1409,7 +1408,6 @@ pending-parity: legacy-flag:nix-store --query -f — cli_contract refuses `sui s
 pending-parity: legacy-flag:nix-store --realise --repair — cli_contract refuses `sui store realise --repair`: `sui store realise`: the argument `repair` is ACCEPTED BUT NOT HONOURED (refused 2026-10-25). `--repair` rebuilds and replaces corrupt outputs; sui's realise does not repair yet. Refusing rather than running and reporting success. See src/cli_contract.rs: not yet implemented
 pending-parity: legacy-flag:nix-store --register-validity --hash-given — `sui store --register-validity --hash-given x x`: unexpected argument found
 pending-parity: legacy-flag:nix-store --register-validity --reregister — `sui store --register-validity --reregister x x`: unexpected argument found
-pending-parity: legacy-flag:nix-store --serve --write — `sui store --serve --write x x`: unexpected argument found
 pending-parity: legacy-flag:nix-store --verify --check-contents — `sui store verify --check-contents x x`: unexpected argument found
 pending-parity: legacy-flag:nix-store --verify --repair — `sui store verify --repair x x`: unexpected argument found
 pending-parity: legacy-common-flag:build-remote --cores — argv[0] `build-remote` is not a sui LegacyCmd
@@ -1729,15 +1727,6 @@ pending-parity: xp-feature:recursive-nix — no sui source names "recursive-nix"
 pending-parity: xp-feature:verified-fetches — no sui source names "verified-fetches"
 pending-parity: builtin:fetchClosure — absent from sui-eval's builtins attrset
 pending-parity: builtin:outputOf — absent from sui-eval's builtins attrset
-pending-parity: serve-command:AddToStoreNar — no sui claim for this row
-pending-parity: serve-command:BuildDerivation — no sui claim for this row
-pending-parity: serve-command:BuildPaths — no sui claim for this row
-pending-parity: serve-command:DumpStorePath — no sui claim for this row
-pending-parity: serve-command:ExportPaths — no sui claim for this row
-pending-parity: serve-command:ImportPaths — no sui claim for this row
-pending-parity: serve-command:QueryClosure — no sui claim for this row
-pending-parity: serve-command:QueryPathInfos — no sui claim for this row
-pending-parity: serve-command:QueryValidPaths — no sui claim for this row
 pending-parity: machines-field:mandatoryFeatures — no sui claim for this row
 pending-parity: machines-field:maxJobs — no sui claim for this row
 pending-parity: machines-field:speedFactor — no sui claim for this row

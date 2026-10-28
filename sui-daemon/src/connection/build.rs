@@ -69,7 +69,7 @@ impl BuildOutcome {
         Self { status, error, times_built: 0, start: 0, stop: 0, built: Vec::new() }
     }
 
-    fn succeeded(&self) -> bool {
+    pub(super) fn succeeded(&self) -> bool {
         matches!(self.status, BuildStatus::Built | BuildStatus::Substituted | BuildStatus::AlreadyValid)
     }
 }

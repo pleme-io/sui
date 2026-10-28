@@ -190,6 +190,7 @@ fn translate_store(args: &[String]) -> Vec<String> {
         ("--add",       "add"),
         ("--dump",      "dump-path"),
         ("--export",    "export"),
+        ("--serve",     "serve"),
         ("--import",    "import"),
     ]);
     let mut out = vec!["store".to_string()];

@@ -157,6 +157,9 @@ where
     }
 
     async fn write_activity(&mut self, event: &ActivityEvent) -> Result<(), ConnectionError> {
+        if !self.frames {
+            return Ok(());
+        }
         let mut frame = Vec::new();
         activity::write_frame(&mut frame, event, self.client_version, self.verbosity)?;
         if !frame.is_empty() {

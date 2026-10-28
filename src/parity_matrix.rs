@@ -341,10 +341,13 @@ impl Sui {
                 Some(op) => Verdict::Implemented(format!("sui_compat::wire::WorkerOp::{op:?}")),
                 None => Verdict::Missing(format!("sui_compat::wire::WorkerOp has no opcode {code}")),
             },
+            Row::ServeCommand { code, .. } => match sui_compat::wire::ServeCommand::try_from(*code) {
+                Ok(cmd) => Verdict::Implemented(format!("sui_compat::wire::ServeCommand::{cmd:?}")),
+                Err(_) => Verdict::Missing(format!("sui_compat::wire::ServeCommand has no command {code}")),
+            },
             Row::StoreScheme { .. }
             | Row::StoreSetting { .. }
             | Row::Fetcher { .. }
-            | Row::ServeCommand { .. }
             | Row::MachinesField { .. } => Verdict::Missing("no sui claim for this row".into()),
         }
     }
