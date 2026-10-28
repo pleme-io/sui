@@ -5,6 +5,72 @@
 //! git CLI operation that was previously shelled out to.
 
 use std::path::Path;
+use std::process::Command;
+
+use sui_compat::nix_conf::AccessTokens;
+
+pub(crate) struct HttpAuth {
+    config_key: String,
+    header: String,
+}
+
+impl std::fmt::Debug for HttpAuth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HttpAuth").field("config_key", &self.config_key).finish_non_exhaustive()
+    }
+}
+
+pub(crate) fn http_auth(url: &str, tokens: &AccessTokens) -> Option<HttpAuth> {
+    let url = url.strip_prefix("git+").unwrap_or(url);
+    let (scheme, rest) = url.split_once("://")?;
+    let (authority, path) = rest.split_once('/').map_or((rest, ""), |(a, p)| (a, p));
+    if authority.is_empty() || authority.contains('@') {
+        return None;
+    }
+    let host = authority
+        .strip_prefix('[')
+        .and_then(|h| h.split_once(']').map(|(h, _)| h))
+        .unwrap_or_else(|| authority.rsplit_once(':').map_or(authority, |(h, _)| h));
+    match scheme {
+        "https" => {}
+        "http" if matches!(host, "localhost" | "127.0.0.1" | "::1") => {}
+        _ => return None,
+    }
+    let path = path.split(['?', '#']).next().unwrap_or("");
+    let token = tokens.for_url(authority, &format!("{authority}/{path}"))?;
+    let user_pass = match token.split_once(':') {
+        Some(("PAT" | "OAuth2", value)) => format!("oauth2:{value}"),
+        _ => format!("x-access-token:{token}"),
+    };
+    use base64::Engine;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(user_pass);
+    Some(HttpAuth {
+        config_key: format!("http.{scheme}://{authority}/.extraHeader"),
+        header: format!("Authorization: Basic {encoded}"),
+    })
+}
+
+pub(crate) fn remote_git(url: &str, tokens: &AccessTokens) -> Command {
+    let mut cmd = Command::new("git");
+    if let Some(auth) = http_auth(url, tokens) {
+        let base = std::env::var("GIT_CONFIG_COUNT")
+            .ok()
+            .and_then(|n| n.parse::<usize>().ok())
+            .unwrap_or(0);
+        cmd.env(format!("GIT_CONFIG_KEY_{base}"), auth.config_key)
+            .env(format!("GIT_CONFIG_VALUE_{base}"), auth.header)
+            .env("GIT_CONFIG_COUNT", (base + 1).to_string());
+    }
+    cmd
+}
+
+fn load_tokens() -> Result<AccessTokens, String> {
+    crate::fetcher::access_tokens().map_err(|e| e.to_string())
+}
+
+pub fn remote_command(url: &str) -> Result<Command, String> {
+    Ok(remote_git(url, &load_tokens()?))
+}
 
 /// Clone a remote repository into `dest`.
 ///
@@ -21,6 +87,17 @@ pub fn clone(
     shallow: bool,
     submodules: bool,
 ) -> Result<gix::Repository, String> {
+    clone_using(url, dest, branch, shallow, submodules, &load_tokens()?)
+}
+
+fn clone_using(
+    url: &str,
+    dest: &Path,
+    branch: Option<&str>,
+    shallow: bool,
+    submodules: bool,
+    tokens: &AccessTokens,
+) -> Result<gix::Repository, String> {
     // Use git CLI for clone operations. gix's edition-2024 fork panics
     // on background threads during fetch for certain refspec patterns.
     // git CLI is reliable and clone only happens on cache miss.
@@ -34,7 +111,7 @@ pub fn clone(
     args.push(url.to_string());
     args.push(dest.to_string_lossy().into_owned());
 
-    let first = std::process::Command::new("git")
+    let first = remote_git(url, tokens)
         .args(&args)
         .stdout(std::process::Stdio::null())
         .output()
@@ -50,7 +127,7 @@ pub fn clone(
             }
             retry_args.push(url.to_string());
             retry_args.push(dest.to_string_lossy().into_owned());
-            let retry = std::process::Command::new("git")
+            let retry = remote_git(url, tokens)
                 .args(&retry_args)
                 .stdout(std::process::Stdio::null())
                 .output()
@@ -73,14 +150,14 @@ pub fn clone(
         .map_err(|e| format!("open cloned repo: {e}"))?;
 
     if submodules {
-        init_submodules_recursive(&repo)?;
+        init_submodules_recursive(&repo, tokens)?;
     }
 
     Ok(repo)
 }
 
 /// Recursively initialize and update all submodules.
-fn init_submodules_recursive(repo: &gix::Repository) -> Result<(), String> {
+fn init_submodules_recursive(repo: &gix::Repository, tokens: &AccessTokens) -> Result<(), String> {
     let modules = match repo.submodules() {
         Ok(Some(mods)) => mods,
         Ok(None) => return Ok(()),
@@ -101,7 +178,7 @@ fn init_submodules_recursive(repo: &gix::Repository) -> Result<(), String> {
         let dest = workdir.join(sub_path.to_string());
 
         if !dest.exists() {
-            clone(&sub_url, &dest, None, false, true)
+            clone_using(&sub_url, &dest, None, false, true, tokens)
                 .map_err(|e| format!("clone submodule {name}: {e}"))?;
         }
     }
@@ -112,7 +189,15 @@ fn init_submodules_recursive(repo: &gix::Repository) -> Result<(), String> {
 ///
 /// This detaches HEAD at the given commit and resets the working tree.
 fn fetch_rev(repo_path: &Path, rev: &str) -> Result<(), String> {
-    let out = std::process::Command::new("git")
+    let origin = gix::open(repo_path)
+        .ok()
+        .and_then(|r| {
+            r.find_remote("origin")
+                .ok()
+                .and_then(|o| o.url(gix::remote::Direction::Fetch).map(|u| u.to_bstring().to_string()))
+        })
+        .unwrap_or_default();
+    let out = remote_git(&origin, &load_tokens()?)
         .arg("-C")
         .arg(repo_path)
         .args(["fetch", "--quiet", "origin", rev])
@@ -341,7 +426,7 @@ pub fn ls_remote(url: &str, ref_name: &str) -> Result<String, String> {
 
     // For network URLs, use git CLI (gix's remote connect panics on
     // background threads in our edition-2024 fork).
-    let output = std::process::Command::new("git")
+    let output = remote_command(url)?
         .args(["ls-remote", url])
         .output()
         .map_err(|e| format!("git ls-remote {url}: {e}"))?;
@@ -703,6 +788,114 @@ mod tests {
 
         let _ = fs::remove_dir_all(&dir);
         let _ = fs::remove_dir_all(&plain);
+    }
+
+    fn tokens(value: &str) -> AccessTokens {
+        sui_compat::nix_conf::NixConfig::load_from(&sui_compat::nix_conf::ConfigSources {
+            system: std::path::PathBuf::from("/nonexistent/sui-test/nix.conf"),
+            user: vec![],
+            nix_config: Some(format!("access-tokens = {value}")),
+        })
+        .unwrap()
+        .access_tokens()
+    }
+
+    fn decoded(auth: &HttpAuth) -> String {
+        use base64::Engine;
+        let b64 = auth.header.strip_prefix("Authorization: Basic ").unwrap();
+        String::from_utf8(base64::engine::general_purpose::STANDARD.decode(b64).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn http_auth_is_scoped_to_hosts_with_a_token() {
+        let t = tokens("github.com=GHTOKEN gitlab.example.com=PAT:GLTOKEN");
+        let gh = http_auth("https://github.com/pleme-io/convergence-trait.git", &t).unwrap();
+        assert_eq!(gh.config_key, "http.https://github.com/.extraHeader");
+        assert_eq!(decoded(&gh), "x-access-token:GHTOKEN");
+        assert!(!format!("{gh:?}").contains("GHTOKEN"));
+        let gh = http_auth("git+https://github.com/pleme-io/x?ref=main", &t).unwrap();
+        assert_eq!(decoded(&gh), "x-access-token:GHTOKEN");
+        let gl = http_auth("https://gitlab.example.com/g/r.git", &t).unwrap();
+        assert_eq!(decoded(&gl), "oauth2:GLTOKEN");
+        assert!(http_auth("https://codeberg.org/a/b.git", &t).is_none());
+        assert!(http_auth("http://github.com/a/b.git", &t).is_none());
+        assert!(http_auth("https://me:pw@github.com/a/b.git", &t).is_none());
+        assert!(http_auth("ssh://git@github.com/a/b.git", &t).is_none());
+        assert!(http_auth("git@github.com:a/b.git", &t).is_none());
+        assert!(http_auth("file:///tmp/github.com/x", &t).is_none());
+    }
+
+    #[test]
+    fn http_auth_prefers_the_longest_path_key() {
+        let t = tokens("github.com=HOST github.com/pleme-io=ORG");
+        assert_eq!(decoded(&http_auth("https://github.com/pleme-io/sui", &t).unwrap()), "x-access-token:ORG");
+        assert_eq!(decoded(&http_auth("https://github.com/NixOS/nix", &t).unwrap()), "x-access-token:HOST");
+    }
+
+    #[test]
+    fn remote_git_keeps_the_token_off_argv() {
+        let t = tokens("github.com=GHTOKEN");
+        let url = "https://github.com/pleme-io/convergence-trait.git";
+        let mut cmd = remote_git(url, &t);
+        cmd.args(["ls-remote", url]);
+        assert!(cmd.get_args().all(|a| !a.to_string_lossy().contains("GHTOKEN")));
+        let envs: Vec<(String, String)> = cmd
+            .get_envs()
+            .filter_map(|(k, v)| Some((k.to_string_lossy().into_owned(), v?.to_string_lossy().into_owned())))
+            .collect();
+        assert!(envs.iter().any(|(k, v)| k.starts_with("GIT_CONFIG_KEY_") && v == "http.https://github.com/.extraHeader"));
+        assert!(envs.iter().any(|(k, _)| k == "GIT_CONFIG_COUNT"));
+        assert!(remote_git("https://codeberg.org/a/b.git", &t).get_envs().next().is_none());
+    }
+
+    fn capture_http() -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut s) = stream else { continue };
+                let mut buf = Vec::new();
+                let mut chunk = [0u8; 4096];
+                while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                    match s.read(&mut chunk) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                    }
+                }
+                sink.lock().unwrap().push(String::from_utf8_lossy(&buf).into_owned());
+                let _ = s.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            }
+        });
+        (format!("http://127.0.0.1:{port}/pleme-io/private.git"), seen)
+    }
+
+    #[test]
+    fn clone_presents_the_configured_token_and_never_reports_it() {
+        let (url, seen) = capture_http();
+        let dest = temp_dir("auth_clone");
+        let err = clone_using(&url, &dest, None, false, false, &tokens("127.0.0.1=SECRETTOKEN")).unwrap_err();
+        use base64::Engine;
+        let encoded = base64::engine::general_purpose::STANDARD.encode("x-access-token:SECRETTOKEN");
+        let requests = seen.lock().unwrap().clone();
+        assert!(!requests.is_empty(), "git never reached the test server: {err}");
+        assert!(
+            requests.iter().all(|r| r.lines().any(|l| l.eq_ignore_ascii_case(&format!("authorization: Basic {encoded}")))),
+            "a request went out without the credential: {requests:?}"
+        );
+        assert!(!err.contains("SECRETTOKEN") && !err.contains(&encoded), "{err}");
+    }
+
+    #[test]
+    fn clone_sends_no_credential_to_a_host_without_a_token() {
+        let (url, seen) = capture_http();
+        let dest = temp_dir("noauth_clone");
+        clone_using(&url, &dest, None, false, false, &tokens("github.com=SECRETTOKEN")).unwrap_err();
+        let requests = seen.lock().unwrap().clone();
+        assert!(!requests.is_empty());
+        assert!(requests.iter().all(|r| !r.to_ascii_lowercase().contains("authorization:")), "{requests:?}");
     }
 
     #[test]

@@ -532,7 +532,7 @@ impl InputFetcher {
         }
 
         // Fall back to git CLI for non-GitHub repos or when tarball fails.
-        let status = std::process::Command::new("git")
+        let status = crate::git::remote_git(url, &access_tokens()?)
             .args(["clone", "--depth", "1", url])
             .arg(&staging)
             .stdout(std::process::Stdio::null())
@@ -950,6 +950,14 @@ fn retry_after_seconds(headers: &ureq::http::HeaderMap) -> Option<u64> {
         .ok()
 }
 
+pub(crate) fn access_tokens() -> Result<sui_compat::nix_conf::AccessTokens, FetchError> {
+    let cfg = sui_compat::nix_conf::NixConfig::load()?;
+    for (file, kind) in cfg.unreadable() {
+        tracing::warn!(file = %file.display(), error = ?kind, "nix configuration file unreadable; skipped");
+    }
+    Ok(cfg.access_tokens())
+}
+
 /// Resolve the credential for an outgoing request, the way CppNix does first.
 ///
 /// 1. nix's configuration (`sui_compat::nix_conf`: the system nix.conf, the
@@ -969,11 +977,7 @@ pub(crate) fn github_token_for_url(url: &str) -> Result<Option<String>, FetchErr
     let Some(repo_key) = github_repo_key(url) else {
         return Ok(None);
     };
-    let cfg = sui_compat::nix_conf::NixConfig::load()?;
-    for (file, kind) in cfg.unreadable() {
-        tracing::warn!(file = %file.display(), error = ?kind, "nix configuration file unreadable; skipped");
-    }
-    if let Some(t) = cfg.access_tokens().for_url("github.com", &repo_key) {
+    if let Some(t) = access_tokens()?.for_url("github.com", &repo_key) {
         return Ok(Some(t.to_string()));
     }
     if let Ok(t) = std::env::var("GITHUB_TOKEN")

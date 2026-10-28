@@ -6472,7 +6472,6 @@ fn flake_clone(flake_ref: &str, dest: Option<&str>) -> Result<(), CliError> {
     // For now, support github:owner/repo and git+https URLs via
     // a typed Command wrapping git clone.  (`flake clone` in cppnix
     // does the same under the hood.)
-    use std::process::Command;
     let (url, _git_ref) = parse_clone_target(flake_ref)?;
     let dest = dest.map(std::path::PathBuf::from).unwrap_or_else(|| {
         // Default to the repo's basename — matches cppnix's
@@ -6486,7 +6485,8 @@ fn flake_clone(flake_ref: &str, dest: Option<&str>) -> Result<(), CliError> {
             "flake clone: destination {} already exists", dest.display()
         )));
     }
-    let status = Command::new("git")
+    let status = sui_eval::git::remote_command(&url)
+        .map_err(|e| CliError::NotImplemented(format!("flake clone: {e}")))?
         .args(["clone", "--depth", "1", &url])
         .arg(&dest)
         .status()
