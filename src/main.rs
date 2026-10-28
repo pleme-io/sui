@@ -20,6 +20,8 @@ mod agent;
 mod cli_contract;
 mod legacy;
 mod parity_corpus;
+#[cfg(test)]
+mod parity_matrix;
 mod perf_seal;
 use sui_cache::StorageBackend as _;
 use sui_store::{LocalStore, Store, Substitutor};

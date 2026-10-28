@@ -1,0 +1,1781 @@
+# pending-parity: <row id> — <reason>. One line per cppnix row sui does not implement.
+# The gate (src/parity_matrix.rs) fails on an unwaived missing row, on a waived row sui implements,
+# on a waiver naming no row, and when the count differs from pending-ceiling. The ceiling only falls.
+pending-ceiling: 1777
+pending-parity: nix-command:nix bundle — cli_coverage grades it Stub
+pending-parity: nix-command:nix config check — no `sui config check` subcommand
+pending-parity: nix-command:nix develop — cli_coverage grades it Stub
+pending-parity: nix-command:nix edit — cli_coverage grades it Stub
+pending-parity: nix-command:nix env — no `sui env` subcommand
+pending-parity: nix-command:nix env shell — no `sui env shell` subcommand
+pending-parity: nix-command:nix flake info — no `sui flake info` subcommand
+pending-parity: nix-command:nix flake prefetch-inputs — no `sui flake prefetch-inputs` subcommand
+pending-parity: nix-command:nix fmt — cli_coverage grades it Stub
+pending-parity: nix-command:nix formatter — no `sui formatter` subcommand
+pending-parity: nix-command:nix formatter build — no `sui formatter build` subcommand
+pending-parity: nix-command:nix formatter run — no `sui formatter run` subcommand
+pending-parity: nix-command:nix hash convert — no `sui hash convert` subcommand
+pending-parity: nix-command:nix help-stores — no `sui help-stores` subcommand
+pending-parity: nix-command:nix log — cli_coverage grades it Stub
+pending-parity: nix-command:nix nar — no `sui nar` subcommand
+pending-parity: nix-command:nix nar cat — no `sui nar cat` subcommand
+pending-parity: nix-command:nix nar dump-path — no `sui nar dump-path` subcommand
+pending-parity: nix-command:nix nar ls — no `sui nar ls` subcommand
+pending-parity: nix-command:nix nar pack — no `sui nar pack` subcommand
+pending-parity: nix-command:nix profile add — no `sui profile add` subcommand
+pending-parity: nix-command:nix profile diff-closures — no `sui profile diff-closures` subcommand
+pending-parity: nix-command:nix realisation — no `sui realisation` subcommand
+pending-parity: nix-command:nix realisation info — no `sui realisation info` subcommand
+pending-parity: nix-command:nix repl — cli_coverage grades it Stub
+pending-parity: nix-command:nix store add — no `sui store add` subcommand
+pending-parity: nix-command:nix store add-file — cli_coverage grades it Stub
+pending-parity: nix-command:nix store copy-log — no `sui store copy-log` subcommand
+pending-parity: nix-command:nix store copy-sigs — no `sui store copy-sigs` subcommand
+pending-parity: nix-command:nix store diff-closures — no `sui store diff-closures` subcommand
+pending-parity: nix-command:nix store path-from-hash-part — no `sui store path-from-hash-part` subcommand
+pending-parity: nix-command:nix store repair — cli_coverage grades it Stub
+pending-parity: nix-command:nix upgrade-nix — cli_coverage grades it Stub
+pending-parity: nix-command:nix why-depends — no `sui why-depends` subcommand
+pending-parity: nix-flag:nix build --arg — `sui build` declares no --arg
+pending-parity: nix-flag:nix build --arg-from-file — `sui build` declares no --arg-from-file
+pending-parity: nix-flag:nix build --arg-from-stdin — `sui build` declares no --arg-from-stdin
+pending-parity: nix-flag:nix build --argstr — `sui build` declares no --argstr
+pending-parity: nix-flag:nix build --commit-lock-file — `sui build` declares no --commit-lock-file
+pending-parity: nix-flag:nix build --debugger — `sui build` declares no --debugger
+pending-parity: nix-flag:nix build --eval-store — `sui build` declares no --eval-store
+pending-parity: nix-flag:nix build --include — `sui build` declares no --include
+pending-parity: nix-flag:nix build --inputs-from — `sui build` declares no --inputs-from
+pending-parity: nix-flag:nix build --no-pretty — `sui build` declares no --no-pretty
+pending-parity: nix-flag:nix build --no-registries — `sui build` declares no --no-registries
+pending-parity: nix-flag:nix build --no-update-lock-file — `sui build` declares no --no-update-lock-file
+pending-parity: nix-flag:nix build --no-write-lock-file — cli_contract refuses --no-write-lock-file: the operator directs sui NOT to write flake.lock; sui reads the flag nowhere and its lock path is free to write anyway — a forbidden mutation, not just a wrong answer
+pending-parity: nix-flag:nix build --output-lock-file — `sui build` declares no --output-lock-file
+pending-parity: nix-flag:nix build --override-flake — `sui build` declares no --override-flake
+pending-parity: nix-flag:nix build --override-input — `sui build` declares no --override-input
+pending-parity: nix-flag:nix build --pretty — `sui build` declares no --pretty
+pending-parity: nix-flag:nix build --profile — `sui build` declares no --profile
+pending-parity: nix-flag:nix build --rebuild — cli_contract refuses --rebuild: forces a rebuild to check reproducibility; sui reads it nowhere, so a cache hit is reported as a successful rebuild — the exact answer the flag exists to distrust
+pending-parity: nix-flag:nix build --recreate-lock-file — `sui build` declares no --recreate-lock-file
+pending-parity: nix-flag:nix build --reference-lock-file — `sui build` declares no --reference-lock-file
+pending-parity: nix-flag:nix build --repair — `sui build` declares no --repair
+pending-parity: nix-flag:nix build --stdin — `sui build` declares no --stdin
+pending-parity: nix-flag:nix build --update-input — `sui build` declares no --update-input
+pending-parity: nix-flag:nix bundle --arg — cli_coverage grades it Stub
+pending-parity: nix-flag:nix bundle --arg-from-file — cli_coverage grades it Stub
+pending-parity: nix-flag:nix bundle --arg-from-stdin — cli_coverage grades it Stub
+pending-parity: nix-flag:nix bundle --argstr — cli_coverage grades it Stub
+pending-parity: nix-flag:nix bundle --bundler — cli_coverage grades it Stub
+pending-parity: nix-flag:nix bundle --commit-lock-file — cli_coverage grades it Stub
+pending-parity: nix-flag:nix bundle --debugger — cli_coverage grades it Stub
+pending-parity: nix-flag:nix bundle --eval-store — cli_coverage grades it Stub
+pending-parity: nix-flag:nix bundle --expr — cli_coverage grades it Stub
+pending-parity: nix-flag:nix bundle --file — cli_coverage grades it Stub
+pending-parity: nix-flag:nix bundle --impure — cli_coverage grades it Stub
+pending-parity: nix-flag:nix bundle --include — cli_coverage grades it Stub
+pending-parity: nix-flag:nix bundle --inputs-from — cli_coverage grades it Stub
+pending-parity: nix-flag:nix bundle --no-registries — cli_coverage grades it Stub
+pending-parity: nix-flag:nix bundle --no-update-lock-file — cli_coverage grades it Stub
+pending-parity: nix-flag:nix bundle --no-write-lock-file — cli_coverage grades it Stub
+pending-parity: nix-flag:nix bundle --out-link — cli_coverage grades it Stub
+pending-parity: nix-flag:nix bundle --output-lock-file — cli_coverage grades it Stub
+pending-parity: nix-flag:nix bundle --override-flake — cli_coverage grades it Stub
+pending-parity: nix-flag:nix bundle --override-input — cli_coverage grades it Stub
+pending-parity: nix-flag:nix bundle --recreate-lock-file — cli_coverage grades it Stub
+pending-parity: nix-flag:nix bundle --reference-lock-file — cli_coverage grades it Stub
+pending-parity: nix-flag:nix bundle --repair — cli_coverage grades it Stub
+pending-parity: nix-flag:nix bundle --update-input — cli_coverage grades it Stub
+pending-parity: nix-flag:nix config show --json — `sui config show` declares no --json
+pending-parity: nix-flag:nix config show --no-pretty — `sui config show` declares no --no-pretty
+pending-parity: nix-flag:nix config show --pretty — `sui config show` declares no --pretty
+pending-parity: nix-flag:nix copy --all — `sui copy` declares no --all
+pending-parity: nix-flag:nix copy --arg — `sui copy` declares no --arg
+pending-parity: nix-flag:nix copy --arg-from-file — `sui copy` declares no --arg-from-file
+pending-parity: nix-flag:nix copy --arg-from-stdin — `sui copy` declares no --arg-from-stdin
+pending-parity: nix-flag:nix copy --argstr — `sui copy` declares no --argstr
+pending-parity: nix-flag:nix copy --commit-lock-file — `sui copy` declares no --commit-lock-file
+pending-parity: nix-flag:nix copy --debugger — `sui copy` declares no --debugger
+pending-parity: nix-flag:nix copy --derivation — `sui copy` declares no --derivation
+pending-parity: nix-flag:nix copy --eval-store — `sui copy` declares no --eval-store
+pending-parity: nix-flag:nix copy --expr — `sui copy` declares no --expr
+pending-parity: nix-flag:nix copy --file — `sui copy` declares no --file
+pending-parity: nix-flag:nix copy --include — `sui copy` declares no --include
+pending-parity: nix-flag:nix copy --inputs-from — `sui copy` declares no --inputs-from
+pending-parity: nix-flag:nix copy --no-recursive — `sui copy` declares no --no-recursive
+pending-parity: nix-flag:nix copy --no-registries — `sui copy` declares no --no-registries
+pending-parity: nix-flag:nix copy --no-update-lock-file — `sui copy` declares no --no-update-lock-file
+pending-parity: nix-flag:nix copy --no-write-lock-file — cli_contract refuses --no-write-lock-file: the operator directs sui NOT to write flake.lock; sui reads the flag nowhere and its lock path is free to write anyway — a forbidden mutation, not just a wrong answer
+pending-parity: nix-flag:nix copy --out-link — `sui copy` declares no --out-link
+pending-parity: nix-flag:nix copy --output-lock-file — `sui copy` declares no --output-lock-file
+pending-parity: nix-flag:nix copy --override-flake — `sui copy` declares no --override-flake
+pending-parity: nix-flag:nix copy --override-input — `sui copy` declares no --override-input
+pending-parity: nix-flag:nix copy --profile — `sui copy` declares no --profile
+pending-parity: nix-flag:nix copy --recreate-lock-file — `sui copy` declares no --recreate-lock-file
+pending-parity: nix-flag:nix copy --reference-lock-file — `sui copy` declares no --reference-lock-file
+pending-parity: nix-flag:nix copy --repair — `sui copy` declares no --repair
+pending-parity: nix-flag:nix copy --stdin — `sui copy` declares no --stdin
+pending-parity: nix-flag:nix copy --substitute-on-destination — `sui copy` declares no --substitute-on-destination
+pending-parity: nix-flag:nix copy --update-input — `sui copy` declares no --update-input
+pending-parity: nix-flag:nix derivation add --dry-run — `sui derivation add` declares no --dry-run
+pending-parity: nix-flag:nix derivation show --arg — `sui derivation show` declares no --arg
+pending-parity: nix-flag:nix derivation show --arg-from-file — `sui derivation show` declares no --arg-from-file
+pending-parity: nix-flag:nix derivation show --arg-from-stdin — `sui derivation show` declares no --arg-from-stdin
+pending-parity: nix-flag:nix derivation show --argstr — `sui derivation show` declares no --argstr
+pending-parity: nix-flag:nix derivation show --commit-lock-file — `sui derivation show` declares no --commit-lock-file
+pending-parity: nix-flag:nix derivation show --debugger — `sui derivation show` declares no --debugger
+pending-parity: nix-flag:nix derivation show --eval-store — `sui derivation show` declares no --eval-store
+pending-parity: nix-flag:nix derivation show --expr — `sui derivation show` declares no --expr
+pending-parity: nix-flag:nix derivation show --file — `sui derivation show` declares no --file
+pending-parity: nix-flag:nix derivation show --include — `sui derivation show` declares no --include
+pending-parity: nix-flag:nix derivation show --inputs-from — `sui derivation show` declares no --inputs-from
+pending-parity: nix-flag:nix derivation show --no-pretty — `sui derivation show` declares no --no-pretty
+pending-parity: nix-flag:nix derivation show --no-registries — `sui derivation show` declares no --no-registries
+pending-parity: nix-flag:nix derivation show --no-update-lock-file — `sui derivation show` declares no --no-update-lock-file
+pending-parity: nix-flag:nix derivation show --no-write-lock-file — cli_contract refuses --no-write-lock-file: the operator directs sui NOT to write flake.lock; sui reads the flag nowhere and its lock path is free to write anyway — a forbidden mutation, not just a wrong answer
+pending-parity: nix-flag:nix derivation show --output-lock-file — `sui derivation show` declares no --output-lock-file
+pending-parity: nix-flag:nix derivation show --override-flake — `sui derivation show` declares no --override-flake
+pending-parity: nix-flag:nix derivation show --override-input — `sui derivation show` declares no --override-input
+pending-parity: nix-flag:nix derivation show --pretty — `sui derivation show` declares no --pretty
+pending-parity: nix-flag:nix derivation show --recreate-lock-file — `sui derivation show` declares no --recreate-lock-file
+pending-parity: nix-flag:nix derivation show --recursive — `sui derivation show` declares no --recursive
+pending-parity: nix-flag:nix derivation show --reference-lock-file — `sui derivation show` declares no --reference-lock-file
+pending-parity: nix-flag:nix derivation show --repair — `sui derivation show` declares no --repair
+pending-parity: nix-flag:nix derivation show --stdin — `sui derivation show` declares no --stdin
+pending-parity: nix-flag:nix derivation show --update-input — `sui derivation show` declares no --update-input
+pending-parity: nix-flag:nix develop --arg — cli_coverage grades it Stub
+pending-parity: nix-flag:nix develop --arg-from-file — cli_coverage grades it Stub
+pending-parity: nix-flag:nix develop --arg-from-stdin — cli_coverage grades it Stub
+pending-parity: nix-flag:nix develop --argstr — cli_coverage grades it Stub
+pending-parity: nix-flag:nix develop --build — cli_coverage grades it Stub
+pending-parity: nix-flag:nix develop --check — cli_coverage grades it Stub
+pending-parity: nix-flag:nix develop --command — cli_coverage grades it Stub
+pending-parity: nix-flag:nix develop --commit-lock-file — cli_coverage grades it Stub
+pending-parity: nix-flag:nix develop --configure — cli_coverage grades it Stub
+pending-parity: nix-flag:nix develop --debugger — cli_coverage grades it Stub
+pending-parity: nix-flag:nix develop --eval-store — cli_coverage grades it Stub
+pending-parity: nix-flag:nix develop --expr — cli_coverage grades it Stub
+pending-parity: nix-flag:nix develop --file — cli_coverage grades it Stub
+pending-parity: nix-flag:nix develop --ignore-env — cli_coverage grades it Stub
+pending-parity: nix-flag:nix develop --impure — cli_coverage grades it Stub
+pending-parity: nix-flag:nix develop --include — cli_coverage grades it Stub
+pending-parity: nix-flag:nix develop --inputs-from — cli_coverage grades it Stub
+pending-parity: nix-flag:nix develop --install — cli_coverage grades it Stub
+pending-parity: nix-flag:nix develop --installcheck — cli_coverage grades it Stub
+pending-parity: nix-flag:nix develop --keep-env-var — cli_coverage grades it Stub
+pending-parity: nix-flag:nix develop --no-registries — cli_coverage grades it Stub
+pending-parity: nix-flag:nix develop --no-update-lock-file — cli_coverage grades it Stub
+pending-parity: nix-flag:nix develop --no-write-lock-file — cli_coverage grades it Stub
+pending-parity: nix-flag:nix develop --output-lock-file — cli_coverage grades it Stub
+pending-parity: nix-flag:nix develop --override-flake — cli_coverage grades it Stub
+pending-parity: nix-flag:nix develop --override-input — cli_coverage grades it Stub
+pending-parity: nix-flag:nix develop --phase — cli_coverage grades it Stub
+pending-parity: nix-flag:nix develop --profile — cli_coverage grades it Stub
+pending-parity: nix-flag:nix develop --recreate-lock-file — cli_coverage grades it Stub
+pending-parity: nix-flag:nix develop --redirect — cli_coverage grades it Stub
+pending-parity: nix-flag:nix develop --reference-lock-file — cli_coverage grades it Stub
+pending-parity: nix-flag:nix develop --repair — cli_coverage grades it Stub
+pending-parity: nix-flag:nix develop --set-env-var — cli_coverage grades it Stub
+pending-parity: nix-flag:nix develop --unpack — cli_coverage grades it Stub
+pending-parity: nix-flag:nix develop --unset-env-var — cli_coverage grades it Stub
+pending-parity: nix-flag:nix develop --update-input — cli_coverage grades it Stub
+pending-parity: nix-flag:nix edit --arg — cli_coverage grades it Stub
+pending-parity: nix-flag:nix edit --arg-from-file — cli_coverage grades it Stub
+pending-parity: nix-flag:nix edit --arg-from-stdin — cli_coverage grades it Stub
+pending-parity: nix-flag:nix edit --argstr — cli_coverage grades it Stub
+pending-parity: nix-flag:nix edit --commit-lock-file — cli_coverage grades it Stub
+pending-parity: nix-flag:nix edit --debugger — cli_coverage grades it Stub
+pending-parity: nix-flag:nix edit --eval-store — cli_coverage grades it Stub
+pending-parity: nix-flag:nix edit --expr — cli_coverage grades it Stub
+pending-parity: nix-flag:nix edit --file — cli_coverage grades it Stub
+pending-parity: nix-flag:nix edit --impure — cli_coverage grades it Stub
+pending-parity: nix-flag:nix edit --include — cli_coverage grades it Stub
+pending-parity: nix-flag:nix edit --inputs-from — cli_coverage grades it Stub
+pending-parity: nix-flag:nix edit --no-registries — cli_coverage grades it Stub
+pending-parity: nix-flag:nix edit --no-update-lock-file — cli_coverage grades it Stub
+pending-parity: nix-flag:nix edit --no-write-lock-file — cli_coverage grades it Stub
+pending-parity: nix-flag:nix edit --output-lock-file — cli_coverage grades it Stub
+pending-parity: nix-flag:nix edit --override-flake — cli_coverage grades it Stub
+pending-parity: nix-flag:nix edit --override-input — cli_coverage grades it Stub
+pending-parity: nix-flag:nix edit --recreate-lock-file — cli_coverage grades it Stub
+pending-parity: nix-flag:nix edit --reference-lock-file — cli_coverage grades it Stub
+pending-parity: nix-flag:nix edit --repair — cli_coverage grades it Stub
+pending-parity: nix-flag:nix edit --update-input — cli_coverage grades it Stub
+pending-parity: nix-flag:nix env shell --arg — no `sui env shell` subcommand
+pending-parity: nix-flag:nix env shell --arg-from-file — no `sui env shell` subcommand
+pending-parity: nix-flag:nix env shell --arg-from-stdin — no `sui env shell` subcommand
+pending-parity: nix-flag:nix env shell --argstr — no `sui env shell` subcommand
+pending-parity: nix-flag:nix env shell --command — no `sui env shell` subcommand
+pending-parity: nix-flag:nix env shell --commit-lock-file — no `sui env shell` subcommand
+pending-parity: nix-flag:nix env shell --debugger — no `sui env shell` subcommand
+pending-parity: nix-flag:nix env shell --eval-store — no `sui env shell` subcommand
+pending-parity: nix-flag:nix env shell --expr — no `sui env shell` subcommand
+pending-parity: nix-flag:nix env shell --file — no `sui env shell` subcommand
+pending-parity: nix-flag:nix env shell --ignore-env — no `sui env shell` subcommand
+pending-parity: nix-flag:nix env shell --impure — no `sui env shell` subcommand
+pending-parity: nix-flag:nix env shell --include — no `sui env shell` subcommand
+pending-parity: nix-flag:nix env shell --inputs-from — no `sui env shell` subcommand
+pending-parity: nix-flag:nix env shell --keep-env-var — no `sui env shell` subcommand
+pending-parity: nix-flag:nix env shell --no-registries — no `sui env shell` subcommand
+pending-parity: nix-flag:nix env shell --no-update-lock-file — no `sui env shell` subcommand
+pending-parity: nix-flag:nix env shell --no-write-lock-file — no `sui env shell` subcommand
+pending-parity: nix-flag:nix env shell --output-lock-file — no `sui env shell` subcommand
+pending-parity: nix-flag:nix env shell --override-flake — no `sui env shell` subcommand
+pending-parity: nix-flag:nix env shell --override-input — no `sui env shell` subcommand
+pending-parity: nix-flag:nix env shell --recreate-lock-file — no `sui env shell` subcommand
+pending-parity: nix-flag:nix env shell --reference-lock-file — no `sui env shell` subcommand
+pending-parity: nix-flag:nix env shell --repair — no `sui env shell` subcommand
+pending-parity: nix-flag:nix env shell --set-env-var — no `sui env shell` subcommand
+pending-parity: nix-flag:nix env shell --stdin — no `sui env shell` subcommand
+pending-parity: nix-flag:nix env shell --unset-env-var — no `sui env shell` subcommand
+pending-parity: nix-flag:nix env shell --update-input — no `sui env shell` subcommand
+pending-parity: nix-flag:nix eval --arg — `sui eval` declares no --arg
+pending-parity: nix-flag:nix eval --arg-from-file — `sui eval` declares no --arg-from-file
+pending-parity: nix-flag:nix eval --arg-from-stdin — `sui eval` declares no --arg-from-stdin
+pending-parity: nix-flag:nix eval --argstr — `sui eval` declares no --argstr
+pending-parity: nix-flag:nix eval --commit-lock-file — `sui eval` declares no --commit-lock-file
+pending-parity: nix-flag:nix eval --debugger — `sui eval` declares no --debugger
+pending-parity: nix-flag:nix eval --eval-store — `sui eval` declares no --eval-store
+pending-parity: nix-flag:nix eval --include — `sui eval` declares no --include
+pending-parity: nix-flag:nix eval --inputs-from — `sui eval` declares no --inputs-from
+pending-parity: nix-flag:nix eval --no-pretty — `sui eval` declares no --no-pretty
+pending-parity: nix-flag:nix eval --no-registries — `sui eval` declares no --no-registries
+pending-parity: nix-flag:nix eval --no-update-lock-file — `sui eval` declares no --no-update-lock-file
+pending-parity: nix-flag:nix eval --no-write-lock-file — cli_contract refuses --no-write-lock-file: the operator directs sui NOT to write flake.lock; sui reads the flag nowhere and its lock path is free to write anyway — a forbidden mutation, not just a wrong answer
+pending-parity: nix-flag:nix eval --output-lock-file — `sui eval` declares no --output-lock-file
+pending-parity: nix-flag:nix eval --override-flake — `sui eval` declares no --override-flake
+pending-parity: nix-flag:nix eval --override-input — `sui eval` declares no --override-input
+pending-parity: nix-flag:nix eval --pretty — `sui eval` declares no --pretty
+pending-parity: nix-flag:nix eval --recreate-lock-file — `sui eval` declares no --recreate-lock-file
+pending-parity: nix-flag:nix eval --reference-lock-file — `sui eval` declares no --reference-lock-file
+pending-parity: nix-flag:nix eval --repair — `sui eval` declares no --repair
+pending-parity: nix-flag:nix eval --update-input — `sui eval` declares no --update-input
+pending-parity: nix-flag:nix eval --write-to — `sui eval` declares no --write-to
+pending-parity: nix-flag:nix flake archive --arg — `sui flake archive` declares no --arg
+pending-parity: nix-flag:nix flake archive --arg-from-file — `sui flake archive` declares no --arg-from-file
+pending-parity: nix-flag:nix flake archive --arg-from-stdin — `sui flake archive` declares no --arg-from-stdin
+pending-parity: nix-flag:nix flake archive --argstr — `sui flake archive` declares no --argstr
+pending-parity: nix-flag:nix flake archive --commit-lock-file — `sui flake archive` declares no --commit-lock-file
+pending-parity: nix-flag:nix flake archive --debugger — `sui flake archive` declares no --debugger
+pending-parity: nix-flag:nix flake archive --dry-run — `sui flake archive` declares no --dry-run
+pending-parity: nix-flag:nix flake archive --eval-store — `sui flake archive` declares no --eval-store
+pending-parity: nix-flag:nix flake archive --include — `sui flake archive` declares no --include
+pending-parity: nix-flag:nix flake archive --inputs-from — `sui flake archive` declares no --inputs-from
+pending-parity: nix-flag:nix flake archive --no-check-sigs — `sui flake archive` declares no --no-check-sigs
+pending-parity: nix-flag:nix flake archive --no-pretty — `sui flake archive` declares no --no-pretty
+pending-parity: nix-flag:nix flake archive --no-registries — `sui flake archive` declares no --no-registries
+pending-parity: nix-flag:nix flake archive --no-update-lock-file — `sui flake archive` declares no --no-update-lock-file
+pending-parity: nix-flag:nix flake archive --no-write-lock-file — cli_contract refuses --no-write-lock-file: the operator directs sui NOT to write flake.lock; sui reads the flag nowhere and its lock path is free to write anyway — a forbidden mutation, not just a wrong answer
+pending-parity: nix-flag:nix flake archive --output-lock-file — `sui flake archive` declares no --output-lock-file
+pending-parity: nix-flag:nix flake archive --override-flake — `sui flake archive` declares no --override-flake
+pending-parity: nix-flag:nix flake archive --override-input — `sui flake archive` declares no --override-input
+pending-parity: nix-flag:nix flake archive --pretty — `sui flake archive` declares no --pretty
+pending-parity: nix-flag:nix flake archive --recreate-lock-file — `sui flake archive` declares no --recreate-lock-file
+pending-parity: nix-flag:nix flake archive --reference-lock-file — `sui flake archive` declares no --reference-lock-file
+pending-parity: nix-flag:nix flake archive --repair — `sui flake archive` declares no --repair
+pending-parity: nix-flag:nix flake archive --to — `sui flake archive` declares no --to
+pending-parity: nix-flag:nix flake archive --update-input — `sui flake archive` declares no --update-input
+pending-parity: nix-flag:nix flake check --all-systems — `sui flake check` declares no --all-systems
+pending-parity: nix-flag:nix flake check --arg — `sui flake check` declares no --arg
+pending-parity: nix-flag:nix flake check --arg-from-file — `sui flake check` declares no --arg-from-file
+pending-parity: nix-flag:nix flake check --arg-from-stdin — `sui flake check` declares no --arg-from-stdin
+pending-parity: nix-flag:nix flake check --argstr — `sui flake check` declares no --argstr
+pending-parity: nix-flag:nix flake check --commit-lock-file — `sui flake check` declares no --commit-lock-file
+pending-parity: nix-flag:nix flake check --debugger — `sui flake check` declares no --debugger
+pending-parity: nix-flag:nix flake check --eval-store — `sui flake check` declares no --eval-store
+pending-parity: nix-flag:nix flake check --include — `sui flake check` declares no --include
+pending-parity: nix-flag:nix flake check --inputs-from — `sui flake check` declares no --inputs-from
+pending-parity: nix-flag:nix flake check --no-build — cli_contract refuses --no-build: asks `flake check` to evaluate WITHOUT building; sui reads it nowhere, so a caller that meant to run a cheap eval-only gate may realize derivations it never asked for
+pending-parity: nix-flag:nix flake check --no-registries — `sui flake check` declares no --no-registries
+pending-parity: nix-flag:nix flake check --no-update-lock-file — `sui flake check` declares no --no-update-lock-file
+pending-parity: nix-flag:nix flake check --no-write-lock-file — cli_contract refuses --no-write-lock-file: the operator directs sui NOT to write flake.lock; sui reads the flag nowhere and its lock path is free to write anyway — a forbidden mutation, not just a wrong answer
+pending-parity: nix-flag:nix flake check --output-lock-file — `sui flake check` declares no --output-lock-file
+pending-parity: nix-flag:nix flake check --override-flake — `sui flake check` declares no --override-flake
+pending-parity: nix-flag:nix flake check --override-input — `sui flake check` declares no --override-input
+pending-parity: nix-flag:nix flake check --recreate-lock-file — `sui flake check` declares no --recreate-lock-file
+pending-parity: nix-flag:nix flake check --reference-lock-file — `sui flake check` declares no --reference-lock-file
+pending-parity: nix-flag:nix flake check --repair — `sui flake check` declares no --repair
+pending-parity: nix-flag:nix flake check --update-input — `sui flake check` declares no --update-input
+pending-parity: nix-flag:nix flake clone --arg — `sui flake clone` declares no --arg
+pending-parity: nix-flag:nix flake clone --arg-from-file — `sui flake clone` declares no --arg-from-file
+pending-parity: nix-flag:nix flake clone --arg-from-stdin — `sui flake clone` declares no --arg-from-stdin
+pending-parity: nix-flag:nix flake clone --argstr — `sui flake clone` declares no --argstr
+pending-parity: nix-flag:nix flake clone --commit-lock-file — `sui flake clone` declares no --commit-lock-file
+pending-parity: nix-flag:nix flake clone --debugger — `sui flake clone` declares no --debugger
+pending-parity: nix-flag:nix flake clone --eval-store — `sui flake clone` declares no --eval-store
+pending-parity: nix-flag:nix flake clone --include — `sui flake clone` declares no --include
+pending-parity: nix-flag:nix flake clone --inputs-from — `sui flake clone` declares no --inputs-from
+pending-parity: nix-flag:nix flake clone --no-registries — `sui flake clone` declares no --no-registries
+pending-parity: nix-flag:nix flake clone --no-update-lock-file — `sui flake clone` declares no --no-update-lock-file
+pending-parity: nix-flag:nix flake clone --no-write-lock-file — cli_contract refuses --no-write-lock-file: the operator directs sui NOT to write flake.lock; sui reads the flag nowhere and its lock path is free to write anyway — a forbidden mutation, not just a wrong answer
+pending-parity: nix-flag:nix flake clone --output-lock-file — `sui flake clone` declares no --output-lock-file
+pending-parity: nix-flag:nix flake clone --override-flake — `sui flake clone` declares no --override-flake
+pending-parity: nix-flag:nix flake clone --override-input — `sui flake clone` declares no --override-input
+pending-parity: nix-flag:nix flake clone --recreate-lock-file — `sui flake clone` declares no --recreate-lock-file
+pending-parity: nix-flag:nix flake clone --reference-lock-file — `sui flake clone` declares no --reference-lock-file
+pending-parity: nix-flag:nix flake clone --repair — `sui flake clone` declares no --repair
+pending-parity: nix-flag:nix flake clone --update-input — `sui flake clone` declares no --update-input
+pending-parity: nix-flag:nix flake info --arg — no `sui flake info` subcommand
+pending-parity: nix-flag:nix flake info --arg-from-file — no `sui flake info` subcommand
+pending-parity: nix-flag:nix flake info --arg-from-stdin — no `sui flake info` subcommand
+pending-parity: nix-flag:nix flake info --argstr — no `sui flake info` subcommand
+pending-parity: nix-flag:nix flake info --commit-lock-file — no `sui flake info` subcommand
+pending-parity: nix-flag:nix flake info --debugger — no `sui flake info` subcommand
+pending-parity: nix-flag:nix flake info --eval-store — no `sui flake info` subcommand
+pending-parity: nix-flag:nix flake info --impure — no `sui flake info` subcommand
+pending-parity: nix-flag:nix flake info --include — no `sui flake info` subcommand
+pending-parity: nix-flag:nix flake info --inputs-from — no `sui flake info` subcommand
+pending-parity: nix-flag:nix flake info --json — no `sui flake info` subcommand
+pending-parity: nix-flag:nix flake info --no-pretty — no `sui flake info` subcommand
+pending-parity: nix-flag:nix flake info --no-registries — no `sui flake info` subcommand
+pending-parity: nix-flag:nix flake info --no-update-lock-file — no `sui flake info` subcommand
+pending-parity: nix-flag:nix flake info --no-write-lock-file — no `sui flake info` subcommand
+pending-parity: nix-flag:nix flake info --output-lock-file — no `sui flake info` subcommand
+pending-parity: nix-flag:nix flake info --override-flake — no `sui flake info` subcommand
+pending-parity: nix-flag:nix flake info --override-input — no `sui flake info` subcommand
+pending-parity: nix-flag:nix flake info --pretty — no `sui flake info` subcommand
+pending-parity: nix-flag:nix flake info --recreate-lock-file — no `sui flake info` subcommand
+pending-parity: nix-flag:nix flake info --reference-lock-file — no `sui flake info` subcommand
+pending-parity: nix-flag:nix flake info --repair — no `sui flake info` subcommand
+pending-parity: nix-flag:nix flake info --update-input — no `sui flake info` subcommand
+pending-parity: nix-flag:nix flake init --arg — `sui flake init` declares no --arg
+pending-parity: nix-flag:nix flake init --arg-from-file — `sui flake init` declares no --arg-from-file
+pending-parity: nix-flag:nix flake init --arg-from-stdin — `sui flake init` declares no --arg-from-stdin
+pending-parity: nix-flag:nix flake init --argstr — `sui flake init` declares no --argstr
+pending-parity: nix-flag:nix flake init --debugger — `sui flake init` declares no --debugger
+pending-parity: nix-flag:nix flake init --eval-store — `sui flake init` declares no --eval-store
+pending-parity: nix-flag:nix flake init --include — `sui flake init` declares no --include
+pending-parity: nix-flag:nix flake init --override-flake — `sui flake init` declares no --override-flake
+pending-parity: nix-flag:nix flake init --repair — `sui flake init` declares no --repair
+pending-parity: nix-flag:nix flake lock --arg — `sui flake lock` declares no --arg
+pending-parity: nix-flag:nix flake lock --arg-from-file — `sui flake lock` declares no --arg-from-file
+pending-parity: nix-flag:nix flake lock --arg-from-stdin — `sui flake lock` declares no --arg-from-stdin
+pending-parity: nix-flag:nix flake lock --argstr — `sui flake lock` declares no --argstr
+pending-parity: nix-flag:nix flake lock --commit-lock-file — `sui flake lock` declares no --commit-lock-file
+pending-parity: nix-flag:nix flake lock --debugger — `sui flake lock` declares no --debugger
+pending-parity: nix-flag:nix flake lock --eval-store — `sui flake lock` declares no --eval-store
+pending-parity: nix-flag:nix flake lock --include — `sui flake lock` declares no --include
+pending-parity: nix-flag:nix flake lock --inputs-from — `sui flake lock` declares no --inputs-from
+pending-parity: nix-flag:nix flake lock --no-registries — `sui flake lock` declares no --no-registries
+pending-parity: nix-flag:nix flake lock --no-update-lock-file — `sui flake lock` declares no --no-update-lock-file
+pending-parity: nix-flag:nix flake lock --output-lock-file — `sui flake lock` declares no --output-lock-file
+pending-parity: nix-flag:nix flake lock --override-flake — `sui flake lock` declares no --override-flake
+pending-parity: nix-flag:nix flake lock --override-input — `sui flake lock` declares no --override-input
+pending-parity: nix-flag:nix flake lock --recreate-lock-file — `sui flake lock` declares no --recreate-lock-file
+pending-parity: nix-flag:nix flake lock --reference-lock-file — `sui flake lock` declares no --reference-lock-file
+pending-parity: nix-flag:nix flake lock --repair — `sui flake lock` declares no --repair
+pending-parity: nix-flag:nix flake lock --update-input — `sui flake lock` declares no --update-input
+pending-parity: nix-flag:nix flake metadata --arg — `sui flake metadata` declares no --arg
+pending-parity: nix-flag:nix flake metadata --arg-from-file — `sui flake metadata` declares no --arg-from-file
+pending-parity: nix-flag:nix flake metadata --arg-from-stdin — `sui flake metadata` declares no --arg-from-stdin
+pending-parity: nix-flag:nix flake metadata --argstr — `sui flake metadata` declares no --argstr
+pending-parity: nix-flag:nix flake metadata --commit-lock-file — `sui flake metadata` declares no --commit-lock-file
+pending-parity: nix-flag:nix flake metadata --debugger — `sui flake metadata` declares no --debugger
+pending-parity: nix-flag:nix flake metadata --eval-store — `sui flake metadata` declares no --eval-store
+pending-parity: nix-flag:nix flake metadata --include — `sui flake metadata` declares no --include
+pending-parity: nix-flag:nix flake metadata --inputs-from — `sui flake metadata` declares no --inputs-from
+pending-parity: nix-flag:nix flake metadata --no-pretty — `sui flake metadata` declares no --no-pretty
+pending-parity: nix-flag:nix flake metadata --no-registries — `sui flake metadata` declares no --no-registries
+pending-parity: nix-flag:nix flake metadata --no-update-lock-file — `sui flake metadata` declares no --no-update-lock-file
+pending-parity: nix-flag:nix flake metadata --no-write-lock-file — cli_contract refuses --no-write-lock-file: the operator directs sui NOT to write flake.lock; sui reads the flag nowhere and its lock path is free to write anyway — a forbidden mutation, not just a wrong answer
+pending-parity: nix-flag:nix flake metadata --output-lock-file — `sui flake metadata` declares no --output-lock-file
+pending-parity: nix-flag:nix flake metadata --override-flake — `sui flake metadata` declares no --override-flake
+pending-parity: nix-flag:nix flake metadata --override-input — `sui flake metadata` declares no --override-input
+pending-parity: nix-flag:nix flake metadata --pretty — `sui flake metadata` declares no --pretty
+pending-parity: nix-flag:nix flake metadata --recreate-lock-file — `sui flake metadata` declares no --recreate-lock-file
+pending-parity: nix-flag:nix flake metadata --reference-lock-file — `sui flake metadata` declares no --reference-lock-file
+pending-parity: nix-flag:nix flake metadata --repair — `sui flake metadata` declares no --repair
+pending-parity: nix-flag:nix flake metadata --update-input — `sui flake metadata` declares no --update-input
+pending-parity: nix-flag:nix flake new --arg — `sui flake new` declares no --arg
+pending-parity: nix-flag:nix flake new --arg-from-file — `sui flake new` declares no --arg-from-file
+pending-parity: nix-flag:nix flake new --arg-from-stdin — `sui flake new` declares no --arg-from-stdin
+pending-parity: nix-flag:nix flake new --argstr — `sui flake new` declares no --argstr
+pending-parity: nix-flag:nix flake new --debugger — `sui flake new` declares no --debugger
+pending-parity: nix-flag:nix flake new --eval-store — `sui flake new` declares no --eval-store
+pending-parity: nix-flag:nix flake new --include — `sui flake new` declares no --include
+pending-parity: nix-flag:nix flake new --override-flake — `sui flake new` declares no --override-flake
+pending-parity: nix-flag:nix flake new --repair — `sui flake new` declares no --repair
+pending-parity: nix-flag:nix flake prefetch --arg — `sui flake prefetch` declares no --arg
+pending-parity: nix-flag:nix flake prefetch --arg-from-file — `sui flake prefetch` declares no --arg-from-file
+pending-parity: nix-flag:nix flake prefetch --arg-from-stdin — `sui flake prefetch` declares no --arg-from-stdin
+pending-parity: nix-flag:nix flake prefetch --argstr — `sui flake prefetch` declares no --argstr
+pending-parity: nix-flag:nix flake prefetch --commit-lock-file — `sui flake prefetch` declares no --commit-lock-file
+pending-parity: nix-flag:nix flake prefetch --debugger — `sui flake prefetch` declares no --debugger
+pending-parity: nix-flag:nix flake prefetch --eval-store — `sui flake prefetch` declares no --eval-store
+pending-parity: nix-flag:nix flake prefetch --include — `sui flake prefetch` declares no --include
+pending-parity: nix-flag:nix flake prefetch --inputs-from — `sui flake prefetch` declares no --inputs-from
+pending-parity: nix-flag:nix flake prefetch --no-pretty — `sui flake prefetch` declares no --no-pretty
+pending-parity: nix-flag:nix flake prefetch --no-registries — `sui flake prefetch` declares no --no-registries
+pending-parity: nix-flag:nix flake prefetch --no-update-lock-file — `sui flake prefetch` declares no --no-update-lock-file
+pending-parity: nix-flag:nix flake prefetch --no-write-lock-file — cli_contract refuses --no-write-lock-file: the operator directs sui NOT to write flake.lock; sui reads the flag nowhere and its lock path is free to write anyway — a forbidden mutation, not just a wrong answer
+pending-parity: nix-flag:nix flake prefetch --out-link — `sui flake prefetch` declares no --out-link
+pending-parity: nix-flag:nix flake prefetch --output-lock-file — `sui flake prefetch` declares no --output-lock-file
+pending-parity: nix-flag:nix flake prefetch --override-flake — `sui flake prefetch` declares no --override-flake
+pending-parity: nix-flag:nix flake prefetch --override-input — `sui flake prefetch` declares no --override-input
+pending-parity: nix-flag:nix flake prefetch --pretty — `sui flake prefetch` declares no --pretty
+pending-parity: nix-flag:nix flake prefetch --recreate-lock-file — `sui flake prefetch` declares no --recreate-lock-file
+pending-parity: nix-flag:nix flake prefetch --reference-lock-file — `sui flake prefetch` declares no --reference-lock-file
+pending-parity: nix-flag:nix flake prefetch --repair — `sui flake prefetch` declares no --repair
+pending-parity: nix-flag:nix flake prefetch --update-input — `sui flake prefetch` declares no --update-input
+pending-parity: nix-flag:nix flake prefetch-inputs --arg — no `sui flake prefetch-inputs` subcommand
+pending-parity: nix-flag:nix flake prefetch-inputs --arg-from-file — no `sui flake prefetch-inputs` subcommand
+pending-parity: nix-flag:nix flake prefetch-inputs --arg-from-stdin — no `sui flake prefetch-inputs` subcommand
+pending-parity: nix-flag:nix flake prefetch-inputs --argstr — no `sui flake prefetch-inputs` subcommand
+pending-parity: nix-flag:nix flake prefetch-inputs --commit-lock-file — no `sui flake prefetch-inputs` subcommand
+pending-parity: nix-flag:nix flake prefetch-inputs --debugger — no `sui flake prefetch-inputs` subcommand
+pending-parity: nix-flag:nix flake prefetch-inputs --eval-store — no `sui flake prefetch-inputs` subcommand
+pending-parity: nix-flag:nix flake prefetch-inputs --impure — no `sui flake prefetch-inputs` subcommand
+pending-parity: nix-flag:nix flake prefetch-inputs --include — no `sui flake prefetch-inputs` subcommand
+pending-parity: nix-flag:nix flake prefetch-inputs --inputs-from — no `sui flake prefetch-inputs` subcommand
+pending-parity: nix-flag:nix flake prefetch-inputs --no-registries — no `sui flake prefetch-inputs` subcommand
+pending-parity: nix-flag:nix flake prefetch-inputs --no-update-lock-file — no `sui flake prefetch-inputs` subcommand
+pending-parity: nix-flag:nix flake prefetch-inputs --no-write-lock-file — no `sui flake prefetch-inputs` subcommand
+pending-parity: nix-flag:nix flake prefetch-inputs --output-lock-file — no `sui flake prefetch-inputs` subcommand
+pending-parity: nix-flag:nix flake prefetch-inputs --override-flake — no `sui flake prefetch-inputs` subcommand
+pending-parity: nix-flag:nix flake prefetch-inputs --override-input — no `sui flake prefetch-inputs` subcommand
+pending-parity: nix-flag:nix flake prefetch-inputs --recreate-lock-file — no `sui flake prefetch-inputs` subcommand
+pending-parity: nix-flag:nix flake prefetch-inputs --reference-lock-file — no `sui flake prefetch-inputs` subcommand
+pending-parity: nix-flag:nix flake prefetch-inputs --repair — no `sui flake prefetch-inputs` subcommand
+pending-parity: nix-flag:nix flake prefetch-inputs --update-input — no `sui flake prefetch-inputs` subcommand
+pending-parity: nix-flag:nix flake show --all-systems — `sui flake show` declares no --all-systems
+pending-parity: nix-flag:nix flake show --arg — `sui flake show` declares no --arg
+pending-parity: nix-flag:nix flake show --arg-from-file — `sui flake show` declares no --arg-from-file
+pending-parity: nix-flag:nix flake show --arg-from-stdin — `sui flake show` declares no --arg-from-stdin
+pending-parity: nix-flag:nix flake show --argstr — `sui flake show` declares no --argstr
+pending-parity: nix-flag:nix flake show --commit-lock-file — `sui flake show` declares no --commit-lock-file
+pending-parity: nix-flag:nix flake show --debugger — `sui flake show` declares no --debugger
+pending-parity: nix-flag:nix flake show --eval-store — `sui flake show` declares no --eval-store
+pending-parity: nix-flag:nix flake show --include — `sui flake show` declares no --include
+pending-parity: nix-flag:nix flake show --inputs-from — `sui flake show` declares no --inputs-from
+pending-parity: nix-flag:nix flake show --legacy — `sui flake show` declares no --legacy
+pending-parity: nix-flag:nix flake show --no-pretty — `sui flake show` declares no --no-pretty
+pending-parity: nix-flag:nix flake show --no-registries — `sui flake show` declares no --no-registries
+pending-parity: nix-flag:nix flake show --no-update-lock-file — `sui flake show` declares no --no-update-lock-file
+pending-parity: nix-flag:nix flake show --no-write-lock-file — cli_contract refuses --no-write-lock-file: the operator directs sui NOT to write flake.lock; sui reads the flag nowhere and its lock path is free to write anyway — a forbidden mutation, not just a wrong answer
+pending-parity: nix-flag:nix flake show --output-lock-file — `sui flake show` declares no --output-lock-file
+pending-parity: nix-flag:nix flake show --override-flake — `sui flake show` declares no --override-flake
+pending-parity: nix-flag:nix flake show --override-input — `sui flake show` declares no --override-input
+pending-parity: nix-flag:nix flake show --pretty — `sui flake show` declares no --pretty
+pending-parity: nix-flag:nix flake show --recreate-lock-file — `sui flake show` declares no --recreate-lock-file
+pending-parity: nix-flag:nix flake show --reference-lock-file — `sui flake show` declares no --reference-lock-file
+pending-parity: nix-flag:nix flake show --repair — `sui flake show` declares no --repair
+pending-parity: nix-flag:nix flake show --update-input — `sui flake show` declares no --update-input
+pending-parity: nix-flag:nix flake update --arg — `sui flake update` declares no --arg
+pending-parity: nix-flag:nix flake update --arg-from-file — `sui flake update` declares no --arg-from-file
+pending-parity: nix-flag:nix flake update --arg-from-stdin — `sui flake update` declares no --arg-from-stdin
+pending-parity: nix-flag:nix flake update --argstr — `sui flake update` declares no --argstr
+pending-parity: nix-flag:nix flake update --commit-lock-file — `sui flake update` declares no --commit-lock-file
+pending-parity: nix-flag:nix flake update --debugger — `sui flake update` declares no --debugger
+pending-parity: nix-flag:nix flake update --eval-store — `sui flake update` declares no --eval-store
+pending-parity: nix-flag:nix flake update --flake — `sui flake update` declares no --flake
+pending-parity: nix-flag:nix flake update --include — `sui flake update` declares no --include
+pending-parity: nix-flag:nix flake update --inputs-from — `sui flake update` declares no --inputs-from
+pending-parity: nix-flag:nix flake update --no-registries — `sui flake update` declares no --no-registries
+pending-parity: nix-flag:nix flake update --output-lock-file — `sui flake update` declares no --output-lock-file
+pending-parity: nix-flag:nix flake update --override-flake — `sui flake update` declares no --override-flake
+pending-parity: nix-flag:nix flake update --override-input — `sui flake update` declares no --override-input
+pending-parity: nix-flag:nix flake update --recreate-lock-file — `sui flake update` declares no --recreate-lock-file
+pending-parity: nix-flag:nix flake update --reference-lock-file — `sui flake update` declares no --reference-lock-file
+pending-parity: nix-flag:nix flake update --repair — `sui flake update` declares no --repair
+pending-parity: nix-flag:nix flake update --update-input — `sui flake update` declares no --update-input
+pending-parity: nix-flag:nix fmt --arg — cli_coverage grades it Stub
+pending-parity: nix-flag:nix fmt --arg-from-file — cli_coverage grades it Stub
+pending-parity: nix-flag:nix fmt --arg-from-stdin — cli_coverage grades it Stub
+pending-parity: nix-flag:nix fmt --argstr — cli_coverage grades it Stub
+pending-parity: nix-flag:nix fmt --commit-lock-file — cli_coverage grades it Stub
+pending-parity: nix-flag:nix fmt --debugger — cli_coverage grades it Stub
+pending-parity: nix-flag:nix fmt --eval-store — cli_coverage grades it Stub
+pending-parity: nix-flag:nix fmt --expr — cli_coverage grades it Stub
+pending-parity: nix-flag:nix fmt --file — cli_coverage grades it Stub
+pending-parity: nix-flag:nix fmt --impure — cli_coverage grades it Stub
+pending-parity: nix-flag:nix fmt --include — cli_coverage grades it Stub
+pending-parity: nix-flag:nix fmt --inputs-from — cli_coverage grades it Stub
+pending-parity: nix-flag:nix fmt --json — cli_coverage grades it Stub
+pending-parity: nix-flag:nix fmt --no-pretty — cli_coverage grades it Stub
+pending-parity: nix-flag:nix fmt --no-registries — cli_coverage grades it Stub
+pending-parity: nix-flag:nix fmt --no-update-lock-file — cli_coverage grades it Stub
+pending-parity: nix-flag:nix fmt --no-write-lock-file — cli_coverage grades it Stub
+pending-parity: nix-flag:nix fmt --output-lock-file — cli_coverage grades it Stub
+pending-parity: nix-flag:nix fmt --override-flake — cli_coverage grades it Stub
+pending-parity: nix-flag:nix fmt --override-input — cli_coverage grades it Stub
+pending-parity: nix-flag:nix fmt --pretty — cli_coverage grades it Stub
+pending-parity: nix-flag:nix fmt --recreate-lock-file — cli_coverage grades it Stub
+pending-parity: nix-flag:nix fmt --reference-lock-file — cli_coverage grades it Stub
+pending-parity: nix-flag:nix fmt --repair — cli_coverage grades it Stub
+pending-parity: nix-flag:nix fmt --update-input — cli_coverage grades it Stub
+pending-parity: nix-flag:nix formatter build --arg — no `sui formatter build` subcommand
+pending-parity: nix-flag:nix formatter build --arg-from-file — no `sui formatter build` subcommand
+pending-parity: nix-flag:nix formatter build --arg-from-stdin — no `sui formatter build` subcommand
+pending-parity: nix-flag:nix formatter build --argstr — no `sui formatter build` subcommand
+pending-parity: nix-flag:nix formatter build --commit-lock-file — no `sui formatter build` subcommand
+pending-parity: nix-flag:nix formatter build --debugger — no `sui formatter build` subcommand
+pending-parity: nix-flag:nix formatter build --eval-store — no `sui formatter build` subcommand
+pending-parity: nix-flag:nix formatter build --expr — no `sui formatter build` subcommand
+pending-parity: nix-flag:nix formatter build --file — no `sui formatter build` subcommand
+pending-parity: nix-flag:nix formatter build --impure — no `sui formatter build` subcommand
+pending-parity: nix-flag:nix formatter build --include — no `sui formatter build` subcommand
+pending-parity: nix-flag:nix formatter build --inputs-from — no `sui formatter build` subcommand
+pending-parity: nix-flag:nix formatter build --no-link — no `sui formatter build` subcommand
+pending-parity: nix-flag:nix formatter build --no-registries — no `sui formatter build` subcommand
+pending-parity: nix-flag:nix formatter build --no-update-lock-file — no `sui formatter build` subcommand
+pending-parity: nix-flag:nix formatter build --no-write-lock-file — no `sui formatter build` subcommand
+pending-parity: nix-flag:nix formatter build --out-link — no `sui formatter build` subcommand
+pending-parity: nix-flag:nix formatter build --output-lock-file — no `sui formatter build` subcommand
+pending-parity: nix-flag:nix formatter build --override-flake — no `sui formatter build` subcommand
+pending-parity: nix-flag:nix formatter build --override-input — no `sui formatter build` subcommand
+pending-parity: nix-flag:nix formatter build --recreate-lock-file — no `sui formatter build` subcommand
+pending-parity: nix-flag:nix formatter build --reference-lock-file — no `sui formatter build` subcommand
+pending-parity: nix-flag:nix formatter build --repair — no `sui formatter build` subcommand
+pending-parity: nix-flag:nix formatter build --update-input — no `sui formatter build` subcommand
+pending-parity: nix-flag:nix formatter run --arg — no `sui formatter run` subcommand
+pending-parity: nix-flag:nix formatter run --arg-from-file — no `sui formatter run` subcommand
+pending-parity: nix-flag:nix formatter run --arg-from-stdin — no `sui formatter run` subcommand
+pending-parity: nix-flag:nix formatter run --argstr — no `sui formatter run` subcommand
+pending-parity: nix-flag:nix formatter run --commit-lock-file — no `sui formatter run` subcommand
+pending-parity: nix-flag:nix formatter run --debugger — no `sui formatter run` subcommand
+pending-parity: nix-flag:nix formatter run --eval-store — no `sui formatter run` subcommand
+pending-parity: nix-flag:nix formatter run --expr — no `sui formatter run` subcommand
+pending-parity: nix-flag:nix formatter run --file — no `sui formatter run` subcommand
+pending-parity: nix-flag:nix formatter run --impure — no `sui formatter run` subcommand
+pending-parity: nix-flag:nix formatter run --include — no `sui formatter run` subcommand
+pending-parity: nix-flag:nix formatter run --inputs-from — no `sui formatter run` subcommand
+pending-parity: nix-flag:nix formatter run --json — no `sui formatter run` subcommand
+pending-parity: nix-flag:nix formatter run --no-pretty — no `sui formatter run` subcommand
+pending-parity: nix-flag:nix formatter run --no-registries — no `sui formatter run` subcommand
+pending-parity: nix-flag:nix formatter run --no-update-lock-file — no `sui formatter run` subcommand
+pending-parity: nix-flag:nix formatter run --no-write-lock-file — no `sui formatter run` subcommand
+pending-parity: nix-flag:nix formatter run --output-lock-file — no `sui formatter run` subcommand
+pending-parity: nix-flag:nix formatter run --override-flake — no `sui formatter run` subcommand
+pending-parity: nix-flag:nix formatter run --override-input — no `sui formatter run` subcommand
+pending-parity: nix-flag:nix formatter run --pretty — no `sui formatter run` subcommand
+pending-parity: nix-flag:nix formatter run --recreate-lock-file — no `sui formatter run` subcommand
+pending-parity: nix-flag:nix formatter run --reference-lock-file — no `sui formatter run` subcommand
+pending-parity: nix-flag:nix formatter run --repair — no `sui formatter run` subcommand
+pending-parity: nix-flag:nix formatter run --update-input — no `sui formatter run` subcommand
+pending-parity: nix-flag:nix hash convert --from — no `sui hash convert` subcommand
+pending-parity: nix-flag:nix hash convert --hash-algo — no `sui hash convert` subcommand
+pending-parity: nix-flag:nix hash convert --to — no `sui hash convert` subcommand
+pending-parity: nix-flag:nix hash file --base16 — `sui hash file` declares no --base16
+pending-parity: nix-flag:nix hash file --base32 — `sui hash file` declares no --base32
+pending-parity: nix-flag:nix hash file --base64 — `sui hash file` declares no --base64
+pending-parity: nix-flag:nix hash file --sri — `sui hash file` declares no --sri
+pending-parity: nix-flag:nix hash path --algo — `sui hash path` declares no --algo
+pending-parity: nix-flag:nix hash path --base16 — `sui hash path` declares no --base16
+pending-parity: nix-flag:nix hash path --base32 — `sui hash path` declares no --base32
+pending-parity: nix-flag:nix hash path --base64 — `sui hash path` declares no --base64
+pending-parity: nix-flag:nix hash path --format — `sui hash path` declares no --format
+pending-parity: nix-flag:nix hash path --mode — `sui hash path` declares no --mode
+pending-parity: nix-flag:nix hash path --sri — `sui hash path` declares no --sri
+pending-parity: nix-flag:nix hash to-base16 --type — cli_contract refuses --type: `--type` names the hash algorithm for a bare input; sui discards it and infers from length, so the disambiguation the operator paid for is not applied
+pending-parity: nix-flag:nix hash to-base32 --type — cli_contract refuses --type: `--type` names the hash algorithm for a bare input; sui discards it and infers from length, so the disambiguation the operator paid for is not applied
+pending-parity: nix-flag:nix hash to-base64 --type — cli_contract refuses --type: `--type` names the hash algorithm for a bare input; sui discards it and infers from length, so the disambiguation the operator paid for is not applied
+pending-parity: nix-flag:nix hash to-sri --type — cli_contract refuses --type: `--type` names the hash algorithm for a bare input; sui discards it and infers from length, so the disambiguation the operator paid for is not applied
+pending-parity: nix-flag:nix log --arg — cli_coverage grades it Stub
+pending-parity: nix-flag:nix log --arg-from-file — cli_coverage grades it Stub
+pending-parity: nix-flag:nix log --arg-from-stdin — cli_coverage grades it Stub
+pending-parity: nix-flag:nix log --argstr — cli_coverage grades it Stub
+pending-parity: nix-flag:nix log --commit-lock-file — cli_coverage grades it Stub
+pending-parity: nix-flag:nix log --debugger — cli_coverage grades it Stub
+pending-parity: nix-flag:nix log --eval-store — cli_coverage grades it Stub
+pending-parity: nix-flag:nix log --expr — cli_coverage grades it Stub
+pending-parity: nix-flag:nix log --file — cli_coverage grades it Stub
+pending-parity: nix-flag:nix log --impure — cli_coverage grades it Stub
+pending-parity: nix-flag:nix log --include — cli_coverage grades it Stub
+pending-parity: nix-flag:nix log --inputs-from — cli_coverage grades it Stub
+pending-parity: nix-flag:nix log --no-registries — cli_coverage grades it Stub
+pending-parity: nix-flag:nix log --no-update-lock-file — cli_coverage grades it Stub
+pending-parity: nix-flag:nix log --no-write-lock-file — cli_coverage grades it Stub
+pending-parity: nix-flag:nix log --output-lock-file — cli_coverage grades it Stub
+pending-parity: nix-flag:nix log --override-flake — cli_coverage grades it Stub
+pending-parity: nix-flag:nix log --override-input — cli_coverage grades it Stub
+pending-parity: nix-flag:nix log --recreate-lock-file — cli_coverage grades it Stub
+pending-parity: nix-flag:nix log --reference-lock-file — cli_coverage grades it Stub
+pending-parity: nix-flag:nix log --repair — cli_coverage grades it Stub
+pending-parity: nix-flag:nix log --update-input — cli_coverage grades it Stub
+pending-parity: nix-flag:nix nar ls --directory — no `sui nar ls` subcommand
+pending-parity: nix-flag:nix nar ls --json — no `sui nar ls` subcommand
+pending-parity: nix-flag:nix nar ls --long — no `sui nar ls` subcommand
+pending-parity: nix-flag:nix nar ls --no-pretty — no `sui nar ls` subcommand
+pending-parity: nix-flag:nix nar ls --pretty — no `sui nar ls` subcommand
+pending-parity: nix-flag:nix nar ls --recursive — no `sui nar ls` subcommand
+pending-parity: nix-flag:nix path-info --all — `sui path-info` declares no --all
+pending-parity: nix-flag:nix path-info --arg — `sui path-info` declares no --arg
+pending-parity: nix-flag:nix path-info --arg-from-file — `sui path-info` declares no --arg-from-file
+pending-parity: nix-flag:nix path-info --arg-from-stdin — `sui path-info` declares no --arg-from-stdin
+pending-parity: nix-flag:nix path-info --argstr — `sui path-info` declares no --argstr
+pending-parity: nix-flag:nix path-info --closure-size — cli_contract refuses --closure-size: asks for the closure SIZE column; sui reads it nowhere and prints path info without it, so a size the operator asked for is simply absent from an otherwise-successful report
+pending-parity: nix-flag:nix path-info --commit-lock-file — `sui path-info` declares no --commit-lock-file
+pending-parity: nix-flag:nix path-info --debugger — `sui path-info` declares no --debugger
+pending-parity: nix-flag:nix path-info --derivation — `sui path-info` declares no --derivation
+pending-parity: nix-flag:nix path-info --eval-store — `sui path-info` declares no --eval-store
+pending-parity: nix-flag:nix path-info --expr — `sui path-info` declares no --expr
+pending-parity: nix-flag:nix path-info --file — `sui path-info` declares no --file
+pending-parity: nix-flag:nix path-info --human-readable — `sui path-info` declares no --human-readable
+pending-parity: nix-flag:nix path-info --include — `sui path-info` declares no --include
+pending-parity: nix-flag:nix path-info --inputs-from — `sui path-info` declares no --inputs-from
+pending-parity: nix-flag:nix path-info --no-pretty — `sui path-info` declares no --no-pretty
+pending-parity: nix-flag:nix path-info --no-registries — `sui path-info` declares no --no-registries
+pending-parity: nix-flag:nix path-info --no-update-lock-file — `sui path-info` declares no --no-update-lock-file
+pending-parity: nix-flag:nix path-info --no-write-lock-file — cli_contract refuses --no-write-lock-file: the operator directs sui NOT to write flake.lock; sui reads the flag nowhere and its lock path is free to write anyway — a forbidden mutation, not just a wrong answer
+pending-parity: nix-flag:nix path-info --output-lock-file — `sui path-info` declares no --output-lock-file
+pending-parity: nix-flag:nix path-info --override-flake — `sui path-info` declares no --override-flake
+pending-parity: nix-flag:nix path-info --override-input — `sui path-info` declares no --override-input
+pending-parity: nix-flag:nix path-info --pretty — `sui path-info` declares no --pretty
+pending-parity: nix-flag:nix path-info --recreate-lock-file — `sui path-info` declares no --recreate-lock-file
+pending-parity: nix-flag:nix path-info --recursive — `sui path-info` declares no --recursive
+pending-parity: nix-flag:nix path-info --reference-lock-file — `sui path-info` declares no --reference-lock-file
+pending-parity: nix-flag:nix path-info --repair — `sui path-info` declares no --repair
+pending-parity: nix-flag:nix path-info --sigs — `sui path-info` declares no --sigs
+pending-parity: nix-flag:nix path-info --size — `sui path-info` declares no --size
+pending-parity: nix-flag:nix path-info --stdin — `sui path-info` declares no --stdin
+pending-parity: nix-flag:nix path-info --update-input — `sui path-info` declares no --update-input
+pending-parity: nix-flag:nix print-dev-env --arg — `sui print-dev-env` declares no --arg
+pending-parity: nix-flag:nix print-dev-env --arg-from-file — `sui print-dev-env` declares no --arg-from-file
+pending-parity: nix-flag:nix print-dev-env --arg-from-stdin — `sui print-dev-env` declares no --arg-from-stdin
+pending-parity: nix-flag:nix print-dev-env --argstr — `sui print-dev-env` declares no --argstr
+pending-parity: nix-flag:nix print-dev-env --commit-lock-file — `sui print-dev-env` declares no --commit-lock-file
+pending-parity: nix-flag:nix print-dev-env --debugger — `sui print-dev-env` declares no --debugger
+pending-parity: nix-flag:nix print-dev-env --eval-store — `sui print-dev-env` declares no --eval-store
+pending-parity: nix-flag:nix print-dev-env --expr — `sui print-dev-env` declares no --expr
+pending-parity: nix-flag:nix print-dev-env --file — `sui print-dev-env` declares no --file
+pending-parity: nix-flag:nix print-dev-env --include — `sui print-dev-env` declares no --include
+pending-parity: nix-flag:nix print-dev-env --inputs-from — `sui print-dev-env` declares no --inputs-from
+pending-parity: nix-flag:nix print-dev-env --no-pretty — `sui print-dev-env` declares no --no-pretty
+pending-parity: nix-flag:nix print-dev-env --no-registries — `sui print-dev-env` declares no --no-registries
+pending-parity: nix-flag:nix print-dev-env --no-update-lock-file — `sui print-dev-env` declares no --no-update-lock-file
+pending-parity: nix-flag:nix print-dev-env --no-write-lock-file — cli_contract refuses --no-write-lock-file: the operator directs sui NOT to write flake.lock; sui reads the flag nowhere and its lock path is free to write anyway — a forbidden mutation, not just a wrong answer
+pending-parity: nix-flag:nix print-dev-env --output-lock-file — `sui print-dev-env` declares no --output-lock-file
+pending-parity: nix-flag:nix print-dev-env --override-flake — `sui print-dev-env` declares no --override-flake
+pending-parity: nix-flag:nix print-dev-env --override-input — `sui print-dev-env` declares no --override-input
+pending-parity: nix-flag:nix print-dev-env --pretty — `sui print-dev-env` declares no --pretty
+pending-parity: nix-flag:nix print-dev-env --recreate-lock-file — `sui print-dev-env` declares no --recreate-lock-file
+pending-parity: nix-flag:nix print-dev-env --redirect — `sui print-dev-env` declares no --redirect
+pending-parity: nix-flag:nix print-dev-env --reference-lock-file — `sui print-dev-env` declares no --reference-lock-file
+pending-parity: nix-flag:nix print-dev-env --repair — `sui print-dev-env` declares no --repair
+pending-parity: nix-flag:nix print-dev-env --update-input — `sui print-dev-env` declares no --update-input
+pending-parity: nix-flag:nix profile add --arg — no `sui profile add` subcommand
+pending-parity: nix-flag:nix profile add --arg-from-file — no `sui profile add` subcommand
+pending-parity: nix-flag:nix profile add --arg-from-stdin — no `sui profile add` subcommand
+pending-parity: nix-flag:nix profile add --argstr — no `sui profile add` subcommand
+pending-parity: nix-flag:nix profile add --commit-lock-file — no `sui profile add` subcommand
+pending-parity: nix-flag:nix profile add --debugger — no `sui profile add` subcommand
+pending-parity: nix-flag:nix profile add --eval-store — no `sui profile add` subcommand
+pending-parity: nix-flag:nix profile add --expr — no `sui profile add` subcommand
+pending-parity: nix-flag:nix profile add --file — no `sui profile add` subcommand
+pending-parity: nix-flag:nix profile add --impure — no `sui profile add` subcommand
+pending-parity: nix-flag:nix profile add --include — no `sui profile add` subcommand
+pending-parity: nix-flag:nix profile add --inputs-from — no `sui profile add` subcommand
+pending-parity: nix-flag:nix profile add --no-registries — no `sui profile add` subcommand
+pending-parity: nix-flag:nix profile add --no-update-lock-file — no `sui profile add` subcommand
+pending-parity: nix-flag:nix profile add --no-write-lock-file — no `sui profile add` subcommand
+pending-parity: nix-flag:nix profile add --output-lock-file — no `sui profile add` subcommand
+pending-parity: nix-flag:nix profile add --override-flake — no `sui profile add` subcommand
+pending-parity: nix-flag:nix profile add --override-input — no `sui profile add` subcommand
+pending-parity: nix-flag:nix profile add --priority — no `sui profile add` subcommand
+pending-parity: nix-flag:nix profile add --profile — no `sui profile add` subcommand
+pending-parity: nix-flag:nix profile add --recreate-lock-file — no `sui profile add` subcommand
+pending-parity: nix-flag:nix profile add --reference-lock-file — no `sui profile add` subcommand
+pending-parity: nix-flag:nix profile add --repair — no `sui profile add` subcommand
+pending-parity: nix-flag:nix profile add --stdin — no `sui profile add` subcommand
+pending-parity: nix-flag:nix profile add --update-input — no `sui profile add` subcommand
+pending-parity: nix-flag:nix profile diff-closures --profile — no `sui profile diff-closures` subcommand
+pending-parity: nix-flag:nix profile history --arg — `sui profile history` declares no --arg
+pending-parity: nix-flag:nix profile history --arg-from-file — `sui profile history` declares no --arg-from-file
+pending-parity: nix-flag:nix profile history --arg-from-stdin — `sui profile history` declares no --arg-from-stdin
+pending-parity: nix-flag:nix profile history --argstr — `sui profile history` declares no --argstr
+pending-parity: nix-flag:nix profile history --debugger — `sui profile history` declares no --debugger
+pending-parity: nix-flag:nix profile history --eval-store — `sui profile history` declares no --eval-store
+pending-parity: nix-flag:nix profile history --include — `sui profile history` declares no --include
+pending-parity: nix-flag:nix profile history --override-flake — `sui profile history` declares no --override-flake
+pending-parity: nix-flag:nix profile history --repair — `sui profile history` declares no --repair
+pending-parity: nix-flag:nix profile list --arg — `sui profile list` declares no --arg
+pending-parity: nix-flag:nix profile list --arg-from-file — `sui profile list` declares no --arg-from-file
+pending-parity: nix-flag:nix profile list --arg-from-stdin — `sui profile list` declares no --arg-from-stdin
+pending-parity: nix-flag:nix profile list --argstr — `sui profile list` declares no --argstr
+pending-parity: nix-flag:nix profile list --debugger — `sui profile list` declares no --debugger
+pending-parity: nix-flag:nix profile list --eval-store — `sui profile list` declares no --eval-store
+pending-parity: nix-flag:nix profile list --include — `sui profile list` declares no --include
+pending-parity: nix-flag:nix profile list --no-pretty — `sui profile list` declares no --no-pretty
+pending-parity: nix-flag:nix profile list --override-flake — `sui profile list` declares no --override-flake
+pending-parity: nix-flag:nix profile list --pretty — `sui profile list` declares no --pretty
+pending-parity: nix-flag:nix profile list --repair — `sui profile list` declares no --repair
+pending-parity: nix-flag:nix profile remove --all — `sui profile remove` declares no --all
+pending-parity: nix-flag:nix profile remove --arg — `sui profile remove` declares no --arg
+pending-parity: nix-flag:nix profile remove --arg-from-file — `sui profile remove` declares no --arg-from-file
+pending-parity: nix-flag:nix profile remove --arg-from-stdin — `sui profile remove` declares no --arg-from-stdin
+pending-parity: nix-flag:nix profile remove --argstr — `sui profile remove` declares no --argstr
+pending-parity: nix-flag:nix profile remove --debugger — `sui profile remove` declares no --debugger
+pending-parity: nix-flag:nix profile remove --eval-store — `sui profile remove` declares no --eval-store
+pending-parity: nix-flag:nix profile remove --include — `sui profile remove` declares no --include
+pending-parity: nix-flag:nix profile remove --override-flake — `sui profile remove` declares no --override-flake
+pending-parity: nix-flag:nix profile remove --regex — `sui profile remove` declares no --regex
+pending-parity: nix-flag:nix profile remove --repair — `sui profile remove` declares no --repair
+pending-parity: nix-flag:nix profile rollback --dry-run — `sui profile rollback` declares no --dry-run
+pending-parity: nix-flag:nix profile rollback --to — `sui profile rollback` declares no --to
+pending-parity: nix-flag:nix profile upgrade --all — `sui profile upgrade` declares no --all
+pending-parity: nix-flag:nix profile upgrade --arg — `sui profile upgrade` declares no --arg
+pending-parity: nix-flag:nix profile upgrade --arg-from-file — `sui profile upgrade` declares no --arg-from-file
+pending-parity: nix-flag:nix profile upgrade --arg-from-stdin — `sui profile upgrade` declares no --arg-from-stdin
+pending-parity: nix-flag:nix profile upgrade --argstr — `sui profile upgrade` declares no --argstr
+pending-parity: nix-flag:nix profile upgrade --commit-lock-file — `sui profile upgrade` declares no --commit-lock-file
+pending-parity: nix-flag:nix profile upgrade --debugger — `sui profile upgrade` declares no --debugger
+pending-parity: nix-flag:nix profile upgrade --eval-store — `sui profile upgrade` declares no --eval-store
+pending-parity: nix-flag:nix profile upgrade --expr — `sui profile upgrade` declares no --expr
+pending-parity: nix-flag:nix profile upgrade --file — `sui profile upgrade` declares no --file
+pending-parity: nix-flag:nix profile upgrade --include — `sui profile upgrade` declares no --include
+pending-parity: nix-flag:nix profile upgrade --inputs-from — `sui profile upgrade` declares no --inputs-from
+pending-parity: nix-flag:nix profile upgrade --no-registries — `sui profile upgrade` declares no --no-registries
+pending-parity: nix-flag:nix profile upgrade --no-update-lock-file — `sui profile upgrade` declares no --no-update-lock-file
+pending-parity: nix-flag:nix profile upgrade --no-write-lock-file — cli_contract refuses --no-write-lock-file: the operator directs sui NOT to write flake.lock; sui reads the flag nowhere and its lock path is free to write anyway — a forbidden mutation, not just a wrong answer
+pending-parity: nix-flag:nix profile upgrade --output-lock-file — `sui profile upgrade` declares no --output-lock-file
+pending-parity: nix-flag:nix profile upgrade --override-flake — `sui profile upgrade` declares no --override-flake
+pending-parity: nix-flag:nix profile upgrade --override-input — `sui profile upgrade` declares no --override-input
+pending-parity: nix-flag:nix profile upgrade --recreate-lock-file — `sui profile upgrade` declares no --recreate-lock-file
+pending-parity: nix-flag:nix profile upgrade --reference-lock-file — `sui profile upgrade` declares no --reference-lock-file
+pending-parity: nix-flag:nix profile upgrade --regex — `sui profile upgrade` declares no --regex
+pending-parity: nix-flag:nix profile upgrade --repair — `sui profile upgrade` declares no --repair
+pending-parity: nix-flag:nix profile upgrade --update-input — `sui profile upgrade` declares no --update-input
+pending-parity: nix-flag:nix profile wipe-history --dry-run — `sui profile wipe-history` declares no --dry-run
+pending-parity: nix-flag:nix profile wipe-history --older-than — cli_contract refuses --older-than: `--older-than` NARROWS which generations are deleted; it was discarded while the command removed every generation but the newest. Ignoring an argument that narrows a destructive operation defaults to the WIDER blast radius, so the safe spelling was the dangerous one
+pending-parity: nix-flag:nix realisation info --all — no `sui realisation info` subcommand
+pending-parity: nix-flag:nix realisation info --arg — no `sui realisation info` subcommand
+pending-parity: nix-flag:nix realisation info --arg-from-file — no `sui realisation info` subcommand
+pending-parity: nix-flag:nix realisation info --arg-from-stdin — no `sui realisation info` subcommand
+pending-parity: nix-flag:nix realisation info --argstr — no `sui realisation info` subcommand
+pending-parity: nix-flag:nix realisation info --commit-lock-file — no `sui realisation info` subcommand
+pending-parity: nix-flag:nix realisation info --debugger — no `sui realisation info` subcommand
+pending-parity: nix-flag:nix realisation info --derivation — no `sui realisation info` subcommand
+pending-parity: nix-flag:nix realisation info --eval-store — no `sui realisation info` subcommand
+pending-parity: nix-flag:nix realisation info --expr — no `sui realisation info` subcommand
+pending-parity: nix-flag:nix realisation info --file — no `sui realisation info` subcommand
+pending-parity: nix-flag:nix realisation info --impure — no `sui realisation info` subcommand
+pending-parity: nix-flag:nix realisation info --include — no `sui realisation info` subcommand
+pending-parity: nix-flag:nix realisation info --inputs-from — no `sui realisation info` subcommand
+pending-parity: nix-flag:nix realisation info --json — no `sui realisation info` subcommand
+pending-parity: nix-flag:nix realisation info --no-pretty — no `sui realisation info` subcommand
+pending-parity: nix-flag:nix realisation info --no-registries — no `sui realisation info` subcommand
+pending-parity: nix-flag:nix realisation info --no-update-lock-file — no `sui realisation info` subcommand
+pending-parity: nix-flag:nix realisation info --no-write-lock-file — no `sui realisation info` subcommand
+pending-parity: nix-flag:nix realisation info --output-lock-file — no `sui realisation info` subcommand
+pending-parity: nix-flag:nix realisation info --override-flake — no `sui realisation info` subcommand
+pending-parity: nix-flag:nix realisation info --override-input — no `sui realisation info` subcommand
+pending-parity: nix-flag:nix realisation info --pretty — no `sui realisation info` subcommand
+pending-parity: nix-flag:nix realisation info --recreate-lock-file — no `sui realisation info` subcommand
+pending-parity: nix-flag:nix realisation info --recursive — no `sui realisation info` subcommand
+pending-parity: nix-flag:nix realisation info --reference-lock-file — no `sui realisation info` subcommand
+pending-parity: nix-flag:nix realisation info --repair — no `sui realisation info` subcommand
+pending-parity: nix-flag:nix realisation info --stdin — no `sui realisation info` subcommand
+pending-parity: nix-flag:nix realisation info --update-input — no `sui realisation info` subcommand
+pending-parity: nix-flag:nix registry add --arg — `sui registry add` declares no --arg
+pending-parity: nix-flag:nix registry add --arg-from-file — `sui registry add` declares no --arg-from-file
+pending-parity: nix-flag:nix registry add --arg-from-stdin — `sui registry add` declares no --arg-from-stdin
+pending-parity: nix-flag:nix registry add --argstr — `sui registry add` declares no --argstr
+pending-parity: nix-flag:nix registry add --eval-store — `sui registry add` declares no --eval-store
+pending-parity: nix-flag:nix registry add --include — `sui registry add` declares no --include
+pending-parity: nix-flag:nix registry add --override-flake — `sui registry add` declares no --override-flake
+pending-parity: nix-flag:nix registry add --registry — `sui registry add` declares no --registry
+pending-parity: nix-flag:nix registry add --repair — `sui registry add` declares no --repair
+pending-parity: nix-flag:nix registry pin --arg — `sui registry pin` declares no --arg
+pending-parity: nix-flag:nix registry pin --arg-from-file — `sui registry pin` declares no --arg-from-file
+pending-parity: nix-flag:nix registry pin --arg-from-stdin — `sui registry pin` declares no --arg-from-stdin
+pending-parity: nix-flag:nix registry pin --argstr — `sui registry pin` declares no --argstr
+pending-parity: nix-flag:nix registry pin --debugger — `sui registry pin` declares no --debugger
+pending-parity: nix-flag:nix registry pin --eval-store — `sui registry pin` declares no --eval-store
+pending-parity: nix-flag:nix registry pin --include — `sui registry pin` declares no --include
+pending-parity: nix-flag:nix registry pin --override-flake — `sui registry pin` declares no --override-flake
+pending-parity: nix-flag:nix registry pin --registry — `sui registry pin` declares no --registry
+pending-parity: nix-flag:nix registry pin --repair — `sui registry pin` declares no --repair
+pending-parity: nix-flag:nix registry remove --registry — `sui registry remove` declares no --registry
+pending-parity: nix-flag:nix repl --arg — cli_coverage grades it Stub
+pending-parity: nix-flag:nix repl --arg-from-file — cli_coverage grades it Stub
+pending-parity: nix-flag:nix repl --arg-from-stdin — cli_coverage grades it Stub
+pending-parity: nix-flag:nix repl --argstr — cli_coverage grades it Stub
+pending-parity: nix-flag:nix repl --commit-lock-file — cli_coverage grades it Stub
+pending-parity: nix-flag:nix repl --debugger — cli_coverage grades it Stub
+pending-parity: nix-flag:nix repl --eval-store — cli_coverage grades it Stub
+pending-parity: nix-flag:nix repl --expr — cli_coverage grades it Stub
+pending-parity: nix-flag:nix repl --file — cli_coverage grades it Stub
+pending-parity: nix-flag:nix repl --impure — cli_coverage grades it Stub
+pending-parity: nix-flag:nix repl --include — cli_coverage grades it Stub
+pending-parity: nix-flag:nix repl --inputs-from — cli_coverage grades it Stub
+pending-parity: nix-flag:nix repl --no-registries — cli_coverage grades it Stub
+pending-parity: nix-flag:nix repl --no-update-lock-file — cli_coverage grades it Stub
+pending-parity: nix-flag:nix repl --no-write-lock-file — cli_coverage grades it Stub
+pending-parity: nix-flag:nix repl --output-lock-file — cli_coverage grades it Stub
+pending-parity: nix-flag:nix repl --override-flake — cli_coverage grades it Stub
+pending-parity: nix-flag:nix repl --override-input — cli_coverage grades it Stub
+pending-parity: nix-flag:nix repl --recreate-lock-file — cli_coverage grades it Stub
+pending-parity: nix-flag:nix repl --reference-lock-file — cli_coverage grades it Stub
+pending-parity: nix-flag:nix repl --repair — cli_coverage grades it Stub
+pending-parity: nix-flag:nix repl --stdin — cli_coverage grades it Stub
+pending-parity: nix-flag:nix repl --update-input — cli_coverage grades it Stub
+pending-parity: nix-flag:nix run --arg — `sui run` declares no --arg
+pending-parity: nix-flag:nix run --arg-from-file — `sui run` declares no --arg-from-file
+pending-parity: nix-flag:nix run --arg-from-stdin — `sui run` declares no --arg-from-stdin
+pending-parity: nix-flag:nix run --argstr — `sui run` declares no --argstr
+pending-parity: nix-flag:nix run --commit-lock-file — `sui run` declares no --commit-lock-file
+pending-parity: nix-flag:nix run --debugger — `sui run` declares no --debugger
+pending-parity: nix-flag:nix run --eval-store — `sui run` declares no --eval-store
+pending-parity: nix-flag:nix run --expr — `sui run` declares no --expr
+pending-parity: nix-flag:nix run --file — `sui run` declares no --file
+pending-parity: nix-flag:nix run --ignore-env — `sui run` declares no --ignore-env
+pending-parity: nix-flag:nix run --include — `sui run` declares no --include
+pending-parity: nix-flag:nix run --inputs-from — `sui run` declares no --inputs-from
+pending-parity: nix-flag:nix run --keep-env-var — `sui run` declares no --keep-env-var
+pending-parity: nix-flag:nix run --no-registries — `sui run` declares no --no-registries
+pending-parity: nix-flag:nix run --no-update-lock-file — `sui run` declares no --no-update-lock-file
+pending-parity: nix-flag:nix run --no-write-lock-file — cli_contract refuses --no-write-lock-file: the operator directs sui NOT to write flake.lock; sui reads the flag nowhere and its lock path is free to write anyway — a forbidden mutation, not just a wrong answer
+pending-parity: nix-flag:nix run --output-lock-file — `sui run` declares no --output-lock-file
+pending-parity: nix-flag:nix run --override-flake — `sui run` declares no --override-flake
+pending-parity: nix-flag:nix run --override-input — `sui run` declares no --override-input
+pending-parity: nix-flag:nix run --recreate-lock-file — `sui run` declares no --recreate-lock-file
+pending-parity: nix-flag:nix run --reference-lock-file — `sui run` declares no --reference-lock-file
+pending-parity: nix-flag:nix run --repair — `sui run` declares no --repair
+pending-parity: nix-flag:nix run --set-env-var — `sui run` declares no --set-env-var
+pending-parity: nix-flag:nix run --unset-env-var — `sui run` declares no --unset-env-var
+pending-parity: nix-flag:nix run --update-input — `sui run` declares no --update-input
+pending-parity: nix-flag:nix search --arg — `sui search` declares no --arg
+pending-parity: nix-flag:nix search --arg-from-file — `sui search` declares no --arg-from-file
+pending-parity: nix-flag:nix search --arg-from-stdin — `sui search` declares no --arg-from-stdin
+pending-parity: nix-flag:nix search --argstr — `sui search` declares no --argstr
+pending-parity: nix-flag:nix search --commit-lock-file — `sui search` declares no --commit-lock-file
+pending-parity: nix-flag:nix search --debugger — `sui search` declares no --debugger
+pending-parity: nix-flag:nix search --eval-store — `sui search` declares no --eval-store
+pending-parity: nix-flag:nix search --exclude — `sui search` declares no --exclude
+pending-parity: nix-flag:nix search --expr — `sui search` declares no --expr
+pending-parity: nix-flag:nix search --file — `sui search` declares no --file
+pending-parity: nix-flag:nix search --include — `sui search` declares no --include
+pending-parity: nix-flag:nix search --inputs-from — `sui search` declares no --inputs-from
+pending-parity: nix-flag:nix search --json — `sui search` declares no --json
+pending-parity: nix-flag:nix search --no-pretty — `sui search` declares no --no-pretty
+pending-parity: nix-flag:nix search --no-registries — `sui search` declares no --no-registries
+pending-parity: nix-flag:nix search --no-update-lock-file — `sui search` declares no --no-update-lock-file
+pending-parity: nix-flag:nix search --no-write-lock-file — cli_contract refuses --no-write-lock-file: the operator directs sui NOT to write flake.lock; sui reads the flag nowhere and its lock path is free to write anyway — a forbidden mutation, not just a wrong answer
+pending-parity: nix-flag:nix search --output-lock-file — `sui search` declares no --output-lock-file
+pending-parity: nix-flag:nix search --override-flake — `sui search` declares no --override-flake
+pending-parity: nix-flag:nix search --override-input — `sui search` declares no --override-input
+pending-parity: nix-flag:nix search --pretty — `sui search` declares no --pretty
+pending-parity: nix-flag:nix search --recreate-lock-file — `sui search` declares no --recreate-lock-file
+pending-parity: nix-flag:nix search --reference-lock-file — `sui search` declares no --reference-lock-file
+pending-parity: nix-flag:nix search --repair — `sui search` declares no --repair
+pending-parity: nix-flag:nix search --update-input — `sui search` declares no --update-input
+pending-parity: nix-flag:nix store add --dry-run — no `sui store add` subcommand
+pending-parity: nix-flag:nix store add --hash-algo — no `sui store add` subcommand
+pending-parity: nix-flag:nix store add --mode — no `sui store add` subcommand
+pending-parity: nix-flag:nix store add --name — no `sui store add` subcommand
+pending-parity: nix-flag:nix store add-file --dry-run — cli_coverage grades it Stub
+pending-parity: nix-flag:nix store add-file --hash-algo — cli_coverage grades it Stub
+pending-parity: nix-flag:nix store add-file --mode — cli_coverage grades it Stub
+pending-parity: nix-flag:nix store add-file --name — cli_coverage grades it Stub
+pending-parity: nix-flag:nix store add-path --dry-run — `sui store add-path` declares no --dry-run
+pending-parity: nix-flag:nix store add-path --hash-algo — `sui store add-path` declares no --hash-algo
+pending-parity: nix-flag:nix store add-path --mode — `sui store add-path` declares no --mode
+pending-parity: nix-flag:nix store copy-log --arg — no `sui store copy-log` subcommand
+pending-parity: nix-flag:nix store copy-log --arg-from-file — no `sui store copy-log` subcommand
+pending-parity: nix-flag:nix store copy-log --arg-from-stdin — no `sui store copy-log` subcommand
+pending-parity: nix-flag:nix store copy-log --argstr — no `sui store copy-log` subcommand
+pending-parity: nix-flag:nix store copy-log --commit-lock-file — no `sui store copy-log` subcommand
+pending-parity: nix-flag:nix store copy-log --debugger — no `sui store copy-log` subcommand
+pending-parity: nix-flag:nix store copy-log --eval-store — no `sui store copy-log` subcommand
+pending-parity: nix-flag:nix store copy-log --expr — no `sui store copy-log` subcommand
+pending-parity: nix-flag:nix store copy-log --file — no `sui store copy-log` subcommand
+pending-parity: nix-flag:nix store copy-log --from — no `sui store copy-log` subcommand
+pending-parity: nix-flag:nix store copy-log --impure — no `sui store copy-log` subcommand
+pending-parity: nix-flag:nix store copy-log --include — no `sui store copy-log` subcommand
+pending-parity: nix-flag:nix store copy-log --inputs-from — no `sui store copy-log` subcommand
+pending-parity: nix-flag:nix store copy-log --no-registries — no `sui store copy-log` subcommand
+pending-parity: nix-flag:nix store copy-log --no-update-lock-file — no `sui store copy-log` subcommand
+pending-parity: nix-flag:nix store copy-log --no-write-lock-file — no `sui store copy-log` subcommand
+pending-parity: nix-flag:nix store copy-log --output-lock-file — no `sui store copy-log` subcommand
+pending-parity: nix-flag:nix store copy-log --override-flake — no `sui store copy-log` subcommand
+pending-parity: nix-flag:nix store copy-log --override-input — no `sui store copy-log` subcommand
+pending-parity: nix-flag:nix store copy-log --recreate-lock-file — no `sui store copy-log` subcommand
+pending-parity: nix-flag:nix store copy-log --reference-lock-file — no `sui store copy-log` subcommand
+pending-parity: nix-flag:nix store copy-log --repair — no `sui store copy-log` subcommand
+pending-parity: nix-flag:nix store copy-log --stdin — no `sui store copy-log` subcommand
+pending-parity: nix-flag:nix store copy-log --to — no `sui store copy-log` subcommand
+pending-parity: nix-flag:nix store copy-log --update-input — no `sui store copy-log` subcommand
+pending-parity: nix-flag:nix store copy-sigs --all — no `sui store copy-sigs` subcommand
+pending-parity: nix-flag:nix store copy-sigs --arg — no `sui store copy-sigs` subcommand
+pending-parity: nix-flag:nix store copy-sigs --arg-from-file — no `sui store copy-sigs` subcommand
+pending-parity: nix-flag:nix store copy-sigs --arg-from-stdin — no `sui store copy-sigs` subcommand
+pending-parity: nix-flag:nix store copy-sigs --argstr — no `sui store copy-sigs` subcommand
+pending-parity: nix-flag:nix store copy-sigs --commit-lock-file — no `sui store copy-sigs` subcommand
+pending-parity: nix-flag:nix store copy-sigs --debugger — no `sui store copy-sigs` subcommand
+pending-parity: nix-flag:nix store copy-sigs --derivation — no `sui store copy-sigs` subcommand
+pending-parity: nix-flag:nix store copy-sigs --eval-store — no `sui store copy-sigs` subcommand
+pending-parity: nix-flag:nix store copy-sigs --expr — no `sui store copy-sigs` subcommand
+pending-parity: nix-flag:nix store copy-sigs --file — no `sui store copy-sigs` subcommand
+pending-parity: nix-flag:nix store copy-sigs --impure — no `sui store copy-sigs` subcommand
+pending-parity: nix-flag:nix store copy-sigs --include — no `sui store copy-sigs` subcommand
+pending-parity: nix-flag:nix store copy-sigs --inputs-from — no `sui store copy-sigs` subcommand
+pending-parity: nix-flag:nix store copy-sigs --no-registries — no `sui store copy-sigs` subcommand
+pending-parity: nix-flag:nix store copy-sigs --no-update-lock-file — no `sui store copy-sigs` subcommand
+pending-parity: nix-flag:nix store copy-sigs --no-write-lock-file — no `sui store copy-sigs` subcommand
+pending-parity: nix-flag:nix store copy-sigs --output-lock-file — no `sui store copy-sigs` subcommand
+pending-parity: nix-flag:nix store copy-sigs --override-flake — no `sui store copy-sigs` subcommand
+pending-parity: nix-flag:nix store copy-sigs --override-input — no `sui store copy-sigs` subcommand
+pending-parity: nix-flag:nix store copy-sigs --recreate-lock-file — no `sui store copy-sigs` subcommand
+pending-parity: nix-flag:nix store copy-sigs --recursive — no `sui store copy-sigs` subcommand
+pending-parity: nix-flag:nix store copy-sigs --reference-lock-file — no `sui store copy-sigs` subcommand
+pending-parity: nix-flag:nix store copy-sigs --repair — no `sui store copy-sigs` subcommand
+pending-parity: nix-flag:nix store copy-sigs --stdin — no `sui store copy-sigs` subcommand
+pending-parity: nix-flag:nix store copy-sigs --substituter — no `sui store copy-sigs` subcommand
+pending-parity: nix-flag:nix store copy-sigs --update-input — no `sui store copy-sigs` subcommand
+pending-parity: nix-flag:nix store delete --all — `sui store delete` declares no --all
+pending-parity: nix-flag:nix store delete --arg — `sui store delete` declares no --arg
+pending-parity: nix-flag:nix store delete --arg-from-file — `sui store delete` declares no --arg-from-file
+pending-parity: nix-flag:nix store delete --arg-from-stdin — `sui store delete` declares no --arg-from-stdin
+pending-parity: nix-flag:nix store delete --argstr — `sui store delete` declares no --argstr
+pending-parity: nix-flag:nix store delete --commit-lock-file — `sui store delete` declares no --commit-lock-file
+pending-parity: nix-flag:nix store delete --debugger — `sui store delete` declares no --debugger
+pending-parity: nix-flag:nix store delete --derivation — `sui store delete` declares no --derivation
+pending-parity: nix-flag:nix store delete --eval-store — `sui store delete` declares no --eval-store
+pending-parity: nix-flag:nix store delete --expr — `sui store delete` declares no --expr
+pending-parity: nix-flag:nix store delete --file — `sui store delete` declares no --file
+pending-parity: nix-flag:nix store delete --include — `sui store delete` declares no --include
+pending-parity: nix-flag:nix store delete --inputs-from — `sui store delete` declares no --inputs-from
+pending-parity: nix-flag:nix store delete --no-registries — `sui store delete` declares no --no-registries
+pending-parity: nix-flag:nix store delete --no-update-lock-file — `sui store delete` declares no --no-update-lock-file
+pending-parity: nix-flag:nix store delete --no-write-lock-file — cli_contract refuses --no-write-lock-file: the operator directs sui NOT to write flake.lock; sui reads the flag nowhere and its lock path is free to write anyway — a forbidden mutation, not just a wrong answer
+pending-parity: nix-flag:nix store delete --output-lock-file — `sui store delete` declares no --output-lock-file
+pending-parity: nix-flag:nix store delete --override-flake — `sui store delete` declares no --override-flake
+pending-parity: nix-flag:nix store delete --override-input — `sui store delete` declares no --override-input
+pending-parity: nix-flag:nix store delete --recreate-lock-file — `sui store delete` declares no --recreate-lock-file
+pending-parity: nix-flag:nix store delete --recursive — `sui store delete` declares no --recursive
+pending-parity: nix-flag:nix store delete --reference-lock-file — `sui store delete` declares no --reference-lock-file
+pending-parity: nix-flag:nix store delete --repair — `sui store delete` declares no --repair
+pending-parity: nix-flag:nix store delete --stdin — `sui store delete` declares no --stdin
+pending-parity: nix-flag:nix store delete --update-input — `sui store delete` declares no --update-input
+pending-parity: nix-flag:nix store diff-closures --arg — no `sui store diff-closures` subcommand
+pending-parity: nix-flag:nix store diff-closures --arg-from-file — no `sui store diff-closures` subcommand
+pending-parity: nix-flag:nix store diff-closures --arg-from-stdin — no `sui store diff-closures` subcommand
+pending-parity: nix-flag:nix store diff-closures --argstr — no `sui store diff-closures` subcommand
+pending-parity: nix-flag:nix store diff-closures --commit-lock-file — no `sui store diff-closures` subcommand
+pending-parity: nix-flag:nix store diff-closures --debugger — no `sui store diff-closures` subcommand
+pending-parity: nix-flag:nix store diff-closures --derivation — no `sui store diff-closures` subcommand
+pending-parity: nix-flag:nix store diff-closures --eval-store — no `sui store diff-closures` subcommand
+pending-parity: nix-flag:nix store diff-closures --expr — no `sui store diff-closures` subcommand
+pending-parity: nix-flag:nix store diff-closures --file — no `sui store diff-closures` subcommand
+pending-parity: nix-flag:nix store diff-closures --impure — no `sui store diff-closures` subcommand
+pending-parity: nix-flag:nix store diff-closures --include — no `sui store diff-closures` subcommand
+pending-parity: nix-flag:nix store diff-closures --inputs-from — no `sui store diff-closures` subcommand
+pending-parity: nix-flag:nix store diff-closures --no-registries — no `sui store diff-closures` subcommand
+pending-parity: nix-flag:nix store diff-closures --no-update-lock-file — no `sui store diff-closures` subcommand
+pending-parity: nix-flag:nix store diff-closures --no-write-lock-file — no `sui store diff-closures` subcommand
+pending-parity: nix-flag:nix store diff-closures --output-lock-file — no `sui store diff-closures` subcommand
+pending-parity: nix-flag:nix store diff-closures --override-flake — no `sui store diff-closures` subcommand
+pending-parity: nix-flag:nix store diff-closures --override-input — no `sui store diff-closures` subcommand
+pending-parity: nix-flag:nix store diff-closures --recreate-lock-file — no `sui store diff-closures` subcommand
+pending-parity: nix-flag:nix store diff-closures --reference-lock-file — no `sui store diff-closures` subcommand
+pending-parity: nix-flag:nix store diff-closures --repair — no `sui store diff-closures` subcommand
+pending-parity: nix-flag:nix store diff-closures --update-input — no `sui store diff-closures` subcommand
+pending-parity: nix-flag:nix store dump-path --all — `sui store dump-path` declares no --all
+pending-parity: nix-flag:nix store dump-path --arg — `sui store dump-path` declares no --arg
+pending-parity: nix-flag:nix store dump-path --arg-from-file — `sui store dump-path` declares no --arg-from-file
+pending-parity: nix-flag:nix store dump-path --arg-from-stdin — `sui store dump-path` declares no --arg-from-stdin
+pending-parity: nix-flag:nix store dump-path --argstr — `sui store dump-path` declares no --argstr
+pending-parity: nix-flag:nix store dump-path --commit-lock-file — `sui store dump-path` declares no --commit-lock-file
+pending-parity: nix-flag:nix store dump-path --debugger — `sui store dump-path` declares no --debugger
+pending-parity: nix-flag:nix store dump-path --derivation — `sui store dump-path` declares no --derivation
+pending-parity: nix-flag:nix store dump-path --eval-store — `sui store dump-path` declares no --eval-store
+pending-parity: nix-flag:nix store dump-path --expr — `sui store dump-path` declares no --expr
+pending-parity: nix-flag:nix store dump-path --file — `sui store dump-path` declares no --file
+pending-parity: nix-flag:nix store dump-path --include — `sui store dump-path` declares no --include
+pending-parity: nix-flag:nix store dump-path --inputs-from — `sui store dump-path` declares no --inputs-from
+pending-parity: nix-flag:nix store dump-path --no-registries — `sui store dump-path` declares no --no-registries
+pending-parity: nix-flag:nix store dump-path --no-update-lock-file — `sui store dump-path` declares no --no-update-lock-file
+pending-parity: nix-flag:nix store dump-path --no-write-lock-file — cli_contract refuses --no-write-lock-file: the operator directs sui NOT to write flake.lock; sui reads the flag nowhere and its lock path is free to write anyway — a forbidden mutation, not just a wrong answer
+pending-parity: nix-flag:nix store dump-path --output-lock-file — `sui store dump-path` declares no --output-lock-file
+pending-parity: nix-flag:nix store dump-path --override-flake — `sui store dump-path` declares no --override-flake
+pending-parity: nix-flag:nix store dump-path --override-input — `sui store dump-path` declares no --override-input
+pending-parity: nix-flag:nix store dump-path --recreate-lock-file — `sui store dump-path` declares no --recreate-lock-file
+pending-parity: nix-flag:nix store dump-path --recursive — `sui store dump-path` declares no --recursive
+pending-parity: nix-flag:nix store dump-path --reference-lock-file — `sui store dump-path` declares no --reference-lock-file
+pending-parity: nix-flag:nix store dump-path --repair — `sui store dump-path` declares no --repair
+pending-parity: nix-flag:nix store dump-path --stdin — `sui store dump-path` declares no --stdin
+pending-parity: nix-flag:nix store dump-path --update-input — `sui store dump-path` declares no --update-input
+pending-parity: nix-flag:nix store gc --max — `sui store gc` declares no --max
+pending-parity: nix-flag:nix store info --json — `sui store info` declares no --json
+pending-parity: nix-flag:nix store info --no-pretty — `sui store info` declares no --no-pretty
+pending-parity: nix-flag:nix store info --pretty — `sui store info` declares no --pretty
+pending-parity: nix-flag:nix store ls --directory — `sui store ls` declares no --directory
+pending-parity: nix-flag:nix store ls --no-pretty — `sui store ls` declares no --no-pretty
+pending-parity: nix-flag:nix store ls --pretty — `sui store ls` declares no --pretty
+pending-parity: nix-flag:nix store make-content-addressed --all — `sui store make-content-addressed` declares no --all
+pending-parity: nix-flag:nix store make-content-addressed --arg — `sui store make-content-addressed` declares no --arg
+pending-parity: nix-flag:nix store make-content-addressed --arg-from-file — `sui store make-content-addressed` declares no --arg-from-file
+pending-parity: nix-flag:nix store make-content-addressed --arg-from-stdin — `sui store make-content-addressed` declares no --arg-from-stdin
+pending-parity: nix-flag:nix store make-content-addressed --argstr — `sui store make-content-addressed` declares no --argstr
+pending-parity: nix-flag:nix store make-content-addressed --commit-lock-file — `sui store make-content-addressed` declares no --commit-lock-file
+pending-parity: nix-flag:nix store make-content-addressed --debugger — `sui store make-content-addressed` declares no --debugger
+pending-parity: nix-flag:nix store make-content-addressed --derivation — `sui store make-content-addressed` declares no --derivation
+pending-parity: nix-flag:nix store make-content-addressed --eval-store — `sui store make-content-addressed` declares no --eval-store
+pending-parity: nix-flag:nix store make-content-addressed --expr — `sui store make-content-addressed` declares no --expr
+pending-parity: nix-flag:nix store make-content-addressed --file — `sui store make-content-addressed` declares no --file
+pending-parity: nix-flag:nix store make-content-addressed --from — `sui store make-content-addressed` declares no --from
+pending-parity: nix-flag:nix store make-content-addressed --include — `sui store make-content-addressed` declares no --include
+pending-parity: nix-flag:nix store make-content-addressed --inputs-from — `sui store make-content-addressed` declares no --inputs-from
+pending-parity: nix-flag:nix store make-content-addressed --json — `sui store make-content-addressed` declares no --json
+pending-parity: nix-flag:nix store make-content-addressed --no-pretty — `sui store make-content-addressed` declares no --no-pretty
+pending-parity: nix-flag:nix store make-content-addressed --no-registries — `sui store make-content-addressed` declares no --no-registries
+pending-parity: nix-flag:nix store make-content-addressed --no-update-lock-file — `sui store make-content-addressed` declares no --no-update-lock-file
+pending-parity: nix-flag:nix store make-content-addressed --no-write-lock-file — cli_contract refuses --no-write-lock-file: the operator directs sui NOT to write flake.lock; sui reads the flag nowhere and its lock path is free to write anyway — a forbidden mutation, not just a wrong answer
+pending-parity: nix-flag:nix store make-content-addressed --output-lock-file — `sui store make-content-addressed` declares no --output-lock-file
+pending-parity: nix-flag:nix store make-content-addressed --override-flake — `sui store make-content-addressed` declares no --override-flake
+pending-parity: nix-flag:nix store make-content-addressed --override-input — `sui store make-content-addressed` declares no --override-input
+pending-parity: nix-flag:nix store make-content-addressed --pretty — `sui store make-content-addressed` declares no --pretty
+pending-parity: nix-flag:nix store make-content-addressed --recreate-lock-file — `sui store make-content-addressed` declares no --recreate-lock-file
+pending-parity: nix-flag:nix store make-content-addressed --recursive — `sui store make-content-addressed` declares no --recursive
+pending-parity: nix-flag:nix store make-content-addressed --reference-lock-file — `sui store make-content-addressed` declares no --reference-lock-file
+pending-parity: nix-flag:nix store make-content-addressed --repair — `sui store make-content-addressed` declares no --repair
+pending-parity: nix-flag:nix store make-content-addressed --stdin — `sui store make-content-addressed` declares no --stdin
+pending-parity: nix-flag:nix store make-content-addressed --to — `sui store make-content-addressed` declares no --to
+pending-parity: nix-flag:nix store make-content-addressed --update-input — `sui store make-content-addressed` declares no --update-input
+pending-parity: nix-flag:nix store prefetch-file --executable — `sui store prefetch-file` declares no --executable
+pending-parity: nix-flag:nix store prefetch-file --expected-hash — `sui store prefetch-file` declares no --expected-hash
+pending-parity: nix-flag:nix store prefetch-file --json — `sui store prefetch-file` declares no --json
+pending-parity: nix-flag:nix store prefetch-file --no-pretty — `sui store prefetch-file` declares no --no-pretty
+pending-parity: nix-flag:nix store prefetch-file --pretty — `sui store prefetch-file` declares no --pretty
+pending-parity: nix-flag:nix store repair --all — cli_coverage grades it Stub
+pending-parity: nix-flag:nix store repair --arg — cli_coverage grades it Stub
+pending-parity: nix-flag:nix store repair --arg-from-file — cli_coverage grades it Stub
+pending-parity: nix-flag:nix store repair --arg-from-stdin — cli_coverage grades it Stub
+pending-parity: nix-flag:nix store repair --argstr — cli_coverage grades it Stub
+pending-parity: nix-flag:nix store repair --commit-lock-file — cli_coverage grades it Stub
+pending-parity: nix-flag:nix store repair --debugger — cli_coverage grades it Stub
+pending-parity: nix-flag:nix store repair --derivation — cli_coverage grades it Stub
+pending-parity: nix-flag:nix store repair --eval-store — cli_coverage grades it Stub
+pending-parity: nix-flag:nix store repair --expr — cli_coverage grades it Stub
+pending-parity: nix-flag:nix store repair --file — cli_coverage grades it Stub
+pending-parity: nix-flag:nix store repair --impure — cli_coverage grades it Stub
+pending-parity: nix-flag:nix store repair --include — cli_coverage grades it Stub
+pending-parity: nix-flag:nix store repair --inputs-from — cli_coverage grades it Stub
+pending-parity: nix-flag:nix store repair --no-registries — cli_coverage grades it Stub
+pending-parity: nix-flag:nix store repair --no-update-lock-file — cli_coverage grades it Stub
+pending-parity: nix-flag:nix store repair --no-write-lock-file — cli_coverage grades it Stub
+pending-parity: nix-flag:nix store repair --output-lock-file — cli_coverage grades it Stub
+pending-parity: nix-flag:nix store repair --override-flake — cli_coverage grades it Stub
+pending-parity: nix-flag:nix store repair --override-input — cli_coverage grades it Stub
+pending-parity: nix-flag:nix store repair --recreate-lock-file — cli_coverage grades it Stub
+pending-parity: nix-flag:nix store repair --recursive — cli_coverage grades it Stub
+pending-parity: nix-flag:nix store repair --reference-lock-file — cli_coverage grades it Stub
+pending-parity: nix-flag:nix store repair --repair — cli_coverage grades it Stub
+pending-parity: nix-flag:nix store repair --stdin — cli_coverage grades it Stub
+pending-parity: nix-flag:nix store repair --update-input — cli_coverage grades it Stub
+pending-parity: nix-flag:nix store sign --all — `sui store sign` declares no --all
+pending-parity: nix-flag:nix store sign --arg — `sui store sign` declares no --arg
+pending-parity: nix-flag:nix store sign --arg-from-file — `sui store sign` declares no --arg-from-file
+pending-parity: nix-flag:nix store sign --arg-from-stdin — `sui store sign` declares no --arg-from-stdin
+pending-parity: nix-flag:nix store sign --argstr — `sui store sign` declares no --argstr
+pending-parity: nix-flag:nix store sign --commit-lock-file — `sui store sign` declares no --commit-lock-file
+pending-parity: nix-flag:nix store sign --debugger — `sui store sign` declares no --debugger
+pending-parity: nix-flag:nix store sign --derivation — `sui store sign` declares no --derivation
+pending-parity: nix-flag:nix store sign --eval-store — `sui store sign` declares no --eval-store
+pending-parity: nix-flag:nix store sign --expr — `sui store sign` declares no --expr
+pending-parity: nix-flag:nix store sign --file — `sui store sign` declares no --file
+pending-parity: nix-flag:nix store sign --include — `sui store sign` declares no --include
+pending-parity: nix-flag:nix store sign --inputs-from — `sui store sign` declares no --inputs-from
+pending-parity: nix-flag:nix store sign --no-registries — `sui store sign` declares no --no-registries
+pending-parity: nix-flag:nix store sign --no-update-lock-file — `sui store sign` declares no --no-update-lock-file
+pending-parity: nix-flag:nix store sign --no-write-lock-file — cli_contract refuses --no-write-lock-file: the operator directs sui NOT to write flake.lock; sui reads the flag nowhere and its lock path is free to write anyway — a forbidden mutation, not just a wrong answer
+pending-parity: nix-flag:nix store sign --output-lock-file — `sui store sign` declares no --output-lock-file
+pending-parity: nix-flag:nix store sign --override-flake — `sui store sign` declares no --override-flake
+pending-parity: nix-flag:nix store sign --override-input — `sui store sign` declares no --override-input
+pending-parity: nix-flag:nix store sign --recreate-lock-file — `sui store sign` declares no --recreate-lock-file
+pending-parity: nix-flag:nix store sign --recursive — `sui store sign` declares no --recursive
+pending-parity: nix-flag:nix store sign --reference-lock-file — `sui store sign` declares no --reference-lock-file
+pending-parity: nix-flag:nix store sign --repair — `sui store sign` declares no --repair
+pending-parity: nix-flag:nix store sign --stdin — `sui store sign` declares no --stdin
+pending-parity: nix-flag:nix store sign --update-input — `sui store sign` declares no --update-input
+pending-parity: nix-flag:nix store verify --all — `sui store verify` declares no --all
+pending-parity: nix-flag:nix store verify --arg — `sui store verify` declares no --arg
+pending-parity: nix-flag:nix store verify --arg-from-file — `sui store verify` declares no --arg-from-file
+pending-parity: nix-flag:nix store verify --arg-from-stdin — `sui store verify` declares no --arg-from-stdin
+pending-parity: nix-flag:nix store verify --argstr — `sui store verify` declares no --argstr
+pending-parity: nix-flag:nix store verify --commit-lock-file — `sui store verify` declares no --commit-lock-file
+pending-parity: nix-flag:nix store verify --debugger — `sui store verify` declares no --debugger
+pending-parity: nix-flag:nix store verify --derivation — `sui store verify` declares no --derivation
+pending-parity: nix-flag:nix store verify --eval-store — `sui store verify` declares no --eval-store
+pending-parity: nix-flag:nix store verify --expr — `sui store verify` declares no --expr
+pending-parity: nix-flag:nix store verify --file — `sui store verify` declares no --file
+pending-parity: nix-flag:nix store verify --include — `sui store verify` declares no --include
+pending-parity: nix-flag:nix store verify --inputs-from — `sui store verify` declares no --inputs-from
+pending-parity: nix-flag:nix store verify --no-contents — `sui store verify` declares no --no-contents
+pending-parity: nix-flag:nix store verify --no-registries — `sui store verify` declares no --no-registries
+pending-parity: nix-flag:nix store verify --no-trust — `sui store verify` declares no --no-trust
+pending-parity: nix-flag:nix store verify --no-update-lock-file — `sui store verify` declares no --no-update-lock-file
+pending-parity: nix-flag:nix store verify --no-write-lock-file — cli_contract refuses --no-write-lock-file: the operator directs sui NOT to write flake.lock; sui reads the flag nowhere and its lock path is free to write anyway — a forbidden mutation, not just a wrong answer
+pending-parity: nix-flag:nix store verify --output-lock-file — `sui store verify` declares no --output-lock-file
+pending-parity: nix-flag:nix store verify --override-flake — `sui store verify` declares no --override-flake
+pending-parity: nix-flag:nix store verify --override-input — `sui store verify` declares no --override-input
+pending-parity: nix-flag:nix store verify --recreate-lock-file — `sui store verify` declares no --recreate-lock-file
+pending-parity: nix-flag:nix store verify --recursive — `sui store verify` declares no --recursive
+pending-parity: nix-flag:nix store verify --reference-lock-file — `sui store verify` declares no --reference-lock-file
+pending-parity: nix-flag:nix store verify --repair — `sui store verify` declares no --repair
+pending-parity: nix-flag:nix store verify --sigs-needed — `sui store verify` declares no --sigs-needed
+pending-parity: nix-flag:nix store verify --stdin — `sui store verify` declares no --stdin
+pending-parity: nix-flag:nix store verify --substituter — `sui store verify` declares no --substituter
+pending-parity: nix-flag:nix store verify --update-input — `sui store verify` declares no --update-input
+pending-parity: nix-flag:nix upgrade-nix --dry-run — cli_coverage grades it Stub
+pending-parity: nix-flag:nix upgrade-nix --nix-store-paths-url — cli_coverage grades it Stub
+pending-parity: nix-flag:nix upgrade-nix --profile — cli_coverage grades it Stub
+pending-parity: nix-flag:nix why-depends --all — no `sui why-depends` subcommand
+pending-parity: nix-flag:nix why-depends --arg — no `sui why-depends` subcommand
+pending-parity: nix-flag:nix why-depends --arg-from-file — no `sui why-depends` subcommand
+pending-parity: nix-flag:nix why-depends --arg-from-stdin — no `sui why-depends` subcommand
+pending-parity: nix-flag:nix why-depends --argstr — no `sui why-depends` subcommand
+pending-parity: nix-flag:nix why-depends --commit-lock-file — no `sui why-depends` subcommand
+pending-parity: nix-flag:nix why-depends --debugger — no `sui why-depends` subcommand
+pending-parity: nix-flag:nix why-depends --derivation — no `sui why-depends` subcommand
+pending-parity: nix-flag:nix why-depends --eval-store — no `sui why-depends` subcommand
+pending-parity: nix-flag:nix why-depends --expr — no `sui why-depends` subcommand
+pending-parity: nix-flag:nix why-depends --file — no `sui why-depends` subcommand
+pending-parity: nix-flag:nix why-depends --impure — no `sui why-depends` subcommand
+pending-parity: nix-flag:nix why-depends --include — no `sui why-depends` subcommand
+pending-parity: nix-flag:nix why-depends --inputs-from — no `sui why-depends` subcommand
+pending-parity: nix-flag:nix why-depends --no-registries — no `sui why-depends` subcommand
+pending-parity: nix-flag:nix why-depends --no-update-lock-file — no `sui why-depends` subcommand
+pending-parity: nix-flag:nix why-depends --no-write-lock-file — no `sui why-depends` subcommand
+pending-parity: nix-flag:nix why-depends --output-lock-file — no `sui why-depends` subcommand
+pending-parity: nix-flag:nix why-depends --override-flake — no `sui why-depends` subcommand
+pending-parity: nix-flag:nix why-depends --override-input — no `sui why-depends` subcommand
+pending-parity: nix-flag:nix why-depends --precise — no `sui why-depends` subcommand
+pending-parity: nix-flag:nix why-depends --recreate-lock-file — no `sui why-depends` subcommand
+pending-parity: nix-flag:nix why-depends --reference-lock-file — no `sui why-depends` subcommand
+pending-parity: nix-flag:nix why-depends --repair — no `sui why-depends` subcommand
+pending-parity: nix-flag:nix why-depends --update-input — no `sui why-depends` subcommand
+pending-parity: nix-global-flag:nix --debug — `sui ` declares no --debug
+pending-parity: nix-global-flag:nix --log-format — cli_contract refuses --log-format: selects a log format a downstream parser expects; sui emits its own format regardless, so a machine consumer parses the wrong shape
+pending-parity: nix-global-flag:nix --offline — cli_contract refuses --offline: the operator directs sui NOT to use the network; sui reads the flag nowhere, so a fetch or a substituter query happens anyway
+pending-parity: nix-global-flag:nix --option — cli_contract refuses --option: `--option <k> <v>` sets an arbitrary nix setting; sui applies none of them, so any setting the operator relied on is silently absent
+pending-parity: nix-global-flag:nix --print-build-logs — cli_contract refuses --print-build-logs: -L/--print-build-logs asks sui to BREAK the silence around a build; sui reads it nowhere, so the operator gets exactly the silence the flag exists to end and concludes the build printed nothing
+pending-parity: nix-global-flag:nix --refresh — `sui ` declares no --refresh
+pending-parity: nix-global-flag:nix --relaxed-sandbox — `sui ` declares no --relaxed-sandbox
+pending-parity: setting:abort-on-warn — no sui source names "abort-on-warn"
+pending-parity: setting:accept-flake-config — no sui source names "accept-flake-config"
+pending-parity: setting:allow-dirty — no sui source names "allow-dirty"
+pending-parity: setting:allow-dirty-locks — no sui source names "allow-dirty-locks"
+pending-parity: setting:allow-import-from-derivation — no sui source names "allow-import-from-derivation"
+pending-parity: setting:allow-symlinked-store — no sui source names "allow-symlinked-store"
+pending-parity: setting:allow-unsafe-native-code-during-evaluation — no sui source names "allow-unsafe-native-code-during-evaluation"
+pending-parity: setting:allowed-impure-host-deps — no sui source names "allowed-impure-host-deps"
+pending-parity: setting:allowed-uris — no sui source names "allowed-uris"
+pending-parity: setting:always-allow-substitutes — no sui source names "always-allow-substitutes"
+pending-parity: setting:auto-allocate-uids — no sui source names "auto-allocate-uids"
+pending-parity: setting:auto-optimise-store — no sui source names "auto-optimise-store"
+pending-parity: setting:bash-prompt — no sui source names "bash-prompt"
+pending-parity: setting:bash-prompt-prefix — no sui source names "bash-prompt-prefix"
+pending-parity: setting:bash-prompt-suffix — no sui source names "bash-prompt-suffix"
+pending-parity: setting:build-dir — no sui source names "build-dir"
+pending-parity: setting:build-hook — no sui source names "build-hook"
+pending-parity: setting:build-poll-interval — no sui source names "build-poll-interval"
+pending-parity: setting:builders — no sui source names "builders"
+pending-parity: setting:builders-use-substitutes — no sui source names "builders-use-substitutes"
+pending-parity: setting:commit-lock-file-summary — no sui source names "commit-lock-file-summary"
+pending-parity: setting:compress-build-log — no sui source names "compress-build-log"
+pending-parity: setting:darwin-log-sandbox-violations — no sui source names "darwin-log-sandbox-violations"
+pending-parity: setting:debugger-on-trace — no sui source names "debugger-on-trace"
+pending-parity: setting:debugger-on-warn — no sui source names "debugger-on-warn"
+pending-parity: setting:diff-hook — no sui source names "diff-hook"
+pending-parity: setting:download-buffer-size — no sui source names "download-buffer-size"
+pending-parity: setting:download-speed — no sui source names "download-speed"
+pending-parity: setting:eval-profile-file — no sui source names "eval-profile-file"
+pending-parity: setting:eval-profiler — no sui source names "eval-profiler"
+pending-parity: setting:eval-profiler-frequency — no sui source names "eval-profiler-frequency"
+pending-parity: setting:eval-system — no sui source names "eval-system"
+pending-parity: setting:experimental-features — no sui source names "experimental-features"
+pending-parity: setting:extra-platforms — no sui source names "extra-platforms"
+pending-parity: setting:fsync-metadata — no sui source names "fsync-metadata"
+pending-parity: setting:fsync-store-paths — no sui source names "fsync-store-paths"
+pending-parity: setting:gc-reserved-space — no sui source names "gc-reserved-space"
+pending-parity: setting:hashed-mirrors — no sui source names "hashed-mirrors"
+pending-parity: setting:http-connections — no sui source names "http-connections"
+pending-parity: setting:http2 — no sui source names "http2"
+pending-parity: setting:id-count — no sui source names "id-count"
+pending-parity: setting:ignore-try — no sui source names "ignore-try"
+pending-parity: setting:impersonate-linux-26 — no sui source names "impersonate-linux-26"
+pending-parity: setting:impure-env — no sui source names "impure-env"
+pending-parity: setting:json-log-path — no sui source names "json-log-path"
+pending-parity: setting:keep-build-log — no sui source names "keep-build-log"
+pending-parity: setting:keep-derivations — no sui source names "keep-derivations"
+pending-parity: setting:keep-env-derivations — no sui source names "keep-env-derivations"
+pending-parity: setting:keep-failed — no sui source names "keep-failed"
+pending-parity: setting:keep-going — no sui source names "keep-going"
+pending-parity: setting:keep-outputs — no sui source names "keep-outputs"
+pending-parity: setting:log-lines — no sui source names "log-lines"
+pending-parity: setting:max-build-log-size — no sui source names "max-build-log-size"
+pending-parity: setting:max-call-depth — no sui source names "max-call-depth"
+pending-parity: setting:max-free — no sui source names "max-free"
+pending-parity: setting:max-substitution-jobs — no sui source names "max-substitution-jobs"
+pending-parity: setting:min-free — no sui source names "min-free"
+pending-parity: setting:min-free-check-interval — no sui source names "min-free-check-interval"
+pending-parity: setting:nar-buffer-size — no sui source names "nar-buffer-size"
+pending-parity: setting:narinfo-cache-negative-ttl — no sui source names "narinfo-cache-negative-ttl"
+pending-parity: setting:narinfo-cache-positive-ttl — no sui source names "narinfo-cache-positive-ttl"
+pending-parity: setting:netrc-file — no sui source names "netrc-file"
+pending-parity: setting:nix-path — no sui source names "nix-path"
+pending-parity: setting:nix-shell-always-looks-for-shell-nix — no sui source names "nix-shell-always-looks-for-shell-nix"
+pending-parity: setting:nix-shell-shebang-arguments-relative-to-script — no sui source names "nix-shell-shebang-arguments-relative-to-script"
+pending-parity: setting:plugin-files — no sui source names "plugin-files"
+pending-parity: setting:post-build-hook — no sui source names "post-build-hook"
+pending-parity: setting:pre-build-hook — no sui source names "pre-build-hook"
+pending-parity: setting:preallocate-contents — no sui source names "preallocate-contents"
+pending-parity: setting:print-missing — no sui source names "print-missing"
+pending-parity: setting:pure-eval — no sui source names "pure-eval"
+pending-parity: setting:require-drop-supplementary-groups — no sui source names "require-drop-supplementary-groups"
+pending-parity: setting:restrict-eval — no sui source names "restrict-eval"
+pending-parity: setting:run-diff-hook — no sui source names "run-diff-hook"
+pending-parity: setting:sandbox-fallback — no sui source names "sandbox-fallback"
+pending-parity: setting:sandbox-paths — no sui source names "sandbox-paths"
+pending-parity: setting:secret-key-files — no sui source names "secret-key-files"
+pending-parity: setting:show-trace — no sui source names "show-trace"
+pending-parity: setting:ssl-cert-file — no sui source names "ssl-cert-file"
+pending-parity: setting:start-id — no sui source names "start-id"
+pending-parity: setting:substitute — no sui source names "substitute"
+pending-parity: setting:substituters — no sui source names "substituters"
+pending-parity: setting:sync-before-registering — no sui source names "sync-before-registering"
+pending-parity: setting:system-features — no sui source names "system-features"
+pending-parity: setting:tarball-ttl — no sui source names "tarball-ttl"
+pending-parity: setting:trace-function-calls — no sui source names "trace-function-calls"
+pending-parity: setting:trace-import-from-derivation — no sui source names "trace-import-from-derivation"
+pending-parity: setting:trace-verbose — no sui source names "trace-verbose"
+pending-parity: setting:trust-tarballs-from-git-forges — no sui source names "trust-tarballs-from-git-forges"
+pending-parity: setting:trusted-substituters — no sui source names "trusted-substituters"
+pending-parity: setting:upgrade-nix-store-path-url — no sui source names "upgrade-nix-store-path-url"
+pending-parity: setting:use-case-hack — no sui source names "use-case-hack"
+pending-parity: setting:use-registries — no sui source names "use-registries"
+pending-parity: setting:use-sqlite-wal — no sui source names "use-sqlite-wal"
+pending-parity: setting:use-xdg-base-directories — no sui source names "use-xdg-base-directories"
+pending-parity: setting:user-agent-suffix — no sui source names "user-agent-suffix"
+pending-parity: setting:warn-dirty — no sui source names "warn-dirty"
+pending-parity: setting:warn-large-path-threshold — no sui source names "warn-large-path-threshold"
+pending-parity: setting:warn-short-path-literals — no sui source names "warn-short-path-literals"
+pending-parity: legacy-command:build-remote — argv[0] `build-remote` is not a sui LegacyCmd
+pending-parity: legacy-op:nix-env --set-flag — `sui profile --set-flag x x`: unexpected argument found
+pending-parity: legacy-op:nix-env --switch-generation — `sui profile switch-generation x x`: unrecognized subcommand
+pending-parity: legacy-op:nix-env --switch-profile — `sui profile --switch-profile x x`: unexpected argument found
+pending-parity: legacy-op:nix-env -G — `sui profile switch-generation x x`: unrecognized subcommand
+pending-parity: legacy-op:nix-env -S — `sui profile -S x x`: unexpected argument found
+pending-parity: legacy-op:nix-hash --to-base16 — `sui hash --to-base16 x x`: unexpected argument found
+pending-parity: legacy-op:nix-hash --to-base32 — `sui hash --to-base32 x x`: unexpected argument found
+pending-parity: legacy-op:nix-hash --to-base64 — `sui hash --to-base64 x x`: unexpected argument found
+pending-parity: legacy-op:nix-hash --to-sri — `sui hash --to-sri x x`: unexpected argument found
+pending-parity: legacy-op:nix-store --add — `sui store add x x`: unrecognized subcommand
+pending-parity: legacy-op:nix-store --add-fixed — `sui store --add-fixed x x`: unexpected argument found
+pending-parity: legacy-op:nix-store --check-validity — `sui store --check-validity x x`: unexpected argument found
+pending-parity: legacy-op:nix-store --dump-db — `sui store --dump-db x x`: unexpected argument found
+pending-parity: legacy-op:nix-store --export — `sui store export x x`: unrecognized subcommand
+pending-parity: legacy-op:nix-store --generate-binary-cache-key — `sui store --generate-binary-cache-key x x`: unexpected argument found
+pending-parity: legacy-op:nix-store --import — `sui store import x x`: unrecognized subcommand
+pending-parity: legacy-op:nix-store --init — `sui store --init x x`: unexpected argument found
+pending-parity: legacy-op:nix-store --load-db — `sui store --load-db x x`: unexpected argument found
+pending-parity: legacy-op:nix-store --optimize — `sui store --optimize x x`: unexpected argument found
+pending-parity: legacy-op:nix-store --print-env — `sui store --print-env x x`: unexpected argument found
+pending-parity: legacy-op:nix-store --print-fixed-path — `sui store --print-fixed-path x x`: unexpected argument found
+pending-parity: legacy-op:nix-store --read-log — `sui store --read-log x x`: unexpected argument found
+pending-parity: legacy-op:nix-store --realize — `sui store --realize x x`: unexpected argument found
+pending-parity: legacy-op:nix-store --register-validity — `sui store --register-validity x x`: unexpected argument found
+pending-parity: legacy-op:nix-store --repair-path — `sui store --repair-path x x`: unexpected argument found
+pending-parity: legacy-op:nix-store --restore — `sui store --restore x x`: unexpected argument found
+pending-parity: legacy-op:nix-store --serve — `sui store --serve x x`: unexpected argument found
+pending-parity: legacy-op:nix-store --verify-path — `sui store --verify-path x x`: unexpected argument found
+pending-parity: legacy-op:nix-store -A — `sui store -A x x`: unexpected argument found
+pending-parity: legacy-op:nix-store -l — `sui store -l x x`: unexpected argument found
+pending-parity: legacy-flag:nix-build --add-drv-link — `sui instantiate --realise --add-drv-link x x`: unexpected argument found
+pending-parity: legacy-flag:nix-build --check — `sui instantiate --realise --check x x`: unexpected argument found
+pending-parity: legacy-flag:nix-build --command — `sui instantiate --realise --command x x`: unexpected argument found
+pending-parity: legacy-flag:nix-build --drv-link — `sui instantiate --realise --drv-link x x`: unexpected argument found
+pending-parity: legacy-flag:nix-build --dry-run — `sui instantiate --realise --dry-run x x`: unexpected argument found
+pending-parity: legacy-flag:nix-build --exclude — `sui instantiate --realise --exclude x x`: unexpected argument found
+pending-parity: legacy-flag:nix-build --indirect — `sui instantiate --realise --indirect x x`: unexpected argument found
+pending-parity: legacy-flag:nix-build --keep — `sui instantiate --realise --keep x x`: unexpected argument found
+pending-parity: legacy-flag:nix-build --packages — `sui instantiate --realise --packages x x`: unexpected argument found
+pending-parity: legacy-flag:nix-build --pure — `sui instantiate --realise --pure x x`: unexpected argument found
+pending-parity: legacy-flag:nix-build --run — `sui instantiate --realise --run x x`: unexpected argument found
+pending-parity: legacy-flag:nix-build --run-env — `sui instantiate --realise --run-env x x`: unexpected argument found
+pending-parity: legacy-flag:nix-build -i — `sui instantiate --realise -i x x`: unexpected argument found
+pending-parity: legacy-flag:nix-build -p — `sui instantiate --realise -p x x`: unexpected argument found
+pending-parity: legacy-flag:nix-channel --list-generations — `sui registry --list-generations x x`: unexpected argument found
+pending-parity: legacy-flag:nix-channel --rollback — `sui registry --rollback x x`: unexpected argument found
+pending-parity: legacy-flag:nix-channel --update — `sui registry --update x x`: unexpected argument found
+pending-parity: legacy-flag:nix-collect-garbage --max-freed — `sui collect-garbage --max-freed x x`: unexpected argument found
+pending-parity: legacy-flag:nix-copy-closure --bzip2 — `sui copy --bzip2 x x`: unexpected argument found
+pending-parity: legacy-flag:nix-copy-closure --dry-run — `sui copy --dry-run x x`: unexpected argument found
+pending-parity: legacy-flag:nix-copy-closure --gzip — `sui copy --gzip x x`: unexpected argument found
+pending-parity: legacy-flag:nix-copy-closure --include-outputs — `sui copy --include-outputs x x`: unexpected argument found
+pending-parity: legacy-flag:nix-copy-closure --show-progress — `sui copy --show-progress x x`: unexpected argument found
+pending-parity: legacy-flag:nix-copy-closure --use-substitutes — `sui copy --use-substitutes x x`: unexpected argument found
+pending-parity: legacy-flag:nix-copy-closure --xz — `sui copy --xz x x`: unexpected argument found
+pending-parity: legacy-flag:nix-copy-closure -s — `sui copy -s x x`: unexpected argument found
+pending-parity: legacy-flag:nix-env --attr — `sui profile --attr x x`: unexpected argument found
+pending-parity: legacy-flag:nix-env --dry-run — `sui profile --dry-run x x`: unexpected argument found
+pending-parity: legacy-flag:nix-env --file — `sui profile --file x x`: unexpected argument found
+pending-parity: legacy-flag:nix-env --force-name — `sui profile --force-name x x`: unexpected argument found
+pending-parity: legacy-flag:nix-env --from-expression — `sui profile --from-expression x x`: unexpected argument found
+pending-parity: legacy-flag:nix-env --from-profile — `sui profile --from-profile x x`: unexpected argument found
+pending-parity: legacy-flag:nix-env --prebuilt-only — `sui profile --prebuilt-only x x`: unexpected argument found
+pending-parity: legacy-flag:nix-env --priority — `sui profile --priority x x`: unexpected argument found
+pending-parity: legacy-flag:nix-env --profile — `sui profile --profile x x`: unexpected argument found
+pending-parity: legacy-flag:nix-env --system-filter — `sui profile --system-filter x x`: unexpected argument found
+pending-parity: legacy-flag:nix-env -A — `sui profile -A x x`: unexpected argument found
+pending-parity: legacy-flag:nix-env -E — `sui profile -E x x`: unexpected argument found
+pending-parity: legacy-flag:nix-env -b — `sui profile -b x x`: unexpected argument found
+pending-parity: legacy-flag:nix-env -f — `sui profile -f x x`: unexpected argument found
+pending-parity: legacy-flag:nix-env -p — `sui profile --profile x x`: unexpected argument found
+pending-parity: legacy-flag:nix-env --install --preserve-installed — `sui profile install --preserve-installed x x`: unexpected argument found
+pending-parity: legacy-flag:nix-env --install --priority — `sui profile install --priority x x`: invalid value for one of the arguments
+pending-parity: legacy-flag:nix-env --install --remove-all — `sui profile install --remove-all x x`: unexpected argument found
+pending-parity: legacy-flag:nix-env --install -P — `sui profile install -P x x`: unexpected argument found
+pending-parity: legacy-flag:nix-env --install -r — `sui profile install -r x x`: unexpected argument found
+pending-parity: legacy-flag:nix-env --query --attr — `sui profile list --attr x x`: unexpected argument found
+pending-parity: legacy-flag:nix-env --query --attr-path — `sui profile list --attr-path x x`: unexpected argument found
+pending-parity: legacy-flag:nix-env --query --available — `sui profile list --available x x`: unexpected argument found
+pending-parity: legacy-flag:nix-env --query --compare-versions — `sui profile list --compare-versions x x`: unexpected argument found
+pending-parity: legacy-flag:nix-env --query --description — `sui profile list --description x x`: unexpected argument found
+pending-parity: legacy-flag:nix-env --query --drv-path — `sui profile list --drv-path x x`: unexpected argument found
+pending-parity: legacy-flag:nix-env --query --installed — `sui profile list --installed x x`: unexpected argument found
+pending-parity: legacy-flag:nix-env --query --meta — `sui profile list --meta x x`: unexpected argument found
+pending-parity: legacy-flag:nix-env --query --no-name — `sui profile list --no-name x x`: unexpected argument found
+pending-parity: legacy-flag:nix-env --query --out-path — `sui profile list --out-path x x`: unexpected argument found
+pending-parity: legacy-flag:nix-env --query --status — `sui profile list --status x x`: unexpected argument found
+pending-parity: legacy-flag:nix-env --query --system — `sui profile list --system x x`: unexpected argument found
+pending-parity: legacy-flag:nix-env --query --xml — `sui profile list --xml x x`: unexpected argument found
+pending-parity: legacy-flag:nix-env --query -A — `sui profile list -A x x`: unexpected argument found
+pending-parity: legacy-flag:nix-env --query -P — `sui profile list -P x x`: unexpected argument found
+pending-parity: legacy-flag:nix-env --query -a — `sui profile list -a x x`: unexpected argument found
+pending-parity: legacy-flag:nix-env --query -c — `sui profile list -c x x`: unexpected argument found
+pending-parity: legacy-flag:nix-env --query -s — `sui profile list -s x x`: unexpected argument found
+pending-parity: legacy-flag:nix-env --upgrade --always — `sui profile upgrade --always x x`: unexpected argument found
+pending-parity: legacy-flag:nix-env --upgrade --eq — `sui profile upgrade --eq x x`: unexpected argument found
+pending-parity: legacy-flag:nix-env --upgrade --leq — `sui profile upgrade --leq x x`: unexpected argument found
+pending-parity: legacy-flag:nix-env --upgrade --lt — `sui profile upgrade --lt x x`: unexpected argument found
+pending-parity: legacy-flag:nix-hash --base16 — `sui hash --base16 x x`: unexpected argument found
+pending-parity: legacy-flag:nix-hash --base32 — `sui hash --base32 x x`: unexpected argument found
+pending-parity: legacy-flag:nix-hash --base64 — `sui hash --base64 x x`: unexpected argument found
+pending-parity: legacy-flag:nix-hash --flat — `sui hash --flat x x`: unexpected argument found
+pending-parity: legacy-flag:nix-hash --sri — `sui hash --sri x x`: unexpected argument found
+pending-parity: legacy-flag:nix-hash --truncate — `sui hash --truncate x x`: unexpected argument found
+pending-parity: legacy-flag:nix-hash --type — `sui hash --type x x`: unexpected argument found
+pending-parity: legacy-flag:nix-instantiate --add-root — `sui instantiate --add-root x x`: unexpected argument found
+pending-parity: legacy-flag:nix-instantiate --dry-run — `sui instantiate --dry-run x x`: unexpected argument found
+pending-parity: legacy-flag:nix-instantiate --eval-only — `sui instantiate --eval-only x x`: unexpected argument found
+pending-parity: legacy-flag:nix-instantiate --find-file — `sui instantiate --find-file x x`: unexpected argument found
+pending-parity: legacy-flag:nix-instantiate --indirect — `sui instantiate --indirect x x`: unexpected argument found
+pending-parity: legacy-flag:nix-instantiate --no-location — `sui instantiate --no-location x x`: unexpected argument found
+pending-parity: legacy-flag:nix-instantiate --parse — `sui instantiate --parse x x`: unexpected argument found
+pending-parity: legacy-flag:nix-instantiate --parse-only — `sui instantiate --parse-only x x`: unexpected argument found
+pending-parity: legacy-flag:nix-instantiate --raw — `sui instantiate --raw x x`: unexpected argument found
+pending-parity: legacy-flag:nix-instantiate --xml — `sui instantiate --xml x x`: unexpected argument found
+pending-parity: legacy-flag:nix-prefetch-url --attr — `sui store prefetch-file --attr x x`: unexpected argument found
+pending-parity: legacy-flag:nix-prefetch-url --executable — `sui store prefetch-file --executable x x`: unexpected argument found
+pending-parity: legacy-flag:nix-prefetch-url --print-path — `sui store prefetch-file --print-path x x`: unexpected argument found
+pending-parity: legacy-flag:nix-prefetch-url --type — `sui store prefetch-file --type x x`: unexpected argument found
+pending-parity: legacy-flag:nix-prefetch-url -A — `sui store prefetch-file -A x x`: unexpected argument found
+pending-parity: legacy-flag:nix-shell --add-drv-link — `sui develop --add-drv-link x x`: unexpected argument found
+pending-parity: legacy-flag:nix-shell --check — `sui develop --check x x`: unexpected argument found
+pending-parity: legacy-flag:nix-shell --drv-link — `sui develop --drv-link x x`: unexpected argument found
+pending-parity: legacy-flag:nix-shell --dry-run — `sui develop --dry-run x x`: unexpected argument found
+pending-parity: legacy-flag:nix-shell --exclude — `sui develop --exclude x x`: unexpected argument found
+pending-parity: legacy-flag:nix-shell --expr — `sui develop --expr x x`: unexpected argument found
+pending-parity: legacy-flag:nix-shell --indirect — `sui develop --indirect x x`: unexpected argument found
+pending-parity: legacy-flag:nix-shell --keep — `sui develop --keep x x`: unexpected argument found
+pending-parity: legacy-flag:nix-shell --no-link — `sui develop --no-link x x`: unexpected argument found
+pending-parity: legacy-flag:nix-shell --no-out-link — `sui develop --no-out-link x x`: unexpected argument found
+pending-parity: legacy-flag:nix-shell --out-link — `sui develop --out-link x x`: unexpected argument found
+pending-parity: legacy-flag:nix-shell --pure — `sui develop --pure x x`: unexpected argument found
+pending-parity: legacy-flag:nix-shell --run-env — `sui develop --run-env x x`: unexpected argument found
+pending-parity: legacy-flag:nix-shell -E — `sui develop -E x x`: unexpected argument found
+pending-parity: legacy-flag:nix-shell -i — `sui develop -i x x`: unexpected argument found
+pending-parity: legacy-flag:nix-shell -o — `sui develop -o x x`: unexpected argument found
+pending-parity: legacy-flag:nix-store --add-root — `sui store --add-root x x`: unexpected argument found
+pending-parity: legacy-flag:nix-store --indirect — `sui store --indirect x x`: unexpected argument found
+pending-parity: legacy-flag:nix-store --max-atime — `sui store --max-atime x x`: unexpected argument found
+pending-parity: legacy-flag:nix-store --max-freed — `sui store --max-freed x x`: unexpected argument found
+pending-parity: legacy-flag:nix-store --max-links — `sui store --max-links x x`: unexpected argument found
+pending-parity: legacy-flag:nix-store --no-output — `sui store --no-output x x`: unexpected argument found
+pending-parity: legacy-flag:nix-store --stdin — `sui store --stdin x x`: unexpected argument found
+pending-parity: legacy-flag:nix-store --add-fixed --recursive — `sui store --add-fixed --recursive x x`: unexpected argument found
+pending-parity: legacy-flag:nix-store --check-validity --print-invalid — `sui store --check-validity --print-invalid x x`: unexpected argument found
+pending-parity: legacy-flag:nix-store --gc --max-freed — `sui store gc --max-freed x x`: unexpected argument found
+pending-parity: legacy-flag:nix-store --gc --print-dead — `sui store gc --print-dead x x`: unexpected argument found
+pending-parity: legacy-flag:nix-store --gc --print-live — `sui store gc --print-live x x`: unexpected argument found
+pending-parity: legacy-flag:nix-store --print-fixed-path --recursive — `sui store --print-fixed-path --recursive x x`: unexpected argument found
+pending-parity: legacy-flag:nix-store --query --force-realise — cli_contract refuses `sui store query --force-realise`: `sui store query`: the argument `force_realise` is ACCEPTED BUT NOT HONOURED (refused 2026-10-25). `--force-realise` builds a derivation before the query; sui's query reads the store only. Refusing rather than running and reporting success. See src/cli_contract.rs: not yet implemented
+pending-parity: legacy-flag:nix-store --query --force-realize — cli_contract refuses `sui store query --force-realize`: `sui store query`: the argument `force_realise` is ACCEPTED BUT NOT HONOURED (refused 2026-10-25). `--force-realise` builds a derivation before the query; sui's query reads the store only. Refusing rather than running and reporting success. See src/cli_contract.rs: not yet implemented
+pending-parity: legacy-flag:nix-store --query --graph — cli_contract refuses `sui store query --graph`: `sui store query`: the argument `graph` is ACCEPTED BUT NOT HONOURED (refused 2026-10-25). `--graph` prints a Graphviz graph; sui's query does not render one yet. Refusing rather than running and reporting success. See src/cli_contract.rs: not yet implemented
+pending-parity: legacy-flag:nix-store --query --graphml — cli_contract refuses `sui store query --graphml`: `sui store query`: the argument `graphml` is ACCEPTED BUT NOT HONOURED (refused 2026-10-25). `--graphml` prints GraphML; sui's query does not render it yet. Refusing rather than running and reporting success. See src/cli_contract.rs: not yet implemented
+pending-parity: legacy-flag:nix-store --query --resolve — cli_contract refuses `sui store query --resolve`: `sui store query`: the argument `resolve` is ACCEPTED BUT NOT HONOURED (refused 2026-10-25). `--resolve` maps a content-addressed output through realisations, which sui does not serve yet. Refusing rather than running and reporting success. See src/cli_contract.rs: not yet implemented
+pending-parity: legacy-flag:nix-store --query --tree — cli_contract refuses `sui store query --tree`: `sui store query`: the argument `tree` is ACCEPTED BUT NOT HONOURED (refused 2026-10-25). `--tree` prints the closure as a tree; sui's query does not render one yet. Refusing rather than running and reporting success. See src/cli_contract.rs: not yet implemented
+pending-parity: legacy-flag:nix-store --query -f — cli_contract refuses `sui store query -f`: `sui store query`: the argument `force_realise` is ACCEPTED BUT NOT HONOURED (refused 2026-10-25). `--force-realise` builds a derivation before the query; sui's query reads the store only. Refusing rather than running and reporting success. See src/cli_contract.rs: not yet implemented
+pending-parity: legacy-flag:nix-store --realise --repair — cli_contract refuses `sui store realise --repair`: `sui store realise`: the argument `repair` is ACCEPTED BUT NOT HONOURED (refused 2026-10-25). `--repair` rebuilds and replaces corrupt outputs; sui's realise does not repair yet. Refusing rather than running and reporting success. See src/cli_contract.rs: not yet implemented
+pending-parity: legacy-flag:nix-store --register-validity --hash-given — `sui store --register-validity --hash-given x x`: unexpected argument found
+pending-parity: legacy-flag:nix-store --register-validity --reregister — `sui store --register-validity --reregister x x`: unexpected argument found
+pending-parity: legacy-flag:nix-store --serve --write — `sui store --serve --write x x`: unexpected argument found
+pending-parity: legacy-flag:nix-store --verify --check-contents — `sui store verify --check-contents x x`: unexpected argument found
+pending-parity: legacy-flag:nix-store --verify --repair — `sui store verify --repair x x`: unexpected argument found
+pending-parity: legacy-common-flag:build-remote --cores — argv[0] `build-remote` is not a sui LegacyCmd
+pending-parity: legacy-common-flag:build-remote --fallback — argv[0] `build-remote` is not a sui LegacyCmd
+pending-parity: legacy-common-flag:build-remote --keep-failed — argv[0] `build-remote` is not a sui LegacyCmd
+pending-parity: legacy-common-flag:build-remote --keep-going — argv[0] `build-remote` is not a sui LegacyCmd
+pending-parity: legacy-common-flag:build-remote --max-silent-time — argv[0] `build-remote` is not a sui LegacyCmd
+pending-parity: legacy-common-flag:build-remote --no-build-output — argv[0] `build-remote` is not a sui LegacyCmd
+pending-parity: legacy-common-flag:build-remote --no-gc-warning — argv[0] `build-remote` is not a sui LegacyCmd
+pending-parity: legacy-common-flag:build-remote --readonly-mode — argv[0] `build-remote` is not a sui LegacyCmd
+pending-parity: legacy-common-flag:build-remote --store — argv[0] `build-remote` is not a sui LegacyCmd
+pending-parity: legacy-common-flag:build-remote --timeout — argv[0] `build-remote` is not a sui LegacyCmd
+pending-parity: legacy-common-flag:build-remote -K — argv[0] `build-remote` is not a sui LegacyCmd
+pending-parity: legacy-common-flag:build-remote -Q — argv[0] `build-remote` is not a sui LegacyCmd
+pending-parity: legacy-common-flag:build-remote -k — argv[0] `build-remote` is not a sui LegacyCmd
+pending-parity: legacy-common-flag:nix-build --cores — `sui instantiate --realise --cores x x`: invalid value for one of the arguments
+pending-parity: legacy-common-flag:nix-build --fallback — `sui instantiate --realise --fallback x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-build --keep-failed — `sui instantiate --realise --keep-failed x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-build --keep-going — cli_contract refuses `sui instantiate --realise --keep-going`: `sui`: the argument `keep_going` is ACCEPTED BUT NOT HONOURED (refused 2026-08-17). changes failure semantics (finish independent derivations after one fails); sui reads it nowhere, so the operator cannot tell a stop-at-first run from a keep-going run. Refusing rather than running and reporting success. See src/cli_contract.rs: not yet implemented
+pending-parity: legacy-common-flag:nix-build --max-silent-time — `sui instantiate --realise --max-silent-time x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-build --no-build-output — `sui instantiate --realise --no-build-output x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-build --no-gc-warning — `sui instantiate --realise --no-gc-warning x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-build --readonly-mode — `sui instantiate --realise --readonly-mode x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-build --timeout — `sui instantiate --realise --timeout x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-build -K — `sui instantiate --realise -K x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-build -Q — `sui instantiate --realise -Q x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-build -k — `sui instantiate --realise -k x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-channel --cores — `sui registry --cores x x`: unrecognized subcommand
+pending-parity: legacy-common-flag:nix-channel --fallback — `sui registry --fallback x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-channel --keep-failed — `sui registry --keep-failed x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-channel --keep-going — `sui registry --keep-going x x`: unrecognized subcommand
+pending-parity: legacy-common-flag:nix-channel --max-silent-time — `sui registry --max-silent-time x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-channel --no-build-output — `sui registry --no-build-output x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-channel --no-gc-warning — `sui registry --no-gc-warning x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-channel --readonly-mode — `sui registry --readonly-mode x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-channel --store — `sui registry --store x x`: unrecognized subcommand
+pending-parity: legacy-common-flag:nix-channel --timeout — `sui registry --timeout x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-channel -K — `sui registry -K x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-channel -Q — `sui registry -Q x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-channel -k — `sui registry -k x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-collect-garbage --cores — `sui collect-garbage --cores x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-collect-garbage --fallback — `sui collect-garbage --fallback x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-collect-garbage --keep-failed — `sui collect-garbage --keep-failed x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-collect-garbage --keep-going — cli_contract refuses `sui collect-garbage --keep-going`: `sui`: the argument `keep_going` is ACCEPTED BUT NOT HONOURED (refused 2026-08-17). changes failure semantics (finish independent derivations after one fails); sui reads it nowhere, so the operator cannot tell a stop-at-first run from a keep-going run. Refusing rather than running and reporting success. See src/cli_contract.rs: not yet implemented
+pending-parity: legacy-common-flag:nix-collect-garbage --max-silent-time — `sui collect-garbage --max-silent-time x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-collect-garbage --no-build-output — `sui collect-garbage --no-build-output x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-collect-garbage --no-gc-warning — `sui collect-garbage --no-gc-warning x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-collect-garbage --readonly-mode — `sui collect-garbage --readonly-mode x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-collect-garbage --timeout — `sui collect-garbage --timeout x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-collect-garbage -K — `sui collect-garbage -K x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-collect-garbage -Q — `sui collect-garbage -Q x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-collect-garbage -k — `sui collect-garbage -k x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-copy-closure --cores — `sui copy --cores x x`: invalid value for one of the arguments
+pending-parity: legacy-common-flag:nix-copy-closure --fallback — `sui copy --fallback x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-copy-closure --keep-failed — `sui copy --keep-failed x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-copy-closure --keep-going — cli_contract refuses `sui copy --keep-going`: `sui`: the argument `keep_going` is ACCEPTED BUT NOT HONOURED (refused 2026-08-17). changes failure semantics (finish independent derivations after one fails); sui reads it nowhere, so the operator cannot tell a stop-at-first run from a keep-going run. Refusing rather than running and reporting success. See src/cli_contract.rs: not yet implemented
+pending-parity: legacy-common-flag:nix-copy-closure --max-silent-time — `sui copy --max-silent-time x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-copy-closure --no-build-output — `sui copy --no-build-output x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-copy-closure --no-gc-warning — `sui copy --no-gc-warning x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-copy-closure --readonly-mode — `sui copy --readonly-mode x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-copy-closure --timeout — `sui copy --timeout x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-copy-closure -K — `sui copy -K x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-copy-closure -Q — `sui copy -Q x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-copy-closure -k — `sui copy -k x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-daemon --cores — `sui daemon --cores x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-daemon --fallback — `sui daemon --fallback x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-daemon --keep-failed — `sui daemon --keep-failed x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-daemon --keep-going — cli_contract refuses `sui daemon --keep-going`: `sui`: the argument `keep_going` is ACCEPTED BUT NOT HONOURED (refused 2026-08-17). changes failure semantics (finish independent derivations after one fails); sui reads it nowhere, so the operator cannot tell a stop-at-first run from a keep-going run. Refusing rather than running and reporting success. See src/cli_contract.rs: not yet implemented
+pending-parity: legacy-common-flag:nix-daemon --max-silent-time — `sui daemon --max-silent-time x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-daemon --no-build-output — `sui daemon --no-build-output x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-daemon --no-gc-warning — `sui daemon --no-gc-warning x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-daemon --readonly-mode — `sui daemon --readonly-mode x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-daemon --timeout — `sui daemon --timeout x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-daemon -K — `sui daemon -K x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-daemon -Q — `sui daemon -Q x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-daemon -k — `sui daemon -k x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-env --cores — `sui profile --cores x x`: unrecognized subcommand
+pending-parity: legacy-common-flag:nix-env --fallback — `sui profile --fallback x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-env --keep-failed — `sui profile --keep-failed x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-env --keep-going — `sui profile --keep-going x x`: unrecognized subcommand
+pending-parity: legacy-common-flag:nix-env --max-silent-time — `sui profile --max-silent-time x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-env --no-build-output — `sui profile --no-build-output x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-env --no-gc-warning — `sui profile --no-gc-warning x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-env --readonly-mode — `sui profile --readonly-mode x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-env --store — `sui profile --store x x`: unrecognized subcommand
+pending-parity: legacy-common-flag:nix-env --timeout — `sui profile --timeout x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-env -K — `sui profile -K x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-env -Q — `sui profile -Q x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-env -k — `sui profile -k x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-hash --cores — `sui hash --cores x x`: unrecognized subcommand
+pending-parity: legacy-common-flag:nix-hash --fallback — `sui hash --fallback x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-hash --keep-failed — `sui hash --keep-failed x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-hash --keep-going — `sui hash --keep-going x x`: unrecognized subcommand
+pending-parity: legacy-common-flag:nix-hash --max-silent-time — `sui hash --max-silent-time x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-hash --no-build-output — `sui hash --no-build-output x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-hash --no-gc-warning — `sui hash --no-gc-warning x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-hash --readonly-mode — `sui hash --readonly-mode x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-hash --store — `sui hash --store x x`: unrecognized subcommand
+pending-parity: legacy-common-flag:nix-hash --timeout — `sui hash --timeout x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-hash -K — `sui hash -K x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-hash -Q — `sui hash -Q x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-hash -k — `sui hash -k x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-instantiate --cores — `sui instantiate --cores x x`: invalid value for one of the arguments
+pending-parity: legacy-common-flag:nix-instantiate --fallback — `sui instantiate --fallback x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-instantiate --keep-failed — `sui instantiate --keep-failed x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-instantiate --keep-going — cli_contract refuses `sui instantiate --keep-going`: `sui`: the argument `keep_going` is ACCEPTED BUT NOT HONOURED (refused 2026-08-17). changes failure semantics (finish independent derivations after one fails); sui reads it nowhere, so the operator cannot tell a stop-at-first run from a keep-going run. Refusing rather than running and reporting success. See src/cli_contract.rs: not yet implemented
+pending-parity: legacy-common-flag:nix-instantiate --max-silent-time — `sui instantiate --max-silent-time x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-instantiate --no-build-output — `sui instantiate --no-build-output x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-instantiate --no-gc-warning — `sui instantiate --no-gc-warning x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-instantiate --readonly-mode — `sui instantiate --readonly-mode x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-instantiate --timeout — `sui instantiate --timeout x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-instantiate -K — `sui instantiate -K x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-instantiate -Q — `sui instantiate -Q x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-instantiate -k — `sui instantiate -k x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-prefetch-url --cores — `sui store prefetch-file --cores x x`: invalid value for one of the arguments
+pending-parity: legacy-common-flag:nix-prefetch-url --fallback — `sui store prefetch-file --fallback x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-prefetch-url --keep-failed — `sui store prefetch-file --keep-failed x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-prefetch-url --keep-going — cli_contract refuses `sui store prefetch-file --keep-going x`: `sui`: the argument `keep_going` is ACCEPTED BUT NOT HONOURED (refused 2026-08-17). changes failure semantics (finish independent derivations after one fails); sui reads it nowhere, so the operator cannot tell a stop-at-first run from a keep-going run. Refusing rather than running and reporting success. See src/cli_contract.rs: not yet implemented
+pending-parity: legacy-common-flag:nix-prefetch-url --max-silent-time — `sui store prefetch-file --max-silent-time x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-prefetch-url --no-build-output — `sui store prefetch-file --no-build-output x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-prefetch-url --no-gc-warning — `sui store prefetch-file --no-gc-warning x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-prefetch-url --readonly-mode — `sui store prefetch-file --readonly-mode x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-prefetch-url --timeout — `sui store prefetch-file --timeout x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-prefetch-url -K — `sui store prefetch-file -K x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-prefetch-url -Q — `sui store prefetch-file -Q x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-prefetch-url -k — `sui store prefetch-file -k x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-shell --cores — `sui develop --cores x x`: invalid value for one of the arguments
+pending-parity: legacy-common-flag:nix-shell --fallback — `sui develop --fallback x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-shell --keep-failed — `sui develop --keep-failed x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-shell --keep-going — cli_contract refuses `sui develop --keep-going`: `sui`: the argument `keep_going` is ACCEPTED BUT NOT HONOURED (refused 2026-08-17). changes failure semantics (finish independent derivations after one fails); sui reads it nowhere, so the operator cannot tell a stop-at-first run from a keep-going run. Refusing rather than running and reporting success. See src/cli_contract.rs: not yet implemented
+pending-parity: legacy-common-flag:nix-shell --max-silent-time — `sui develop --max-silent-time x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-shell --no-build-output — `sui develop --no-build-output x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-shell --no-gc-warning — `sui develop --no-gc-warning x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-shell --readonly-mode — `sui develop --readonly-mode x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-shell --timeout — `sui develop --timeout x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-shell -K — `sui develop -K x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-shell -Q — `sui develop -Q x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-shell -k — `sui develop -k x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-store --cores — `sui store --cores x x`: unrecognized subcommand
+pending-parity: legacy-common-flag:nix-store --fallback — `sui store --fallback x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-store --keep-failed — `sui store --keep-failed x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-store --keep-going — `sui store --keep-going x x`: unrecognized subcommand
+pending-parity: legacy-common-flag:nix-store --max-silent-time — `sui store --max-silent-time x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-store --no-build-output — `sui store --no-build-output x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-store --no-gc-warning — `sui store --no-gc-warning x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-store --readonly-mode — `sui store --readonly-mode x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-store --store — `sui store --store x x`: unrecognized subcommand
+pending-parity: legacy-common-flag:nix-store --timeout — `sui store --timeout x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-store -K — `sui store -K x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-store -Q — `sui store -Q x x`: unexpected argument found
+pending-parity: legacy-common-flag:nix-store -k — `sui store -k x x`: unexpected argument found
+pending-parity: store-scheme:dummy:// — no sui claim for this row
+pending-parity: store-scheme:local-overlay:// — no sui claim for this row
+pending-parity: store-scheme:ssh-ng:// — no sui claim for this row
+pending-parity: store-scheme:mounted-ssh-ng:// — no sui claim for this row
+pending-parity: store-scheme:file:// — no sui claim for this row
+pending-parity: store-scheme:s3:// — no sui claim for this row
+pending-parity: store-scheme:ssh:// — no sui claim for this row
+pending-parity: store-setting:dummy://?path-info-cache-size — no sui claim for this row
+pending-parity: store-setting:dummy://?priority — no sui claim for this row
+pending-parity: store-setting:dummy://?store — no sui claim for this row
+pending-parity: store-setting:dummy://?system-features — no sui claim for this row
+pending-parity: store-setting:dummy://?trusted — no sui claim for this row
+pending-parity: store-setting:dummy://?want-mass-query — no sui claim for this row
+pending-parity: store-setting:local-overlay://?build-dir — no sui claim for this row
+pending-parity: store-setting:local-overlay://?check-mount — no sui claim for this row
+pending-parity: store-setting:local-overlay://?log — no sui claim for this row
+pending-parity: store-setting:local-overlay://?lower-store — no sui claim for this row
+pending-parity: store-setting:local-overlay://?path-info-cache-size — no sui claim for this row
+pending-parity: store-setting:local-overlay://?priority — no sui claim for this row
+pending-parity: store-setting:local-overlay://?read-only — no sui claim for this row
+pending-parity: store-setting:local-overlay://?real — no sui claim for this row
+pending-parity: store-setting:local-overlay://?remount-hook — no sui claim for this row
+pending-parity: store-setting:local-overlay://?require-sigs — no sui claim for this row
+pending-parity: store-setting:local-overlay://?root — no sui claim for this row
+pending-parity: store-setting:local-overlay://?state — no sui claim for this row
+pending-parity: store-setting:local-overlay://?store — no sui claim for this row
+pending-parity: store-setting:local-overlay://?system-features — no sui claim for this row
+pending-parity: store-setting:local-overlay://?trusted — no sui claim for this row
+pending-parity: store-setting:local-overlay://?upper-layer — no sui claim for this row
+pending-parity: store-setting:local-overlay://?want-mass-query — no sui claim for this row
+pending-parity: store-setting:ssh-ng://?base64-ssh-public-host-key — no sui claim for this row
+pending-parity: store-setting:ssh-ng://?compress — no sui claim for this row
+pending-parity: store-setting:ssh-ng://?max-connection-age — no sui claim for this row
+pending-parity: store-setting:ssh-ng://?max-connections — no sui claim for this row
+pending-parity: store-setting:ssh-ng://?path-info-cache-size — no sui claim for this row
+pending-parity: store-setting:ssh-ng://?priority — no sui claim for this row
+pending-parity: store-setting:ssh-ng://?remote-program — no sui claim for this row
+pending-parity: store-setting:ssh-ng://?remote-store — no sui claim for this row
+pending-parity: store-setting:ssh-ng://?ssh-key — no sui claim for this row
+pending-parity: store-setting:ssh-ng://?store — no sui claim for this row
+pending-parity: store-setting:ssh-ng://?system-features — no sui claim for this row
+pending-parity: store-setting:ssh-ng://?trusted — no sui claim for this row
+pending-parity: store-setting:ssh-ng://?want-mass-query — no sui claim for this row
+pending-parity: store-setting:mounted-ssh-ng://?base64-ssh-public-host-key — no sui claim for this row
+pending-parity: store-setting:mounted-ssh-ng://?compress — no sui claim for this row
+pending-parity: store-setting:mounted-ssh-ng://?log — no sui claim for this row
+pending-parity: store-setting:mounted-ssh-ng://?max-connection-age — no sui claim for this row
+pending-parity: store-setting:mounted-ssh-ng://?max-connections — no sui claim for this row
+pending-parity: store-setting:mounted-ssh-ng://?path-info-cache-size — no sui claim for this row
+pending-parity: store-setting:mounted-ssh-ng://?priority — no sui claim for this row
+pending-parity: store-setting:mounted-ssh-ng://?real — no sui claim for this row
+pending-parity: store-setting:mounted-ssh-ng://?remote-program — no sui claim for this row
+pending-parity: store-setting:mounted-ssh-ng://?remote-store — no sui claim for this row
+pending-parity: store-setting:mounted-ssh-ng://?root — no sui claim for this row
+pending-parity: store-setting:mounted-ssh-ng://?ssh-key — no sui claim for this row
+pending-parity: store-setting:mounted-ssh-ng://?state — no sui claim for this row
+pending-parity: store-setting:mounted-ssh-ng://?store — no sui claim for this row
+pending-parity: store-setting:mounted-ssh-ng://?system-features — no sui claim for this row
+pending-parity: store-setting:mounted-ssh-ng://?trusted — no sui claim for this row
+pending-parity: store-setting:mounted-ssh-ng://?want-mass-query — no sui claim for this row
+pending-parity: store-setting:http://?compression — no sui claim for this row
+pending-parity: store-setting:http://?compression-level — no sui claim for this row
+pending-parity: store-setting:http://?index-debug-info — no sui claim for this row
+pending-parity: store-setting:http://?local-nar-cache — no sui claim for this row
+pending-parity: store-setting:http://?parallel-compression — no sui claim for this row
+pending-parity: store-setting:http://?path-info-cache-size — no sui claim for this row
+pending-parity: store-setting:http://?priority — no sui claim for this row
+pending-parity: store-setting:http://?secret-key — no sui claim for this row
+pending-parity: store-setting:http://?secret-keys — no sui claim for this row
+pending-parity: store-setting:http://?store — no sui claim for this row
+pending-parity: store-setting:http://?system-features — no sui claim for this row
+pending-parity: store-setting:http://?trusted — no sui claim for this row
+pending-parity: store-setting:http://?want-mass-query — no sui claim for this row
+pending-parity: store-setting:http://?write-nar-listing — no sui claim for this row
+pending-parity: store-setting:file://?compression — no sui claim for this row
+pending-parity: store-setting:file://?compression-level — no sui claim for this row
+pending-parity: store-setting:file://?index-debug-info — no sui claim for this row
+pending-parity: store-setting:file://?local-nar-cache — no sui claim for this row
+pending-parity: store-setting:file://?parallel-compression — no sui claim for this row
+pending-parity: store-setting:file://?path-info-cache-size — no sui claim for this row
+pending-parity: store-setting:file://?priority — no sui claim for this row
+pending-parity: store-setting:file://?secret-key — no sui claim for this row
+pending-parity: store-setting:file://?secret-keys — no sui claim for this row
+pending-parity: store-setting:file://?store — no sui claim for this row
+pending-parity: store-setting:file://?system-features — no sui claim for this row
+pending-parity: store-setting:file://?trusted — no sui claim for this row
+pending-parity: store-setting:file://?want-mass-query — no sui claim for this row
+pending-parity: store-setting:file://?write-nar-listing — no sui claim for this row
+pending-parity: store-setting:unix://?log — no sui claim for this row
+pending-parity: store-setting:unix://?max-connection-age — no sui claim for this row
+pending-parity: store-setting:unix://?max-connections — no sui claim for this row
+pending-parity: store-setting:unix://?path-info-cache-size — no sui claim for this row
+pending-parity: store-setting:unix://?priority — no sui claim for this row
+pending-parity: store-setting:unix://?real — no sui claim for this row
+pending-parity: store-setting:unix://?root — no sui claim for this row
+pending-parity: store-setting:unix://?state — no sui claim for this row
+pending-parity: store-setting:unix://?store — no sui claim for this row
+pending-parity: store-setting:unix://?system-features — no sui claim for this row
+pending-parity: store-setting:unix://?trusted — no sui claim for this row
+pending-parity: store-setting:unix://?want-mass-query — no sui claim for this row
+pending-parity: store-setting:local://?build-dir — no sui claim for this row
+pending-parity: store-setting:local://?log — no sui claim for this row
+pending-parity: store-setting:local://?path-info-cache-size — no sui claim for this row
+pending-parity: store-setting:local://?priority — no sui claim for this row
+pending-parity: store-setting:local://?read-only — no sui claim for this row
+pending-parity: store-setting:local://?real — no sui claim for this row
+pending-parity: store-setting:local://?require-sigs — no sui claim for this row
+pending-parity: store-setting:local://?root — no sui claim for this row
+pending-parity: store-setting:local://?state — no sui claim for this row
+pending-parity: store-setting:local://?store — no sui claim for this row
+pending-parity: store-setting:local://?system-features — no sui claim for this row
+pending-parity: store-setting:local://?trusted — no sui claim for this row
+pending-parity: store-setting:local://?want-mass-query — no sui claim for this row
+pending-parity: store-setting:s3://?buffer-size — no sui claim for this row
+pending-parity: store-setting:s3://?compression — no sui claim for this row
+pending-parity: store-setting:s3://?compression-level — no sui claim for this row
+pending-parity: store-setting:s3://?endpoint — no sui claim for this row
+pending-parity: store-setting:s3://?index-debug-info — no sui claim for this row
+pending-parity: store-setting:s3://?local-nar-cache — no sui claim for this row
+pending-parity: store-setting:s3://?log-compression — no sui claim for this row
+pending-parity: store-setting:s3://?ls-compression — no sui claim for this row
+pending-parity: store-setting:s3://?multipart-upload — no sui claim for this row
+pending-parity: store-setting:s3://?narinfo-compression — no sui claim for this row
+pending-parity: store-setting:s3://?parallel-compression — no sui claim for this row
+pending-parity: store-setting:s3://?path-info-cache-size — no sui claim for this row
+pending-parity: store-setting:s3://?priority — no sui claim for this row
+pending-parity: store-setting:s3://?profile — no sui claim for this row
+pending-parity: store-setting:s3://?region — no sui claim for this row
+pending-parity: store-setting:s3://?scheme — no sui claim for this row
+pending-parity: store-setting:s3://?secret-key — no sui claim for this row
+pending-parity: store-setting:s3://?secret-keys — no sui claim for this row
+pending-parity: store-setting:s3://?store — no sui claim for this row
+pending-parity: store-setting:s3://?system-features — no sui claim for this row
+pending-parity: store-setting:s3://?trusted — no sui claim for this row
+pending-parity: store-setting:s3://?want-mass-query — no sui claim for this row
+pending-parity: store-setting:s3://?write-nar-listing — no sui claim for this row
+pending-parity: store-setting:ssh://?base64-ssh-public-host-key — no sui claim for this row
+pending-parity: store-setting:ssh://?compress — no sui claim for this row
+pending-parity: store-setting:ssh://?log-fd — no sui claim for this row
+pending-parity: store-setting:ssh://?max-connections — no sui claim for this row
+pending-parity: store-setting:ssh://?path-info-cache-size — no sui claim for this row
+pending-parity: store-setting:ssh://?priority — no sui claim for this row
+pending-parity: store-setting:ssh://?remote-program — no sui claim for this row
+pending-parity: store-setting:ssh://?remote-store — no sui claim for this row
+pending-parity: store-setting:ssh://?ssh-key — no sui claim for this row
+pending-parity: store-setting:ssh://?store — no sui claim for this row
+pending-parity: store-setting:ssh://?system-features — no sui claim for this row
+pending-parity: store-setting:ssh://?trusted — no sui claim for this row
+pending-parity: store-setting:ssh://?want-mass-query — no sui claim for this row
+pending-parity: fetcher:hg — no sui claim for this row
+pending-parity: xp-feature:auto-allocate-uids — no sui source names "auto-allocate-uids"
+pending-parity: xp-feature:blake3-hashes — no sui source names "blake3-hashes"
+pending-parity: xp-feature:cgroups — no sui source names "cgroups"
+pending-parity: xp-feature:configurable-impure-env — no sui source names "configurable-impure-env"
+pending-parity: xp-feature:daemon-trust-override — no sui source names "daemon-trust-override"
+pending-parity: xp-feature:dynamic-derivations — no sui source names "dynamic-derivations"
+pending-parity: xp-feature:fetch-closure — no sui source names "fetch-closure"
+pending-parity: xp-feature:fetch-tree — no sui source names "fetch-tree"
+pending-parity: xp-feature:impure-derivations — no sui source names "impure-derivations"
+pending-parity: xp-feature:local-overlay-store — no sui source names "local-overlay-store"
+pending-parity: xp-feature:mounted-ssh-store — no sui source names "mounted-ssh-store"
+pending-parity: xp-feature:no-url-literals — no sui source names "no-url-literals"
+pending-parity: xp-feature:parse-toml-timestamps — no sui source names "parse-toml-timestamps"
+pending-parity: xp-feature:read-only-local-store — no sui source names "read-only-local-store"
+pending-parity: xp-feature:recursive-nix — no sui source names "recursive-nix"
+pending-parity: xp-feature:verified-fetches — no sui source names "verified-fetches"
+pending-parity: builtin:fetchClosure — absent from sui-eval's builtins attrset
+pending-parity: builtin:outputOf — absent from sui-eval's builtins attrset
+pending-parity: serve-command:AddToStoreNar — no sui claim for this row
+pending-parity: serve-command:BuildDerivation — no sui claim for this row
+pending-parity: serve-command:BuildPaths — no sui claim for this row
+pending-parity: serve-command:DumpStorePath — no sui claim for this row
+pending-parity: serve-command:ExportPaths — no sui claim for this row
+pending-parity: serve-command:ImportPaths — no sui claim for this row
+pending-parity: serve-command:QueryClosure — no sui claim for this row
+pending-parity: serve-command:QueryPathInfos — no sui claim for this row
+pending-parity: serve-command:QueryValidPaths — no sui claim for this row
+pending-parity: machines-field:mandatoryFeatures — no sui claim for this row
+pending-parity: machines-field:maxJobs — no sui claim for this row
+pending-parity: machines-field:speedFactor — no sui claim for this row
+pending-parity: machines-field:sshKey — no sui claim for this row
+pending-parity: machines-field:sshPublicHostKey — no sui claim for this row
+pending-parity: machines-field:storeUri — no sui claim for this row
+pending-parity: machines-field:supportedFeatures — no sui claim for this row
+pending-parity: machines-field:systemTypes — no sui claim for this row
+pending-parity: env-var:EDITOR — no sui source names "EDITOR"
+pending-parity: env-var:GC_INITIAL_HEAP_SIZE — no sui source names "GC_INITIAL_HEAP_SIZE"
+pending-parity: env-var:IN_SYSTEMD — no sui source names "IN_SYSTEMD"
+pending-parity: env-var:LISTEN_FDS — no sui source names "LISTEN_FDS"
+pending-parity: env-var:LISTEN_PID — no sui source names "LISTEN_PID"
+pending-parity: env-var:NIX_ABORT_ON_WARN — no sui source names "NIX_ABORT_ON_WARN"
+pending-parity: env-var:NIX_ALLOW_EVAL — no sui source names "NIX_ALLOW_EVAL"
+pending-parity: env-var:NIX_BIN_DIR — no sui source names "NIX_BIN_DIR"
+pending-parity: env-var:NIX_BUILD_SHELL — no sui source names "NIX_BUILD_SHELL"
+pending-parity: env-var:NIX_CACHE_HOME — no sui source names "NIX_CACHE_HOME"
+pending-parity: env-var:NIX_CONFIG_HOME — no sui source names "NIX_CONFIG_HOME"
+pending-parity: env-var:NIX_COUNT_CALLS — no sui source names "NIX_COUNT_CALLS"
+pending-parity: env-var:NIX_DAEMON_SOCKET_PATH — no sui source names "NIX_DAEMON_SOCKET_PATH"
+pending-parity: env-var:NIX_DATA_DIR — no sui source names "NIX_DATA_DIR"
+pending-parity: env-var:NIX_DATA_HOME — no sui source names "NIX_DATA_HOME"
+pending-parity: env-var:NIX_DEBUG_SQLITE_TRACES — no sui source names "NIX_DEBUG_SQLITE_TRACES"
+pending-parity: env-var:NIX_GET_COMPLETIONS — no sui source names "NIX_GET_COMPLETIONS"
+pending-parity: env-var:NIX_IGNORE_SYMLINK_STORE — no sui source names "NIX_IGNORE_SYMLINK_STORE"
+pending-parity: env-var:NIX_LOG_DIR — no sui source names "NIX_LOG_DIR"
+pending-parity: env-var:NIX_PROFILE — no sui source names "NIX_PROFILE"
+pending-parity: env-var:NIX_REMOTE_SYSTEMS — no sui source names "NIX_REMOTE_SYSTEMS"
+pending-parity: env-var:NIX_SHOW_STATS — no sui source names "NIX_SHOW_STATS"
+pending-parity: env-var:NIX_SHOW_STATS_PATH — no sui source names "NIX_SHOW_STATS_PATH"
+pending-parity: env-var:NIX_SHOW_SYMBOLS — no sui source names "NIX_SHOW_SYMBOLS"
+pending-parity: env-var:NIX_SSHOPTS — no sui source names "NIX_SSHOPTS"
+pending-parity: env-var:NIX_SSL_CERT_FILE — no sui source names "NIX_SSL_CERT_FILE"
+pending-parity: env-var:NIX_STATE_DIR — no sui source names "NIX_STATE_DIR"
+pending-parity: env-var:NIX_STATE_HOME — no sui source names "NIX_STATE_HOME"
+pending-parity: env-var:NOCOLOR — no sui source names "NOCOLOR"
+pending-parity: env-var:PRINT_PATH — no sui source names "PRINT_PATH"
+pending-parity: env-var:SHELL — no sui source names "SHELL"
+pending-parity: env-var:USERPROFILE — no sui source names "USERPROFILE"
+pending-parity: env-var:XDG_DATA_HOME — no sui source names "XDG_DATA_HOME"
