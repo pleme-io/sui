@@ -1224,7 +1224,7 @@ async fn realize_closure(
 
             let sandbox = sui_build::sandbox::for_host(sui_build::sandbox::SandboxMode::from_nix_conf());
 
-            let builder = sui_build::LocalBuilder::new(store, sandbox).with_sink(sink).with_offload_from_nix_conf();
+            let builder = sui_build::LocalBuilder::new(store, sandbox).with_sink(sink).with_offload_from_nix_conf().with_default_log_dir();
             // Substitute-first: the substitutor pulls already-built paths from the
             // cache; the builder only builds what the cache can't supply.
             let build = builder.build_closure(&closure, Some(&substitutor));
@@ -1309,7 +1309,7 @@ pub async fn build_basic_observed(
         .map_err(|e| SystemError::RebuildFailed(format!("store open ({NIX_DB_PATH}): {e}")))?;
     let store: std::sync::Arc<dyn sui_store::Store> = std::sync::Arc::new(store);
     let sandbox = sui_build::sandbox::for_host(sui_build::sandbox::SandboxMode::from_nix_conf());
-    let builder = sui_build::LocalBuilder::new(store, sandbox).with_sink(sink);
+    let builder = sui_build::LocalBuilder::new(store, sandbox).with_sink(sink).with_default_log_dir();
     let result = tokio::time::timeout(realize_bound(), builder.build_basic(drv, drv_path))
         .await
         .map_err(|_elapsed| SystemError::RebuildFailed(format!("build of {drv_path} exceeded its bound")))?

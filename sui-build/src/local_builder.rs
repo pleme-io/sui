@@ -149,6 +149,7 @@ pub struct LocalBuilder {
     sink: SharedSink,
     max_jobs: Option<usize>,
     offload: Option<Arc<crate::offload::Offload>>,
+    log_dir: Option<std::path::PathBuf>,
 }
 
 struct RunningBuild<'a> {
@@ -196,7 +197,19 @@ impl LocalBuilder {
             sink: activity::noop_sink(),
             max_jobs: None,
             offload: None,
+            log_dir: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_log_dir(mut self, dir: impl Into<std::path::PathBuf>) -> Self {
+        self.log_dir = Some(dir.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_default_log_dir(self) -> Self {
+        self.with_log_dir(crate::build_log::default_log_dir())
     }
 
     #[must_use]
@@ -352,10 +365,17 @@ impl LocalBuilder {
             })
         });
         let mut builder_log = BuilderLog::new(&running.activity, false);
+        let mut raw_log = Vec::new();
         while let Some(chunk) = rx.recv().await {
             builder_log.feed(&chunk);
+            raw_log.extend_from_slice(&chunk);
         }
         builder_log.finish();
+        if let (Some(dir), Some(drv_path)) = (&self.log_dir, deriver)
+            && let Err(e) = crate::build_log::write(dir, drv_path, &raw_log)
+        {
+            tracing::warn!("cannot write the build log of {drv_path} under {}: {e}", dir.display());
+        }
         let result = execution
             .await
             .map_err(|e| BuildError::Failed(format!("builder task for {}: {e}", deriver.unwrap_or_default())))?;
@@ -1929,6 +1949,25 @@ mod tests {
         let dep = "/nix/store/sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6-absent-dep".to_string();
         std::os::unix::fs::symlink(format!("{dep}/bin/x"), &output).unwrap();
         assert_eq!(scan_refs(&[dep.clone()], output.to_str().unwrap()), vec![dep]);
+    }
+
+    #[tokio::test]
+    async fn a_build_writes_the_builder_output_as_its_log_whether_it_succeeds_or_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        let logs = tmp.path().join("log");
+        let builder = LocalBuilder::new(Arc::new(MockStore::new()), Box::new(NoSandbox))
+            .with_build_dir(tmp.path().join("build").to_str().unwrap().to_string())
+            .with_log_dir(&logs);
+        let ok_out = tmp.path().join("ok");
+        let ok = make_drv("/bin/sh", &["-c", &format!("echo line-one; echo line-two >&2; echo x > {}", ok_out.display())], ok_out.to_str().unwrap());
+        let ok_drv = "/nix/store/0123456789abcdfghijklmnpqrsvwxa-ok.drv";
+        assert!(builder.build_basic(&ok, ok_drv).await.unwrap().is_success());
+        assert_eq!(crate::build_log::read(&logs, ok_drv).unwrap().unwrap(), b"line-one\nline-two\n");
+        let bad_out = tmp.path().join("bad");
+        let bad = make_drv("/bin/sh", &["-c", "echo ok - test 1; echo not ok - test 2; exit 1"], bad_out.to_str().unwrap());
+        let bad_drv = "/nix/store/0123456789abcdfghijklmnpqrsvwxb-bad.drv";
+        assert!(!builder.build_basic(&bad, bad_drv).await.unwrap().is_success());
+        assert_eq!(crate::build_log::read(&logs, bad_drv).unwrap().unwrap(), b"ok - test 1\nnot ok - test 2\n");
     }
 
     #[tokio::test]

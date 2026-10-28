@@ -1,7 +1,7 @@
 # pending-parity: <row id> — <reason>. One line per cppnix row sui does not implement.
 # The gate (src/parity_matrix.rs) fails on an unwaived missing row, on a waived row sui implements,
 # on a waiver naming no row, and when the count differs from pending-ceiling. The ceiling only falls.
-pending-ceiling: 1740
+pending-ceiling: 1737
 pending-parity: nix-command:nix bundle — cli_coverage grades it Stub
 pending-parity: nix-command:nix config check — no `sui config check` subcommand
 pending-parity: nix-command:nix develop — cli_coverage grades it Stub
@@ -13,7 +13,6 @@ pending-parity: nix-command:nix formatter build — no `sui formatter build` sub
 pending-parity: nix-command:nix formatter run — no `sui formatter run` subcommand
 pending-parity: nix-command:nix hash convert — no `sui hash convert` subcommand
 pending-parity: nix-command:nix help-stores — no `sui help-stores` subcommand
-pending-parity: nix-command:nix log — cli_coverage grades it Stub
 pending-parity: nix-command:nix nar — no `sui nar` subcommand
 pending-parity: nix-command:nix nar cat — no `sui nar cat` subcommand
 pending-parity: nix-command:nix nar dump-path — no `sui nar dump-path` subcommand
@@ -558,28 +557,27 @@ pending-parity: nix-flag:nix hash to-base16 --type — cli_contract refuses --ty
 pending-parity: nix-flag:nix hash to-base32 --type — cli_contract refuses --type: `--type` names the hash algorithm for a bare input; sui discards it and infers from length, so the disambiguation the operator paid for is not applied
 pending-parity: nix-flag:nix hash to-base64 --type — cli_contract refuses --type: `--type` names the hash algorithm for a bare input; sui discards it and infers from length, so the disambiguation the operator paid for is not applied
 pending-parity: nix-flag:nix hash to-sri --type — cli_contract refuses --type: `--type` names the hash algorithm for a bare input; sui discards it and infers from length, so the disambiguation the operator paid for is not applied
-pending-parity: nix-flag:nix log --arg — cli_coverage grades it Stub
-pending-parity: nix-flag:nix log --arg-from-file — cli_coverage grades it Stub
-pending-parity: nix-flag:nix log --arg-from-stdin — cli_coverage grades it Stub
-pending-parity: nix-flag:nix log --argstr — cli_coverage grades it Stub
-pending-parity: nix-flag:nix log --commit-lock-file — cli_coverage grades it Stub
-pending-parity: nix-flag:nix log --debugger — cli_coverage grades it Stub
-pending-parity: nix-flag:nix log --eval-store — cli_coverage grades it Stub
-pending-parity: nix-flag:nix log --expr — cli_coverage grades it Stub
-pending-parity: nix-flag:nix log --file — cli_coverage grades it Stub
-pending-parity: nix-flag:nix log --impure — cli_coverage grades it Stub
-pending-parity: nix-flag:nix log --include — cli_coverage grades it Stub
-pending-parity: nix-flag:nix log --inputs-from — cli_coverage grades it Stub
-pending-parity: nix-flag:nix log --no-registries — cli_coverage grades it Stub
-pending-parity: nix-flag:nix log --no-update-lock-file — cli_coverage grades it Stub
-pending-parity: nix-flag:nix log --no-write-lock-file — cli_coverage grades it Stub
-pending-parity: nix-flag:nix log --output-lock-file — cli_coverage grades it Stub
-pending-parity: nix-flag:nix log --override-flake — cli_coverage grades it Stub
-pending-parity: nix-flag:nix log --override-input — cli_coverage grades it Stub
-pending-parity: nix-flag:nix log --recreate-lock-file — cli_coverage grades it Stub
-pending-parity: nix-flag:nix log --reference-lock-file — cli_coverage grades it Stub
-pending-parity: nix-flag:nix log --repair — cli_coverage grades it Stub
-pending-parity: nix-flag:nix log --update-input — cli_coverage grades it Stub
+pending-parity: nix-flag:nix log --arg — `sui log` declares no --arg
+pending-parity: nix-flag:nix log --arg-from-file — `sui log` declares no --arg-from-file
+pending-parity: nix-flag:nix log --arg-from-stdin — `sui log` declares no --arg-from-stdin
+pending-parity: nix-flag:nix log --argstr — `sui log` declares no --argstr
+pending-parity: nix-flag:nix log --commit-lock-file — `sui log` declares no --commit-lock-file
+pending-parity: nix-flag:nix log --debugger — `sui log` declares no --debugger
+pending-parity: nix-flag:nix log --eval-store — `sui log` declares no --eval-store
+pending-parity: nix-flag:nix log --expr — `sui log` declares no --expr
+pending-parity: nix-flag:nix log --file — `sui log` declares no --file
+pending-parity: nix-flag:nix log --include — `sui log` declares no --include
+pending-parity: nix-flag:nix log --inputs-from — `sui log` declares no --inputs-from
+pending-parity: nix-flag:nix log --no-registries — `sui log` declares no --no-registries
+pending-parity: nix-flag:nix log --no-update-lock-file — `sui log` declares no --no-update-lock-file
+pending-parity: nix-flag:nix log --no-write-lock-file — `sui log` declares no --no-write-lock-file
+pending-parity: nix-flag:nix log --output-lock-file — `sui log` declares no --output-lock-file
+pending-parity: nix-flag:nix log --override-flake — `sui log` declares no --override-flake
+pending-parity: nix-flag:nix log --override-input — `sui log` declares no --override-input
+pending-parity: nix-flag:nix log --recreate-lock-file — `sui log` declares no --recreate-lock-file
+pending-parity: nix-flag:nix log --reference-lock-file — `sui log` declares no --reference-lock-file
+pending-parity: nix-flag:nix log --repair — `sui log` declares no --repair
+pending-parity: nix-flag:nix log --update-input — `sui log` declares no --update-input
 pending-parity: nix-flag:nix nar ls --directory — no `sui nar ls` subcommand
 pending-parity: nix-flag:nix nar ls --json — no `sui nar ls` subcommand
 pending-parity: nix-flag:nix nar ls --long — no `sui nar ls` subcommand
@@ -1729,7 +1727,6 @@ pending-parity: env-var:NIX_DATA_HOME — no sui source names "NIX_DATA_HOME"
 pending-parity: env-var:NIX_DEBUG_SQLITE_TRACES — no sui source names "NIX_DEBUG_SQLITE_TRACES"
 pending-parity: env-var:NIX_GET_COMPLETIONS — no sui source names "NIX_GET_COMPLETIONS"
 pending-parity: env-var:NIX_IGNORE_SYMLINK_STORE — no sui source names "NIX_IGNORE_SYMLINK_STORE"
-pending-parity: env-var:NIX_LOG_DIR — no sui source names "NIX_LOG_DIR"
 pending-parity: env-var:NIX_PROFILE — no sui source names "NIX_PROFILE"
 pending-parity: env-var:NIX_REMOTE_SYSTEMS — no sui source names "NIX_REMOTE_SYSTEMS"
 pending-parity: env-var:NIX_SHOW_STATS — no sui source names "NIX_SHOW_STATS"

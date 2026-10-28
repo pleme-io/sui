@@ -124,9 +124,9 @@
 (defsui-command
   :name "log"
   :nix-equivalent "nix log"
-  :maturity Stub
+  :maturity Working
   :substrate ("derivation")
-  :notes "Print build log for a derivation")
+  :notes "Prints the stored build log (NIX_LOG_DIR/drvs/xx/rest, plain or cppnix's .bz2) of a .drv, an output path's deriver or a flake installable; sui builds now write it")
 
 (defsui-command
   :name "store-diff-closures"

@@ -12,6 +12,7 @@
 //! - [`local_builder`] — concrete builder executing derivations locally
 
 pub mod audit;
+pub mod build_log;
 pub mod closure;
 pub mod convergence_builder;
 pub mod export_graph;

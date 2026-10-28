@@ -9234,7 +9234,9 @@ async fn main() -> Result<(), CliError> {
         Commands::Why { path, dependency } => { return Err(CliError::NotImplemented(format!("why {path} {dependency}"))); }
         Commands::PathFromHashPart { hash_part } => { return Err(CliError::NotImplemented(format!("path-from-hash-part {hash_part}"))); }
         Commands::Edit { installable } => { return Err(CliError::NotImplemented(format!("edit {installable}"))); }
-        Commands::Log { installable } => { return Err(CliError::NotImplemented(format!("log {installable}"))); }
+        Commands::Log { installable } => {
+            cmd_log(&installable).await?;
+        }
         Commands::DiffClosures { before, after } => { return Err(CliError::NotImplemented(format!("diff-closures {before} {after}"))); }
         Commands::UpgradeNix { .. } => { return Err(CliError::NotImplemented("upgrade-nix".into())); }
         Commands::Fmt { args } => {
@@ -9808,30 +9810,10 @@ fn installable_out_paths(installable: &str) -> Result<Vec<String>, CliError> {
             }
         };
     }
-    let with_attr = if installable.contains('#') { installable.to_string() } else { format!("{installable}#") };
-    let flake_ref = sui_compat::flake_ref::FlakeRef::parse(&with_attr).map_err(|e| fail(format!("flake ref parse: {e}")))?;
-    let flake_dir = sui_eval::fetcher::resolve_flake_dir(&flake_ref).map_err(|e| fail(format!("fetch: {e}")))?;
-    let attr = if flake_ref.attribute.is_empty() { "default".to_string() } else { flake_ref.attribute.clone() };
-    let system = current_system();
-    let label = installable.to_string();
-    on_eval_stack("sui-shell-eval", move || -> Result<Vec<String>, CliError> {
+    flake_package(installable, "shell", |pkg, label| {
         let fail = |message: String| CliError::Orchestrate { operation: "shell", message };
         let force = |v: &sui_eval::Value| sui_eval::eval::force_value(v).map_err(|e| fail(format!("{label}: {e}")));
-        let result = sui_eval::builtins::evaluate_flake(&flake_dir).map_err(|e| fail(format!("eval: {e}")))?;
-        let segments: Vec<&str> = attr.split('.').collect();
-        let candidates = [
-            [&["packages", system.as_str()][..], &segments].concat(),
-            [&["legacyPackages", system.as_str()][..], &segments].concat(),
-            segments.clone(),
-        ];
-        let Some(found) = candidates.iter().find_map(|path| sui_eval::builtins::navigate_attrs(&result, path).ok()) else {
-            return Err(fail(format!(
-                "flake '{label}' does not provide attribute 'packages.{system}.{attr}', 'legacyPackages.{system}.{attr}' or '{attr}'"
-            )));
-        };
-        let sui_eval::Value::Attrs(pkg) = force(&found)? else {
-            return Err(fail(format!("{label} is not a derivation")));
-        };
+        let pkg = pkg.clone();
         let text = |attrs: &sui_eval::value::NixAttrs, key: &str| -> Result<Option<String>, CliError> {
             match attrs.get(key) {
                 Some(v) => Ok(force(&v)?.as_string().ok().map(str::to_string)),
@@ -9864,7 +9846,73 @@ fn installable_out_paths(installable: &str) -> Result<Vec<String>, CliError> {
             paths.push(out);
         }
         Ok(paths)
+    })
+}
+
+fn flake_package<T: Send + 'static>(
+    installable: &str,
+    operation: &'static str,
+    f: impl FnOnce(&sui_eval::value::NixAttrs, &str) -> Result<T, CliError> + Send + 'static,
+) -> Result<T, CliError> {
+    let fail = |message: String| CliError::Orchestrate { operation, message };
+    let with_attr = if installable.contains('#') { installable.to_string() } else { format!("{installable}#") };
+    let flake_ref = sui_compat::flake_ref::FlakeRef::parse(&with_attr).map_err(|e| fail(format!("flake ref parse: {e}")))?;
+    let flake_dir = sui_eval::fetcher::resolve_flake_dir(&flake_ref).map_err(|e| fail(format!("fetch: {e}")))?;
+    let attr = if flake_ref.attribute.is_empty() { "default".to_string() } else { flake_ref.attribute.clone() };
+    let system = current_system();
+    let label = installable.to_string();
+    on_eval_stack("sui-installable-eval", move || -> Result<T, CliError> {
+        let fail = |message: String| CliError::Orchestrate { operation, message };
+        let result = sui_eval::builtins::evaluate_flake(&flake_dir).map_err(|e| fail(format!("eval: {e}")))?;
+        let segments: Vec<&str> = attr.split('.').collect();
+        let candidates = [
+            [&["packages", system.as_str()][..], &segments].concat(),
+            [&["legacyPackages", system.as_str()][..], &segments].concat(),
+            segments.clone(),
+        ];
+        let Some(found) = candidates.iter().find_map(|path| sui_eval::builtins::navigate_attrs(&result, path).ok()) else {
+            return Err(fail(format!(
+                "flake '{label}' does not provide attribute 'packages.{system}.{attr}', 'legacyPackages.{system}.{attr}' or '{attr}'"
+            )));
+        };
+        let sui_eval::Value::Attrs(pkg) = sui_eval::eval::force_value(&found).map_err(|e| fail(format!("{label}: {e}")))? else {
+            return Err(fail(format!("{label} is not a derivation")));
+        };
+        f(&pkg, &label)
     })?
+}
+
+async fn cmd_log(installable: &str) -> Result<(), CliError> {
+    let fail = |message: String| CliError::Orchestrate { operation: "log", message };
+    let bare_drv = installable.starts_with("/nix/store/") && installable.ends_with(".drv");
+    let drv = match sui::installable::StoreInstallable::parse(installable)
+        .or_else(|| sui::installable::StoreInstallable::follow_links(installable))
+    {
+        _ if bare_drv => installable.to_string(),
+        Some(sui::installable::StoreInstallable::Derivation(drv)) => drv,
+        Some(sui::installable::StoreInstallable::Path(path)) => {
+            let sp = sui::parse_store_path(&path)?;
+            open_store()
+                .await?
+                .query_path_info(&sp)
+                .await?
+                .and_then(|info| info.deriver)
+                .ok_or_else(|| fail(format!("build log of '{installable}' is not available")))?
+        }
+        None => flake_package(installable, "log", |pkg, label| {
+            let drv = pkg.get("drvPath").ok_or_else(|| CliError::Orchestrate { operation: "log", message: format!("{label} has no drvPath") })?;
+            let drv = sui_eval::eval::force_value(&drv).map_err(|e| CliError::Orchestrate { operation: "log", message: format!("{label}: {e}") })?;
+            drv.as_string().map(str::to_string).map_err(|e| CliError::Orchestrate { operation: "log", message: format!("{label}: {e}") })
+        })?,
+    };
+    let drv = if drv.starts_with('/') { drv } else { format!("/nix/store/{drv}") };
+    match sui_build::build_log::read(&sui_build::build_log::default_log_dir(), &drv)? {
+        Some(log) => {
+            std::io::Write::write_all(&mut std::io::stdout(), &log)?;
+            Ok(())
+        }
+        None => Err(fail(format!("build log of '{installable}' is not available"))),
+    }
 }
 
 fn cmd_shell(args: &ShellArgs) -> Result<(), CliError> {
@@ -10057,7 +10105,7 @@ fn build_ifd_realizer() -> Result<IfdRealizer, String> {
 
             let sandbox = sandbox::for_host(sandbox::SandboxMode::from_nix_conf());
 
-            let builder = LocalBuilder::new(store, sandbox).with_offload_from_nix_conf();
+            let builder = LocalBuilder::new(store, sandbox).with_offload_from_nix_conf().with_default_log_dir();
             Ok(IfdRealizer::Direct { rt, builder, substitutor })
         }
         Some(StoreAccess::Daemon(store)) => Ok(IfdRealizer::Daemon { rt, store }),

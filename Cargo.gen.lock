@@ -1,11 +1,11 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "b08874249865f213f5a5e59efa6d66ce6b97a5171387fad3352844c5382f0b42",
+  "cargo_lock_sha256": "2ff2a6e38eb195e6c4fda7d3760a74cb0e7d2dd2d8d38ed4a696f55fc2184d29",
   "manifest_sha256": {
     "Cargo.toml": "0d435607eb6dd3309008fa4439d8638ed18f79bdb30e0a3884904d4b9459a9dd",
     "canteiro-types/Cargo.toml": "140edf011d225b89a3a8b8cc15d5212e84c056493e7c8a5b488d1c7e88847388",
     "sui-bigorna/Cargo.toml": "271fc14c6a889aa1386124ef2ed91bee58f437241fd91d1f2da549c496112270",
-    "sui-build/Cargo.toml": "159000b5e22f33e13b171da0e07f11c1e23204ac63fc5f93a44d0f1427a8d286",
+    "sui-build/Cargo.toml": "201469821dceb1d6a1d813f7fe91d6cd1cdfc3afd4291920743d080fb1b35d23",
     "sui-bytecode/Cargo.toml": "fea40d7d2b922a8987a8dcb3d35bb4072641f0d1fe95f6c6b6b9449c6659ee4b",
     "sui-cache-eval/Cargo.toml": "f16c2a3764aebcbc7d0583a9618dfadd596883dd4842c32b65843999034e5589",
     "sui-cache/Cargo.toml": "7358ff05d58115c06f9063987189e6ac798a588def010f41b76bb7b936533c55",
@@ -3058,6 +3058,34 @@
           "default",
           "serde",
           "std"
+        ]
+      },
+      "bzip2-rs-0.1.2": {
+        "runtime_dependencies": [
+          {
+            "name": "crc32fast",
+            "package_key": "crc32fast-1.5.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tinyvec",
+            "package_key": "tinyvec-1.11.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": [
+          "default"
         ]
       },
       "camino-1.2.4": {
@@ -8588,7 +8616,7 @@
           },
           {
             "name": "hashbrown",
-            "package_key": "hashbrown-0.15.5",
+            "package_key": "hashbrown-0.17.1",
             "kind": "normal",
             "features": [
               "default-hasher",
@@ -11867,9 +11895,21 @@
         ]
       },
       "hashbrown-0.17.1": {
-        "runtime_dependencies": [],
+        "runtime_dependencies": [
+          {
+            "name": "foldhash",
+            "package_key": "foldhash-0.2.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": false,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          }
+        ],
         "build_dependencies": [],
         "features": [
+          "default-hasher",
           "inline-more"
         ]
       },
@@ -24153,6 +24193,16 @@
           {
             "name": "blake3",
             "package_key": "blake3-1.8.5",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "bzip2_rs",
+            "package_key": "bzip2-rs-0.1.2",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -38263,6 +38313,9 @@
     },
     "bytes-1.12.0": {
       "edition": "2021"
+    },
+    "bzip2-rs-0.1.2": {
+      "edition": "2018"
     },
     "camino-1.2.4": {
       "edition": "2021",
