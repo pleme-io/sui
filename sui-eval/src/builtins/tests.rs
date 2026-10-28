@@ -3847,6 +3847,22 @@ fn builtins_parse_flake_ref_github_with_ref() {
 }
 
 #[test]
+fn builtins_parse_flake_ref_github_third_segment_of_forty_hex_is_a_rev() {
+    let v = ev(r#"builtins.parseFlakeRef "github:o/r/0123456789012345678901234567890123456789""#);
+    let a = v.to_attrs().unwrap();
+    assert_eq!(a.get("rev").unwrap().as_string().unwrap(), "0123456789012345678901234567890123456789");
+    assert!(a.get("ref").is_none());
+}
+
+#[test]
+fn builtins_parse_flake_ref_an_http_url_is_a_tarball() {
+    let v = ev(r#"builtins.parseFlakeRef "https://e.com/a.zip?x=1""#);
+    let a = v.to_attrs().unwrap();
+    assert_eq!(a.get("type").unwrap().as_string().unwrap(), "tarball");
+    assert_eq!(a.get("url").unwrap().as_string().unwrap(), "https://e.com/a.zip?x=1");
+}
+
+#[test]
 fn builtins_parse_flake_ref_git_with_query() {
     let v = ev(r#"builtins.parseFlakeRef "git+https://example.com/foo?ref=main""#);
     if let Value::Attrs(a) = v {

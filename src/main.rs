@@ -806,7 +806,9 @@ enum FlakeCommands {
         flake_ref: Option<String>,
         #[arg(long)] no_build: bool,
     },
-    Lock,
+    Lock {
+        flake_ref: Option<String>,
+    },
     Metadata { flake_ref: Option<String>, #[arg(long)] json: bool },
     Init { #[arg(short = 't', long)] template: Option<String> },
     New { dest: String, #[arg(short = 't', long)] template: Option<String> },
@@ -8242,15 +8244,17 @@ async fn main() -> Result<(), CliError> {
                     std::process::exit(1);
                 }
             }
-            FlakeCommands::Lock => {
-                let flake_dir = std::env::current_dir()?;
-                sui_eval::flake_lock::update_all_inputs(&flake_dir).map_err(|e| {
-                    CliError::Orchestrate {
-                        operation: "flake lock",
-                        message: e.to_string(),
-                    }
-                })?;
-                println!("flake.lock written");
+            FlakeCommands::Lock { flake_ref } => {
+                let flake_dir = resolve_flake_dir(flake_ref.as_deref())?;
+                let locked = sui_eval::flake_locker::lock_flake(&flake_dir, &sui_eval::flake_locker::LockFlags::default())
+                    .map_err(|e| CliError::Orchestrate { operation: "flake lock", message: e.to_string() })?;
+                for warning in &locked.warnings {
+                    eprintln!("warning: {warning}");
+                }
+                if locked.changed {
+                    eprintln!("warning: {}", locked.header("updating"));
+                    locked.write().map_err(|e| CliError::Orchestrate { operation: "flake lock", message: e.to_string() })?;
+                }
             }
             FlakeCommands::Metadata { flake_ref, json } => {
                 let flake_dir = resolve_flake_dir(flake_ref.as_deref())?;

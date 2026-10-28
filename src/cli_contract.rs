@@ -591,6 +591,7 @@ pub const CONTRACT: &[(&[&str], &str, Honour)] = &[
     (&["flake", "show"], "json", H),
     (&["flake", "update"], "inputs", H),
     (&["flake", "check"], "flake_ref", H),
+    (&["flake", "lock"], "flake_ref", H),
     (
         &["flake", "check"],
         "no_build",

@@ -364,7 +364,7 @@ fn resolve_latest(
 }
 
 /// Resolve latest commit for a GitHub input via the GitHub API.
-fn resolve_github(
+pub(crate) fn resolve_github(
     original: &OriginalInput,
 ) -> Result<sui_compat::flake::LockedInput, FlakeLockUpdateError> {
     let owner = original

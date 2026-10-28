@@ -21,6 +21,7 @@ pub mod eval_cache;
 pub mod fetcher;
 /// Native flake lock management — update, check, write.
 pub mod flake_lock;
+pub mod flake_locker;
 /// Pure-Rust git operations via gix/gitoxide (no CLI spawning, no C deps).
 pub mod git;
 /// Centralized path resolution (normalize, resolve relative, import).

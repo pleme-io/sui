@@ -312,7 +312,7 @@
   :nix-equivalent "nix flake lock"
   :maturity Working
   :substrate ("flake" "lock_file")
-  :notes "Write the flake.lock if missing")
+  :notes "cppnix computeLocks: keeps unchanged entries, locks new github, path and registry inputs, applies follows and overrides, reuses sub-flake locks; creates flake.lock when there is none")
 
 (defsui-command
   :name "flake metadata"

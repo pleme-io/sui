@@ -68,9 +68,8 @@ pub(crate) fn parse_flake_ref(s: &str) -> Result<Value, EvalError> {
             attrs.insert("repo".into(), Value::string(parts[1].to_string()));
             if let Some(reff) = parts.get(2)
                 && !reff.is_empty() {
-                    // Could be a ref or a 40-char hex sha (rev). CppNix
-                    // returns it under "ref" either way for shorthand.
-                    attrs.insert("ref".into(), Value::string((*reff).to_string()));
+                    let key = if reff.len() == 40 && reff.bytes().all(|b| b.is_ascii_hexdigit()) { "rev" } else { "ref" };
+                    attrs.insert(key.into(), Value::string((*reff).to_string()));
                 }
             for (k, v) in params {
                 attrs.insert(k, Value::string(v));
@@ -98,6 +97,12 @@ pub(crate) fn parse_flake_ref(s: &str) -> Result<Value, EvalError> {
         for (k, v) in params {
             attrs.insert(k, Value::string(v));
         }
+        return Ok(Value::Attrs(Rc::new(attrs)));
+    }
+
+    if ["http://", "https://", "file://"].iter().any(|scheme| s.starts_with(scheme)) {
+        attrs.insert("type".into(), Value::string("tarball"));
+        attrs.insert("url".into(), Value::string(s.to_string()));
         return Ok(Value::Attrs(Rc::new(attrs)));
     }
 
