@@ -162,6 +162,24 @@ enum Commands {
         /// Socket path
         #[arg(long, default_value = "/tmp/sui-daemon.sock")]
         socket: String,
+        /// Attach to standard I/O, instead of trying to bind to a UNIX socket.
+        #[arg(long)]
+        stdio: bool,
+        /// Accepted and ignored, as nix-daemon does for backwards compatibility.
+        #[arg(long = "daemon")]
+        legacy_daemon_flag: bool,
+        /// Force the daemon to trust connecting clients.
+        #[arg(long, conflicts_with_all = ["force_untrusted", "default_trust"])]
+        force_trusted: bool,
+        /// Force the daemon to not trust connecting clients.
+        #[arg(long, conflicts_with = "default_trust")]
+        force_untrusted: bool,
+        /// Use Nix's default trust.
+        #[arg(long)]
+        default_trust: bool,
+        /// Process received commands in this process rather than forwarding them.
+        #[arg(long)]
+        process_ops: bool,
     },
     /// System operations (rebuild, switch, rollback)
     System {
@@ -2515,6 +2533,52 @@ async fn store_ping() -> Result<(), CliError> {
     );
     println!("Trusted: {}", hs.trust_label());
     Ok(())
+}
+
+async fn daemon_stdio(force_trusted: bool, force_untrusted: bool, process_ops: bool) -> Result<(), CliError> {
+    use sui_daemon::stdio::{StdioBackend, check_trust, forward, resolve_backend, serve_local};
+    let refuse = |message: String| CliError::Orchestrate { operation: "daemon --stdio", message };
+    if !sui_daemon::ServeModes::load().stdio {
+        return Err(refuse("serving the worker protocol over stdio is switched off (sui.yaml serve.stdio: false)".into()));
+    }
+    let trust = match (force_trusted, force_untrusted) {
+        (true, _) => Some(sui_daemon::TrustLevel::Trusted),
+        (_, true) => Some(sui_daemon::TrustLevel::NotTrusted),
+        _ => None,
+    };
+    let store_url = sui_store::store_url();
+    let backend = resolve_backend(
+        store_url.as_deref(),
+        std::path::Path::new("/nix/var/nix"),
+        std::path::Path::new(sui_daemon::DEFAULT_SOCKET_PATH),
+    )
+    .map_err(|e| refuse(e.to_string()))?;
+    check_trust(&backend, trust).map_err(|e| refuse(e.to_string()))?;
+    match backend {
+        StdioBackend::Forward(socket) if !process_ops => {
+            forward(&socket, tokio::io::stdin(), tokio::io::stdout()).await.map_err(|e| refuse(e.to_string()))
+        }
+        StdioBackend::Forward(socket) => Err(refuse(format!(
+            "--process-ops needs the local store, and this user reaches the store only through the daemon at {}",
+            socket.display()
+        ))),
+        StdioBackend::Local => {
+            let store = LocalStore::open_rw(NIX_DB_PATH).await.map_err(|e| CliError::StoreOpen { path: NIX_DB_PATH, source: e })?;
+            let signatures = sui_compat::nix_conf::NixConfig::load()
+                .map(|c| sui_daemon::SignaturePolicy::from_nix_config(&c))
+                .unwrap_or_default();
+            serve_local(
+                std::sync::Arc::new(store),
+                tokio::io::stdin(),
+                tokio::io::stdout(),
+                trust,
+                sui_orchestrate::build_caches(&sui_orchestrate::get_substituters()),
+                signatures,
+            )
+            .await
+            .map_err(|e| refuse(e.to_string()))
+        }
+    }
 }
 
 /// Resolve the worker-protocol daemon socket path, honoring
@@ -7045,6 +7109,7 @@ async fn main() -> Result<(), CliError> {
 
     let raw_args: Vec<String> = std::env::args().skip(1).collect();
     tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(legacy::log_level(&raw_args))),
@@ -8172,7 +8237,11 @@ async fn main() -> Result<(), CliError> {
             }
         },
 
-        Commands::Daemon { socket } => {
+        Commands::Daemon { stdio: true, force_trusted, force_untrusted, process_ops, .. } => {
+            daemon_stdio(force_trusted, force_untrusted, process_ops).await?;
+        }
+
+        Commands::Daemon { socket, .. } => {
             tracing::info!("starting sui daemon on {socket}");
             let store = LocalStore::open_rw(NIX_DB_PATH).await.map_err(|e| CliError::StoreOpen {
                 path: NIX_DB_PATH,
@@ -8182,9 +8251,13 @@ async fn main() -> Result<(), CliError> {
             let signatures = sui_compat::nix_conf::NixConfig::load()
                 .map(|c| sui_daemon::SignaturePolicy::from_nix_config(&c))
                 .unwrap_or_default();
+            let users = sui_compat::nix_conf::NixConfig::load()
+                .map(|c| sui_daemon::UserPolicy::from_nix_config(&c))
+                .unwrap_or_default();
             let server = sui_daemon::DaemonServer::new(config, store)
                 .with_caches(sui_orchestrate::build_caches(&sui_orchestrate::get_substituters()))
-                .with_signature_policy(signatures);
+                .with_signature_policy(signatures)
+                .with_user_policy(users);
             server.run().await.map_err(|e| CliError::Orchestrate {
                 operation: "daemon",
                 message: e.to_string(),

@@ -211,6 +211,20 @@ impl NixConfig {
         self.assignments.iter().rev().find(|a| a.name == name).map(|a| a.value.as_str())
     }
 
+    #[must_use]
+    pub fn strings(&self, name: &str) -> Option<Vec<String>> {
+        let extra = format!("extra-{name}");
+        let mut out: Option<Vec<String>> = None;
+        for a in &self.assignments {
+            if a.name == name {
+                out = Some(a.value.split_whitespace().map(String::from).collect());
+            } else if a.name == extra {
+                out.get_or_insert_with(Vec::new).extend(a.value.split_whitespace().map(String::from));
+            }
+        }
+        out
+    }
+
     /// Files that exist but could not be read (skipped, as CppNix skips them).
     #[must_use]
     pub fn unreadable(&self) -> &[(PathBuf, std::io::ErrorKind)] {
@@ -354,6 +368,21 @@ mod tests {
             Some("access-tokens = github.com=ENV"),
         );
         assert_eq!(cfg.unwrap().access_tokens().for_url("github.com", ""), Some("ENV"));
+    }
+
+    #[test]
+    fn a_strings_setting_is_replaced_by_set_and_appended_by_extra_in_order() {
+        let (_d, cfg) = load(
+            &[("etc/nix.conf",
+               "extra-trusted-users = early\n\
+                trusted-users = root @admin\n\
+                extra-trusted-users = alice\n")],
+            &[],
+            None,
+        );
+        let cfg = cfg.unwrap();
+        assert_eq!(cfg.strings("trusted-users").unwrap(), ["root", "@admin", "alice"]);
+        assert_eq!(cfg.strings("allowed-users"), None);
     }
 
     #[test]

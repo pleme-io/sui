@@ -313,6 +313,12 @@ pub const CONTRACT: &[(&[&str], &str, Honour)] = &[
     ),
     // ── daemon ──────────────────────────────────────────────────────────
     (&["daemon"], "socket", H),
+    (&["daemon"], "stdio", H),
+    (&["daemon"], "legacy_daemon_flag", H),
+    (&["daemon"], "force_trusted", H),
+    (&["daemon"], "force_untrusted", H),
+    (&["daemon"], "default_trust", H),
+    (&["daemon"], "process_ops", H),
     // ── develop ─────────────────────────────────────────────────────────
     (&["develop"], "flake_ref", H),
     (&["develop"], "attr", H),

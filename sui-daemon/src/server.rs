@@ -72,6 +72,7 @@ pub struct DaemonServer<S> {
     start_time: Instant,
     caches: Vec<Arc<sui_store::BinaryCacheStore>>,
     signatures: crate::connection::SignaturePolicy,
+    users: crate::trust::UserPolicy,
 }
 
 impl<S> DaemonServer<S>
@@ -93,6 +94,7 @@ where
             start_time: Instant::now(),
             caches: Vec::new(),
             signatures: crate::connection::SignaturePolicy::default(),
+            users: crate::trust::UserPolicy::default(),
         }
     }
 
@@ -105,6 +107,12 @@ where
     #[must_use]
     pub fn with_signature_policy(mut self, policy: crate::connection::SignaturePolicy) -> Self {
         self.signatures = policy;
+        self
+    }
+
+    #[must_use]
+    pub fn with_user_policy(mut self, users: crate::trust::UserPolicy) -> Self {
+        self.users = users;
         self
     }
 
@@ -181,9 +189,16 @@ where
             let store = Arc::clone(&self.store);
             let caches = self.caches.clone();
             let signatures = self.signatures.clone();
+            let users = self.users.clone();
 
             tokio::spawn(async move {
-                let trust = resolve_trust(&stream);
+                let trust = match resolve_trust(&stream, &users) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        tracing::warn!("{e}");
+                        return;
+                    }
+                };
                 let (reader, writer) = tokio::io::split(stream);
 
                 let mut conn = Connection::new(store, reader, writer, trust)
@@ -205,26 +220,14 @@ where
     }
 }
 
-/// Resolve the trust level from Unix socket peer credentials.
-fn resolve_trust(stream: &tokio::net::UnixStream) -> TrustLevel {
-    use crate::trust::SystemPeerCredentials;
-
-    // On macOS and Linux, we can get peer credentials from the socket.
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    {
-        match stream.peer_cred() {
-            Ok(cred) => TrustLevel::from_uid(cred.uid(), &SystemPeerCredentials),
-            Err(e) => {
-                tracing::warn!("failed to get peer credentials: {e}, defaulting to not-trusted");
-                TrustLevel::NotTrusted
-            }
+fn resolve_trust(stream: &tokio::net::UnixStream, users: &crate::trust::UserPolicy) -> Result<TrustLevel, crate::trust::NotAllowed> {
+    use crate::trust::{SystemPeerCredentials, SystemUserDb};
+    match stream.peer_cred() {
+        Ok(cred) => users.admit(cred.uid(), cred.gid(), &SystemPeerCredentials, &SystemUserDb),
+        Err(e) => {
+            tracing::warn!("failed to get peer credentials: {e}, defaulting to not-trusted");
+            Ok(TrustLevel::NotTrusted)
         }
-    }
-
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    {
-        tracing::warn!("peer credentials not available on this platform, defaulting to not-trusted");
-        TrustLevel::NotTrusted
     }
 }
 

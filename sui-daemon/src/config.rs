@@ -29,6 +29,27 @@ pub struct SuiDaemonConfig {
     pub socket_path: PathBuf,
     /// Log level filter (e.g., "info", "debug", "sui_daemon=trace").
     pub log_level: String,
+    pub serve: ServeModes,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct ServeModes {
+    pub stdio: bool,
+    pub legacy_serve: bool,
+}
+
+impl Default for ServeModes {
+    fn default() -> Self {
+        Self { stdio: true, legacy_serve: true }
+    }
+}
+
+impl ServeModes {
+    #[must_use]
+    pub fn load() -> Self {
+        SuiDaemonConfig::discover_and_load().map(|c| c.get().serve).unwrap_or_default()
+    }
 }
 
 impl Default for SuiDaemonConfig {
@@ -39,6 +60,7 @@ impl Default for SuiDaemonConfig {
             store_dir: PathBuf::from("/nix/store"),
             socket_path: SocketPath::for_app("sui"),
             log_level: "info".to_string(),
+            serve: ServeModes::default(),
         }
     }
 }
@@ -94,6 +116,16 @@ mod tests {
         assert_eq!(config.store_dir, PathBuf::from("/nix/store"));
         assert!(config.socket_path.to_string_lossy().contains("sui"));
         assert_eq!(config.log_level, "info");
+    }
+
+    #[test]
+    fn serve_modes_default_on_and_switch_off_one_at_a_time() {
+        assert_eq!(SuiDaemonConfig::default().serve, ServeModes { stdio: true, legacy_serve: true });
+        let dir = TempDir::new().unwrap();
+        let config_file = dir.path().join("sui.yaml");
+        fs::write(&config_file, "serve:\n  stdio: false\n").unwrap();
+        let store = SuiDaemonConfig::load_from(&config_file).unwrap();
+        assert_eq!(store.get().serve, ServeModes { stdio: false, legacy_serve: true });
     }
 
     #[test]

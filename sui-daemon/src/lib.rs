@@ -26,6 +26,7 @@
 pub mod config;
 pub mod connection;
 pub mod server;
+pub mod stdio;
 pub mod trust;
 
 // ── L1 graph protocol (additive, coexists with cppnix worker protocol) ──
@@ -39,10 +40,10 @@ pub mod graph_handler;
 pub mod graph_server;
 pub mod hot_cache;
 
-pub use config::SuiDaemonConfig;
+pub use config::{ServeModes, SuiDaemonConfig};
 pub use connection::{Connection, ConnectionError, DrvRealizer, OrchestrateRealizer, SignaturePolicy};
 pub use server::{DaemonConfig, DaemonError, DaemonServer, DEFAULT_SOCKET_PATH, xdg_socket_path};
-pub use trust::{PeerCredentials, SystemPeerCredentials, TrustLevel};
+pub use trust::{NotAllowed, PeerCredentials, SystemPeerCredentials, SystemUserDb, TrustLevel, UserDb, UserPolicy};
 
 pub use graph_handler::{
     build_id_from_label, GraphHandler, GraphRequestHandler, StatsTracker,
