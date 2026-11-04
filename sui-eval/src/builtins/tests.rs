@@ -1565,6 +1565,7 @@ fn flake_input_source_info_populated() {
 
 #[test]
 fn flake_input_last_modified_accessible() {
+    let dep = tempfile::tempdir().unwrap();
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(
         dir.path().join("flake.nix"),
@@ -1592,7 +1593,8 @@ fn flake_input_last_modified_accessible() {
           },
           "root": "root",
           "version": 7
-        }"#,
+        }"#
+        .replace("/tmp", &dep.path().to_string_lossy()),
     )
     .unwrap();
     let flake_path = dir.path().to_string_lossy().to_string();
@@ -1603,6 +1605,7 @@ fn flake_input_last_modified_accessible() {
 
 #[test]
 fn flake_input_rev_and_short_rev() {
+    let dep = tempfile::tempdir().unwrap();
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(
         dir.path().join("flake.nix"),
@@ -1631,7 +1634,8 @@ fn flake_input_rev_and_short_rev() {
           },
           "root": "root",
           "version": 7
-        }"#,
+        }"#
+        .replace("/tmp", &dep.path().to_string_lossy()),
     )
     .unwrap();
     let flake_path = dir.path().to_string_lossy().to_string();
