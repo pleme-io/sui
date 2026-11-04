@@ -10,13 +10,14 @@
 //!
 //! - **Realize path** — `AddTextToStore` the drv closure + `BuildPaths`
 //!   (substitute-or-build) makes the output valid, and a [`Realized`] proof is
-//!   minted (§1). (The pure substitute leg — a GC'd output re-fetched from
-//!   `cache.nixos.org` — is proven live end-to-end in the roadmap's C0 note.)
+//!   minted (§1), against a private daemon and temp store. (The pure substitute
+//!   leg — a GC'd output re-fetched from `cache.nixos.org` — is proven live
+//!   end-to-end in the roadmap's C0 note.)
 //! - **Absent-drv honesty** — a realize whose `.drv` is nowhere on disk fails
 //!   with a typed error rather than a silent pass (§2).
 //!
-//! Every test skips gracefully (eprintln + return) when the environment lacks a
-//! daemon socket or a `nix` binary, so CI on a single-user store is green.
+//! §1 skips loudly where CppNix's tools are absent and fails under `CI`. The
+//! read-only tests skip where no daemon socket exists.
 //!
 //! ## Byte-parity note
 //!
@@ -32,74 +33,36 @@ use sui_store::daemon_realize::{
     realize_via_daemon, DaemonRealizeError, DaemonStore, StoreAccess,
 };
 
+#[path = "../../tests/support/private_store.rs"]
+mod private_store;
+
 const DAEMON_SOCKET: &str = "/nix/var/nix/daemon-socket/socket";
-
-/// The substitutable IFD probe: `builtins.pathExists "${pkgs.hello}/bin/hello"`
-/// forces IFD-realize of `hello`, which the daemon substitutes from
-/// `cache.nixos.org` — no local build required.
-const HELLO_FLAKE: &str = r#"{
-  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-  outputs = { self, nixpkgs }:
-    let pkgs = nixpkgs.legacyPackages.x86_64-linux;
-    in { helloDrv = pkgs.hello.drvPath; helloOut = pkgs.hello.outPath; };
-}"#;
-
-fn have_nix() -> bool {
-    sui_compat::cppnix::command("nix").arg("--version").output().map(|o| o.status.success()).unwrap_or(false)
-}
 
 fn daemon() -> Option<DaemonStore> {
     DaemonStore::at(PathBuf::from(DAEMON_SOCKET))
 }
 
-/// Resolve `hello`'s drvPath + outPath via real nix from a throwaway flake.
-fn hello_paths(dir: &Path) -> Option<(String, String)> {
-    std::fs::write(dir.join("flake.nix"), HELLO_FLAKE).ok()?;
-    let eval = |attr: &str| -> Option<String> {
-        let out = sui_compat::cppnix::command("nix")
-            .args(["eval", "--raw", &format!("{}#{attr}", dir.display())])
-            .output()
-            .ok()?;
-        if !out.status.success() {
-            eprintln!("nix eval {attr} failed: {}", String::from_utf8_lossy(&out.stderr));
-            return None;
-        }
-        Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
-    };
-    Some((eval("helloDrv")?, eval("helloOut")?))
-}
-
 /// §1 — full realize path: `AddTextToStore` the drv closure + `BuildPaths`
-/// (substitute-or-build) → the daemon makes the output valid.
-///
-/// This deliberately does NOT try to `nix-store --delete` the output first: a
-/// delete needs the daemon's GC lock and can block a concurrent build/GC on a
-/// busy store (a real hazard that wedged an earlier version of this test). The
-/// realize contract is the same whether the output starts present (fast path) or
-/// absent (substitute) — the assertion is the POST-condition: the output is
-/// valid and a proof is minted. The substitute path itself is proven live in the
-/// roadmap's C0 note (a GC'd hello re-substituted end-to-end via `sui eval`).
+/// (substitute-or-build) → the daemon makes the output valid. A private daemon
+/// builds a fresh derivation here, so the output starts absent and the real
+/// store is never written.
 #[tokio::test]
 async fn realize_full_path_makes_output_valid() {
-    if !have_nix() {
-        eprintln!("skip realize_full_path_makes_output_valid: no nix binary");
-        return;
-    }
-    let Some(store) = daemon() else {
-        eprintln!("skip realize_full_path_makes_output_valid: no daemon socket");
+    let Some(private) = private_store::PrivateStore::start("realize_full_path_makes_output_valid", private_store::Shape::OwnStoreDir) else {
         return;
     };
-    let tmp = tempfile::tempdir().unwrap();
-    let Some((drv, out)) = hello_paths(tmp.path()) else {
-        eprintln!("skip realize_full_path_makes_output_valid: could not resolve hello paths");
-        return;
-    };
+    let store = DaemonStore::at(private.layout.socket()).expect("the private daemon's socket");
+    let drv = private.fresh_drv("realize");
+    let out = private.output_of(&drv);
+    private.assert_private(&out);
+    assert!(!Path::new(&out).exists(), "the output starts absent");
 
     let realized = realize_via_daemon(&store, &drv, &out)
         .await
-        .expect("hello must realize via the daemon");
+        .expect("the derivation must realize via the daemon");
     assert_eq!(realized.out_path(), out);
     assert!(Path::new(&out).exists(), "realized output present on disk");
+    private.assert_real_store_untouched(&private.nonce);
 }
 
 /// §2 — a realize whose `.drv` is nowhere on disk fails with a typed error, not

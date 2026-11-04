@@ -327,6 +327,10 @@ pub fn ensure_source(store_path: &str, dir: &Path) -> Result<(), DrvWriteError> 
 }
 
 #[cfg(test)]
+#[path = "../../tests/support/private_store.rs"]
+mod private_store;
+
+#[cfg(test)]
 pub(crate) mod tests {
     use super::*;
 
@@ -376,11 +380,14 @@ pub(crate) mod tests {
 
     #[test]
     fn a_hashed_source_reaches_the_store_through_the_daemon() {
-        let socket = Path::new(DEFAULT_DAEMON_SOCKET);
-        if !socket.exists() {
-            eprintln!("no nix daemon at {DEFAULT_DAEMON_SOCKET}; skipped");
+        let Some(private) = private_store::PrivateStore::start(
+            "a_hashed_source_reaches_the_store_through_the_daemon",
+            private_store::Shape::RootedAtRealStoreDir,
+        ) else {
             return;
-        }
+        };
+        let socket = private.layout.socket();
+        let socket = socket.as_path();
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("sui-ensure-source-probe");
         let nonce = std::time::SystemTime::now()
@@ -389,11 +396,14 @@ pub(crate) mod tests {
             .as_nanos();
         std::fs::write(&file, format!("{nonce}\n")).unwrap();
         let src = sui_compat::source::nar_hash_source_tree(&file, "sui-ensure-source-probe").unwrap();
-        assert!(!Path::new(&src.store_path).exists());
+        let physical = private.layout.physical(&src.store_path);
+        assert!(!physical.exists());
         crate::daemon_session::ensure_source(socket, &src.store_path, &file, "sui-ensure-source-probe").unwrap();
-        assert!(Path::new(&src.store_path).exists(), "{}", src.store_path);
+        assert!(physical.exists(), "{}", physical.display());
         let again = crate::daemon_session::ensure_source(socket, &src.store_path, &file, "sui-ensure-source-probe").unwrap();
         assert_eq!(again, src.store_path);
+        crate::daemon_session::release(socket);
+        assert!(!Path::new(&src.store_path).exists(), "{} reached the real store", src.store_path);
     }
 
     #[test]

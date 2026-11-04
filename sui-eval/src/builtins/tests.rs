@@ -1,3 +1,6 @@
+#[path = "../../../tests/support/private_store.rs"]
+mod private_store;
+
 use crate::eval::eval;
 use crate::value::{NixString, SmolStr, StringContext, Value};
 use super::{evaluate_flake, FLAKE_EVAL_DEPTH, MAX_FLAKE_EVAL_DEPTH};
@@ -1061,28 +1064,35 @@ fn drv_write_into_unwritable_store_is_an_error() {
     assert!(err.contains("ermission denied"), "error must name the cause: {err}");
 }
 
-/// Against the real daemon: a derivation sui evaluates is instantiated in the
-/// store (the daemon checks the `.drv` text and its output paths before
+/// Against a private CppNix daemon: a derivation sui evaluates is instantiated
+/// in the store (the daemon checks the `.drv` text and its output paths before
 /// accepting it), which is what CppNix's `nix eval …drvPath` leaves behind.
-/// Skipped, and says so, where no daemon runs.
+/// Skipped, and says so, where CppNix's tools are absent; a failure under `CI`.
 #[test]
 fn drv_write_through_the_daemon_instantiates_in_the_store() {
     let _g = DRV_WRITE_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    let socket = std::path::Path::new(sui_store::DEFAULT_DAEMON_SOCKET);
-    if !socket.exists() || std::env::var_os("NIX_REMOTE").is_some() {
-        eprintln!("skip drv_write_through_the_daemon_instantiates_in_the_store: no default daemon");
+    let Some(private) = private_store::PrivateStore::start(
+        "drv_write_through_the_daemon_instantiates_in_the_store",
+        private_store::Shape::RootedAtRealStoreDir,
+    ) else {
         return;
-    }
-    let nonce = format!("{}-{}", std::process::id(), std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos());
+    };
+    let socket = private.layout.socket();
+    let nonce = &private.nonce;
     let expr = format!(
-        r#"(builtins.derivation {{ name = "sui-c1-oracle"; nonce = "{nonce}"; system = "x86_64-linux"; builder = "/bin/sh"; }}).drvPath"#
+        r#"(builtins.derivation {{ name = "sui-c1-oracle-{nonce}"; nonce = "{nonce}"; system = "x86_64-linux"; builder = "/bin/sh"; }}).drvPath"#
     );
-    let drv = eval(&expr).and_then(|v| crate::eval::force_value(&v)).unwrap();
+    let drv = sui_store::drv_write::with_destination(
+        sui_store::drv_write::DrvDestination::Daemon(socket.clone()),
+        || eval(&expr).and_then(|v| crate::eval::force_value(&v)),
+    )
+    .unwrap();
     let drv = drv.as_string().unwrap().to_string();
-    assert!(std::path::Path::new(&drv).exists(), "{drv} must exist in the store");
-    let mut conn = sui_store::worker_client::WorkerConn::connect(socket, None).unwrap();
+    assert!(private.layout.physical(&drv).exists(), "{drv} must exist in the store");
+    let mut conn = sui_store::worker_client::WorkerConn::connect(&socket, None).unwrap();
     assert!(conn.is_valid_path(&drv).unwrap(), "{drv} must be VALID, not just a file");
+    private.assert_real_store_untouched(nonce);
+    sui_store::daemon_session::release(&socket);
 }
 
 #[test]
