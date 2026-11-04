@@ -16,7 +16,7 @@ use sui_compat::store_path::{StorePath, STORE_PATH_HASH_LEN};
 
 use crate::closure::BuildClosure;
 use crate::reference_scan;
-use crate::sandbox::{Sandbox, SandboxConfig};
+use crate::sandbox::{BuilderOutput, Sandbox, SandboxConfig};
 use crate::traits::{BuildError, BuildLog, BuildOutcome, BuildResult, Builder};
 
 use sui_store::substitute::{Availability, SubstituteResult, Substitutor};
@@ -347,6 +347,7 @@ impl LocalBuilder {
 
         // 3. Create sandbox config from derivation
         let mut config = SandboxConfig::from_derivation(&built, &build_dir);
+        config.output = BuilderOutput::OneDescriptor;
 
         // 4. Handle fixed-output derivations (allow network)
         if is_fixed_output(drv) {
@@ -385,7 +386,7 @@ impl LocalBuilder {
 
         // 6. Check exit code
         if !result.is_success() {
-            let stderr = result.stderr_lossy();
+            let stderr = String::from_utf8_lossy(&raw_log).into_owned();
             log.push(&failure_message(deriver.unwrap_or_default(), drv, result.exit_code, &raw_log));
             let _ = std::fs::remove_dir_all(&build_dir);
             let _ = self.clear_invalid_outputs(drv).await;
@@ -1992,6 +1993,26 @@ mod tests {
         let bad_drv = "/nix/store/0123456789abcdfghijklmnpqrsvwxb-bad.drv";
         assert!(!builder.build_basic(&bad, bad_drv).await.unwrap().is_success());
         assert_eq!(crate::build_log::read(&logs, bad_drv).unwrap().unwrap(), b"ok - test 1\nnot ok - test 2\n");
+    }
+
+    #[tokio::test]
+    async fn a_build_log_holds_both_streams_in_the_order_the_builder_wrote_them() {
+        let tmp = tempfile::tempdir().unwrap();
+        let logs = tmp.path().join("log");
+        let builder = LocalBuilder::new(Arc::new(MockStore::new()), Box::new(NoSandbox))
+            .with_build_dir(tmp.path().join("build").to_str().unwrap().to_string())
+            .with_log_dir(&logs);
+        let out = tmp.path().join("out");
+        let script = format!(
+            "i=1; while [ $i -le 500 ]; do echo out-$i; echo err-$i >&2; i=$((i+1)); done; echo x > {}",
+            out.display()
+        );
+        let drv = make_drv("/bin/sh", &["-c", &script], out.to_str().unwrap());
+        let drv_path = "/nix/store/0123456789abcdfghijklmnpqrsvwxd-order.drv";
+        assert!(builder.build_basic(&drv, drv_path).await.unwrap().is_success());
+        let want: String = (1..=500).map(|i| format!("out-{i}\nerr-{i}\n")).collect();
+        let got = crate::build_log::read(&logs, drv_path).unwrap().unwrap();
+        assert_eq!(String::from_utf8(got).unwrap(), want);
     }
 
     #[tokio::test]

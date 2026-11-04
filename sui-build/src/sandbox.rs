@@ -20,6 +20,20 @@ pub struct SandboxConfig {
     pub args: Vec<String>,
     /// Environment variables.
     pub env: Vec<(String, String)>,
+    /// How the builder's stdout and stderr reach this process.
+    pub output: BuilderOutput,
+}
+
+/// How a builder's stdout and stderr are captured.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BuilderOutput {
+    /// A pipe per stream: `stdout` and `stderr` stay apart, and the order
+    /// between them is lost.
+    #[default]
+    Separate,
+    /// One pipe behind both descriptors, as CppNix gives a builder: every byte
+    /// lands in `stdout`, in the order the builder wrote it.
+    OneDescriptor,
 }
 
 
@@ -66,6 +80,7 @@ impl SandboxConfig {
             builder: drv.builder.clone(),
             args: drv.args.clone(),
             env: Self::builder_env(drv, build_dir.as_ref()),
+            output: BuilderOutput::default(),
         }
     }
 
@@ -379,10 +394,20 @@ fn drain_pipe(pipe: Option<impl std::io::Read>, output: &(dyn Fn(&[u8]) + Sync))
 /// A spawn, read or wait failure.
 pub fn run_observed(
     cmd: &mut std::process::Command,
+    capture: BuilderOutput,
     output: &(dyn Fn(&[u8]) + Sync),
 ) -> std::io::Result<std::process::Output> {
     use std::process::Stdio;
-    let mut child = cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+    cmd.stdin(Stdio::null());
+    if capture == BuilderOutput::OneDescriptor {
+        let (reader, writer) = std::io::pipe()?;
+        let mut child = cmd.stdout(writer.try_clone()?).stderr(writer).spawn()?;
+        cmd.stdout(Stdio::null()).stderr(Stdio::null());
+        let all = drain_pipe(Some(reader), output);
+        let status = child.wait()?;
+        return Ok(std::process::Output { status, stdout: all?, stderr: Vec::new() });
+    }
+    let mut child = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
     let (stdout, stderr) = (child.stdout.take(), child.stderr.take());
     let (stdout, stderr) = std::thread::scope(|scope| {
         let stdout = scope.spawn(|| drain_pipe(stdout, output));
@@ -413,7 +438,7 @@ impl Sandbox for NoSandbox {
         let mut cmd = builder_command(&config.builder, config);
         cmd.args(&config.args);
 
-        let output = run_observed(&mut cmd, output)?;
+        let output = run_observed(&mut cmd, config.output, output)?;
 
         Ok(SandboxResult {
             exit_code: output.status.code().unwrap_or(-1),
@@ -593,7 +618,7 @@ impl Sandbox for LinuxSandbox {
         let mut cmd = builder_command(unshare, config);
         cmd.args(&args);
 
-        let output = match run_observed(&mut cmd, observer) {
+        let output = match run_observed(&mut cmd, config.output, observer) {
             Ok(o) => o,
             Err(e) => {
                 return Err(SandboxError::SpawnFailed(format!(
@@ -606,13 +631,15 @@ impl Sandbox for LinuxSandbox {
         // unshare itself returns 1 with "unshare: ..." on stderr if the
         // kernel rejects the requested namespaces. Detect that and fall back
         // to unsandboxed mode (with a warning).
-        if output.status.code() == Some(1)
-            && output.stdout.is_empty()
-            && String::from_utf8_lossy(&output.stderr).starts_with("unshare:")
-        {
+        let said: &[u8] = match config.output {
+            BuilderOutput::Separate if output.stdout.is_empty() => &output.stderr,
+            BuilderOutput::OneDescriptor => &output.stdout,
+            BuilderOutput::Separate => &[],
+        };
+        if output.status.code() == Some(1) && String::from_utf8_lossy(said).starts_with("unshare:") {
             eprintln!(
                 "warning: unshare(1) rejected requested namespaces ({}), running unsandboxed",
-                String::from_utf8_lossy(&output.stderr).trim()
+                String::from_utf8_lossy(said).trim()
             );
             return self.execute_unsandboxed(config, observer);
         }
@@ -933,7 +960,7 @@ impl Sandbox for DarwinSandbox {
 
         builder_environment(&mut cmd, config);
 
-        let output = run_observed(&mut cmd, observer)
+        let output = run_observed(&mut cmd, config.output, observer)
             .map_err(|e| SandboxError::SpawnFailed(format!("sandbox-exec spawn: {e}")))?;
 
         Ok(SandboxResult {
@@ -1068,7 +1095,7 @@ mod tests {
             allow_network: false,
             builder: "/bin/echo".to_string(),
             args: vec!["hello".to_string()],
-            env: vec![],
+            ..SandboxConfig::default()
         };
         let result = sandbox.execute(&config).unwrap();
         assert_eq!(result.exit_code, 0);
@@ -1090,7 +1117,7 @@ mod tests {
             allow_network: false,
             builder: "/bin/sh".to_string(),
             args: vec!["-c".to_string(), script],
-            env: vec![],
+            ..SandboxConfig::default()
         };
         let seen = std::sync::Mutex::new(Vec::new());
         let result = NoSandbox
@@ -1117,6 +1144,7 @@ mod tests {
             builder: "/bin/sh".to_string(),
             args: vec!["-c".to_string(), "echo hi".to_string()],
             env: vec![("HOME".to_string(), "/homeless-shelter".to_string())],
+            ..SandboxConfig::default()
         };
         assert!(!config.allow_network);
         assert_eq!(config.input_paths.len(), 1);
@@ -1134,7 +1162,7 @@ mod tests {
             allow_network: false,
             builder: "/bin/true".to_string(),
             args: vec![],
-            env: vec![],
+            ..SandboxConfig::default()
         };
         assert!(sandbox.prepare(&config).is_ok());
     }
@@ -1149,7 +1177,7 @@ mod tests {
             allow_network: false,
             builder: "/bin/true".to_string(),
             args: vec![],
-            env: vec![],
+            ..SandboxConfig::default()
         };
         assert!(sandbox.cleanup(&config).is_ok());
     }
@@ -1166,7 +1194,7 @@ mod tests {
             allow_network: false,
             builder: "/bin/sh".to_string(),
             args: vec!["-c".to_string(), "exit 42".to_string()],
-            env: vec![],
+            ..SandboxConfig::default()
         };
         let result = sandbox.execute(&config).unwrap();
         assert_eq!(result.exit_code, 42);
@@ -1182,7 +1210,7 @@ mod tests {
             allow_network: false,
             builder: "/nonexistent/builder/12345".to_string(),
             args: vec![],
-            env: vec![],
+            ..SandboxConfig::default()
         };
         // Should return Io error since the binary doesn't exist
         assert!(sandbox.execute(&config).is_err());
@@ -1201,6 +1229,7 @@ mod tests {
             builder: "/bin/sh".to_string(),
             args: vec!["-c".to_string(), "echo $MY_TEST_VAR".to_string()],
             env: vec![("MY_TEST_VAR".to_string(), "test_value_42".to_string())],
+            ..SandboxConfig::default()
         };
         let result = sandbox.execute(&config).unwrap();
         assert_eq!(result.exit_code, 0);
@@ -1288,7 +1317,7 @@ mod tests {
             allow_network: false,
             builder: "/bin/sh".to_string(),
             args: vec!["-c".to_string(), "echo err >&2".to_string()],
-            env: vec![],
+            ..SandboxConfig::default()
         };
         let result = sandbox.execute(&config).unwrap();
         assert_eq!(result.exit_code, 0);
@@ -1436,6 +1465,7 @@ mod tests {
             builder: "/bin/sh".into(),
             args: vec!["-c".into(), "true".into()],
             env: vec![("K".into(), "V".into())],
+            ..SandboxConfig::default()
         };
         let cloned = config.clone();
         assert_eq!(cloned.builder, config.builder);
@@ -1459,6 +1489,7 @@ mod tests {
                 ("A".to_string(), "hello".to_string()),
                 ("B".to_string(), "world".to_string()),
             ],
+            ..SandboxConfig::default()
         };
         let result = sandbox.execute(&config).unwrap();
         assert_eq!(result.exit_code, 0);
@@ -1482,7 +1513,7 @@ mod tests {
                 "-c".to_string(),
                 "echo stdout-line && echo stderr-line >&2".to_string(),
             ],
-            env: vec![],
+            ..SandboxConfig::default()
         };
         let result = sandbox.execute(&config).unwrap();
         assert_eq!(result.exit_code, 0);
@@ -1502,7 +1533,7 @@ mod tests {
             allow_network: false,
             builder: "/bin/echo".to_string(),
             args: vec!["lifecycle-test".to_string()],
-            env: vec![],
+            ..SandboxConfig::default()
         };
         sandbox.prepare(&config).unwrap();
         let result = sandbox.execute(&config).unwrap();
