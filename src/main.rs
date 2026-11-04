@@ -1000,6 +1000,8 @@ enum CacheCommands {
         /// Upper bound on captures per pass, so one large build cannot turn a
         /// single tick into an unbounded upload.
         #[arg(long, default_value = "200")] max_per_pass: usize,
+        #[arg(long, help = "Bound the cache at this many bytes: each pass evicts the least recently used NAR with its narinfo until it fits. Off when unset; falls back to max_size_bytes in the SUI_CACHE_TIER config.")]
+        max_size_bytes: Option<std::num::NonZeroU64>,
     },
     /// Re-sign every narinfo already in the cache.
     ///
@@ -8812,6 +8814,7 @@ async fn main() -> Result<(), CliError> {
                 once,
                 initial_reconcile,
                 max_per_pass,
+                max_size_bytes,
             } => {
                 let secret = std::fs::read_to_string(&signing_key).map_err(|e| {
                     CliError::Orchestrate {
@@ -8827,7 +8830,9 @@ async fn main() -> Result<(), CliError> {
                         }
                     })?;
                 let storage = sui_cache::LocalStorage::new(&store_path);
-                let codec = sui_cache::CacheConfig::resolve().nar_codec;
+                let cache_config = sui_cache::CacheConfig::resolve();
+                let codec = cache_config.nar_codec;
+                let max_size_bytes = max_size_bytes.or(cache_config.max_size_bytes);
                 let local = LocalStore::open(NIX_DB_PATH)
                     .await
                     .map_err(|e| CliError::StoreOpen { path: NIX_DB_PATH, source: e })?;
@@ -8978,6 +8983,16 @@ async fn main() -> Result<(), CliError> {
                             "watch: {} scanned, {} captured, {} re-captured, {} failed, {} deferred",
                             report.scanned, report.captured, report.recaptured, report.failed, report.deferred
                         );
+                    }
+                    if let Some(max) = max_size_bytes {
+                        match sui_cache::watch::enforce_bound(&storage, max, &mut baseline).await {
+                            Ok(bound) if bound.nars_evicted > 0 || bound.failed > 0 => println!(
+                                "watch: evicted {} NAR(s) and {} narinfo(s), freed {} bytes, {} bytes held, {} failed",
+                                bound.nars_evicted, bound.evicted.len(), bound.bytes_freed, bound.bytes_after, bound.failed
+                            ),
+                            Ok(_) => {}
+                            Err(e) => eprintln!("watch: size bound not enforced this pass: {e}"),
+                        }
                     }
                     if once {
                         break;

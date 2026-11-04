@@ -325,11 +325,34 @@ it.
 
 ---
 
-## Part 3 — DESIGN ONLY: L3 eviction
+## Part 3 — L3 eviction
 
-**Nothing here is implemented.** The local tier still has no eviction: the tmpfs
-fills once and then rejects every write forever, which is why its size barely
-mattered. `atatame` names `sui cache watch` as the GC and it is not shipped.
+**A bound ships for the on-disk backend of `sui cache watch`, off by default:**
+`--max-size-bytes <N>`, or `max_size_bytes` in the `SUI_CACHE_TIER` overlay; the
+flag wins. Each pass ends with `sui_cache::gc::evict_to_size`, which takes the
+least recently used NAR with every narinfo that advertises it until the cache
+fits. How it answers the points below:
+
+- **Recency (3):** `LocalStorage::get_nar_stream` stamps the NAR's atime itself
+  through `futimens`, which `noatime` does not stop, so the order is LRU and it
+  survives a restart. A process that does not own the file cannot stamp it, and
+  then the order falls back to the mtime, which is FIFO.
+- **Concurrency (4):** the sweep runs inside the watch loop, one at a time, and
+  re-measures from disk. A `cache serve` upload that re-advertises a NAR in the
+  moment it is evicted is not excluded.
+- **Enumeration (5):** the inherent `LocalStorage::usage`.
+- **An unseeded index (6):** the sweep reads advertisers from the narinfos, not
+  from the index, so no marker is needed. The price is O(narinfos) reads, paid
+  only in a pass that is over the bound.
+
+An evicted path that is still valid locally joins the watcher's baseline, so the
+same process does not capture it again. Eviction does not walk closures: a
+remaining narinfo can name a reference the cache no longer holds, and a client
+then gets that path from another substituter or builds it.
+
+The design notes below remain for the in-process tier (`with_capacity`, tracked
+bytes, `EvictionPolicy`), which stays unbuilt: the tmpfs tier still has no
+eviction.
 
 ### What is left, now that the index exists
 

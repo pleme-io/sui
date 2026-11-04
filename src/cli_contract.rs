@@ -646,6 +646,7 @@ pub const CONTRACT: &[(&[&str], &str, Honour)] = &[
     (&["cache", "watch"], "once", H),
     (&["cache", "watch"], "initial_reconcile", H),
     (&["cache", "watch"], "max_per_pass", H),
+    (&["cache", "watch"], "max_size_bytes", H),
     (&["cache", "resign"], "store_path", H),
     (&["cache", "resign"], "signing_key", H),
     (&["cache", "resign"], "signatures_only", H),

@@ -48,7 +48,7 @@ pub use sui_castore::BackendConfig;
 // secret-sourced DSN password without the value ever entering the ConfigMap.
 pub use sui_castore::{ExpandEnvError, expand_env_vars};
 
-pub use gc::GcResult;
+pub use gc::{EvictResult, GcResult};
 pub use push::{LevelOutOfRange, NarCodec, PushResult, XzLevel, ZstdLevel};
 pub use server::{AppState, build_router, serve};
 pub use signing::{CacheSigner, verify_narinfo_signature};

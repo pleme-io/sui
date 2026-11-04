@@ -33,7 +33,7 @@ pub use admission::{
     CacheUniverse, RecordWrite, RefUniverse, Refusal,
 };
 pub use index::StorageIndex;
-pub use local::LocalStorage;
+pub use local::{CacheUsage, LocalStorage, NarUsage};
 pub use nar_refs::{
     advertised_nar_url, advertised_url_line, is_addressable_nar_path, is_servable_narinfo,
     referrer_of, MemNarRefIndex,

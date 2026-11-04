@@ -88,6 +88,9 @@ pub struct CacheConfig {
     /// keys configured every accepted upload is authenticated and is signed.
     #[serde(default)]
     pub sign_unauthenticated_uploads: bool,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_size_bytes: Option<std::num::NonZeroU64>,
 }
 
 impl Default for CacheConfig {
@@ -136,6 +139,7 @@ impl TieredConfig for CacheConfig {
             },
             upload_keys: Vec::new(),
             sign_unauthenticated_uploads: false,
+            max_size_bytes: None,
         }
     }
 
@@ -169,6 +173,16 @@ mod tests {
     }
 
     #[test]
+    fn the_size_bound_is_off_unless_named_and_zero_is_not_a_bound() {
+        assert_eq!(CacheConfig::default().max_size_bytes, None);
+        assert_eq!(CacheConfig::bare().max_size_bytes, None);
+        assert!(!serde_json::to_string(&CacheConfig::default()).unwrap().contains("max_size_bytes"));
+        let set: CacheConfig = serde_json::from_str(r#"{"max_size_bytes": 1073741824}"#).unwrap();
+        assert_eq!(set.max_size_bytes.map(std::num::NonZeroU64::get), Some(1_073_741_824));
+        assert!(serde_json::from_str::<CacheConfig>(r#"{"max_size_bytes": 0}"#).is_err());
+    }
+
+    #[test]
     fn default_backend_is_local() {
         let config = CacheConfig::default();
         assert!(matches!(config.backend, BackendConfig::Local { .. }));
@@ -199,11 +213,13 @@ mod tests {
             nar_codec: NarCodec::default(),
             upload_keys: vec!["ci-1:AAAA".to_string()],
             sign_unauthenticated_uploads: false,
+            max_size_bytes: std::num::NonZeroU64::new(1024),
         };
         let json = serde_json::to_string_pretty(&config).unwrap();
         let parsed: CacheConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.listen, "127.0.0.1:8080");
         assert_eq!(parsed.priority, 30);
+        assert_eq!(parsed.max_size_bytes, config.max_size_bytes);
         assert!(!parsed.want_mass_query);
         assert!(parsed.require_sigs);
         assert_eq!(parsed.upload_keys, vec!["ci-1:AAAA".to_string()]);

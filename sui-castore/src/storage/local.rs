@@ -94,6 +94,62 @@ impl LocalStorage {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NarUsage {
+    pub nar_path: String,
+    pub bytes: u64,
+    pub last_used: std::time::SystemTime,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CacheUsage {
+    pub nars: Vec<NarUsage>,
+    pub narinfo_bytes: u64,
+}
+
+impl CacheUsage {
+    #[must_use]
+    pub fn total_bytes(&self) -> u64 {
+        self.nars.iter().map(|n| n.bytes).sum::<u64>() + self.narinfo_bytes
+    }
+}
+
+impl LocalStorage {
+    pub async fn usage(&self) -> Result<CacheUsage, StoreError> {
+        let mut usage = CacheUsage::default();
+        for (name, meta) in Self::files_in(&self.root).await? {
+            if name.ends_with(".narinfo") {
+                usage.narinfo_bytes += meta.len();
+            }
+        }
+        for (name, meta) in Self::files_in(&self.root.join("nar")).await? {
+            if name.ends_with(".tmp") {
+                continue;
+            }
+            let modified = meta.modified().map_err(StoreError::Io)?;
+            let last_used = meta.accessed().map_or(modified, |accessed| accessed.max(modified));
+            usage.nars.push(NarUsage { nar_path: format!("nar/{name}"), bytes: meta.len(), last_used });
+        }
+        Ok(usage)
+    }
+
+    async fn files_in(dir: &Path) -> Result<Vec<(String, std::fs::Metadata)>, StoreError> {
+        let mut entries = match fs::read_dir(dir).await {
+            Ok(e) => e,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(StoreError::Io(e)),
+        };
+        let mut files = Vec::new();
+        while let Some(entry) = entries.next_entry().await.map_err(StoreError::Io)? {
+            let meta = entry.metadata().await.map_err(StoreError::Io)?;
+            if meta.is_file() {
+                files.push((entry.file_name().to_string_lossy().into_owned(), meta));
+            }
+        }
+        Ok(files)
+    }
+}
+
 #[async_trait]
 impl StorageBackend for LocalStorage {
     async fn get_narinfo(&self, hash: &str) -> Result<Option<String>, StoreError> {
@@ -153,7 +209,11 @@ impl StorageBackend for LocalStorage {
     async fn get_nar_stream(&self, path: &str) -> Result<Option<NarStream>, StoreError> {
         let full = self.nar_blob_path(path);
         match fs::File::open(&full).await {
-            Ok(f) => Ok(Some(nar_stream::file_stream(f))),
+            Ok(f) => {
+                let f = f.into_std().await;
+                let _ = f.set_times(std::fs::FileTimes::new().set_accessed(std::time::SystemTime::now()));
+                Ok(Some(nar_stream::file_stream(fs::File::from_std(f))))
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(StoreError::Io(e)),
         }

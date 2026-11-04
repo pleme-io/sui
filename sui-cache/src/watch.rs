@@ -171,6 +171,16 @@ pub fn plan_capture(
     }
 }
 
+pub async fn enforce_bound(
+    storage: &crate::LocalStorage,
+    max_bytes: std::num::NonZeroU64,
+    baseline: &mut HashSet<String>,
+) -> Result<crate::EvictResult, crate::CacheError> {
+    let result = crate::gc::evict_to_size(storage, max_bytes).await?;
+    baseline.extend(result.evicted.iter().cloned());
+    Ok(result)
+}
+
 /// Outcome of a capture pass, for the operator-facing line.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct WatchReport {
@@ -191,6 +201,22 @@ pub struct WatchReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn an_evicted_path_still_valid_locally_is_not_captured_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = crate::LocalStorage::new(dir.path());
+        let text = "StorePath: /nix/store/gone-pkg\nURL: nar/gone.nar.zst\nCompression: zstd\nFileHash: sha256:aaaa\nFileSize: 1000\nNarHash: sha256:bbbb\nNarSize: 5000\nReferences: \n";
+        crate::StorageBackend::put_nar(&storage, "nar/gone.nar.zst", &[0u8; 1000]).await.unwrap();
+        crate::StorageBackend::put_narinfo(&storage, &sui_castore::AdmittedNarInfo::unchecked_fixture("gone", text)).await.unwrap();
+        let mut baseline = HashSet::new();
+
+        let result = enforce_bound(&storage, std::num::NonZeroU64::MIN, &mut baseline).await.unwrap();
+
+        assert_eq!(result.evicted, ["gone"]);
+        let plan = plan_capture(&v(&["gone"]), &HashSet::new(), &HashSet::new(), &baseline, 10);
+        assert!(plan.to_capture.is_empty(), "{plan:?}");
+    }
 
     fn set(items: &[&str]) -> HashSet<String> {
         items.iter().map(|s| (*s).to_string()).collect()
