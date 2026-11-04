@@ -162,6 +162,56 @@ impl NixHash {
     }
 }
 
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum NarHashError {
+    #[error("hash '{0}' does not include a type")]
+    NoAlgorithm(String),
+    #[error("hash '{0}' names an unsupported algorithm")]
+    UnsupportedAlgorithm(String),
+    #[error("hash '{0}' is not a valid digest")]
+    InvalidDigest(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NarHash(NixHash);
+
+impl NarHash {
+    pub fn parse(raw: &str) -> Result<Self, NarHashError> {
+        let (algo, digest) = raw
+            .split_once(':')
+            .or_else(|| raw.split_once('-').map(|(algo, _)| (algo, raw)))
+            .ok_or_else(|| NarHashError::NoAlgorithm(raw.to_string()))?;
+        let algorithm = HashAlgorithm::from_nix_str(algo).map_err(|_| NarHashError::UnsupportedAlgorithm(raw.to_string()))?;
+        Self::decode(algorithm, digest, raw)
+    }
+
+    pub fn from_wire(raw: &str) -> Result<Self, NarHashError> {
+        Self::decode(HashAlgorithm::Sha256, raw, raw)
+    }
+
+    #[must_use]
+    pub fn of(nar: &[u8]) -> Self {
+        Self(NixHash::of(HashAlgorithm::Sha256, nar))
+    }
+
+    #[must_use]
+    pub fn hash(&self) -> &NixHash {
+        &self.0
+    }
+
+    fn decode(algorithm: HashAlgorithm, digest: &str, raw: &str) -> Result<Self, NarHashError> {
+        NixHash::parse_any(algorithm, digest)
+            .map(Self)
+            .map_err(|_| NarHashError::InvalidDigest(raw.to_string()))
+    }
+}
+
+impl std::fmt::Display for NarHash {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0.to_nix_string())
+    }
+}
+
 /// Decode a hash string under `algo` from hex / nix-base32 / SRI
 /// into raw digest bytes.  Helper for [`NixHash::parse_any`] kept
 /// public so callers that just want the bytes (e.g. CppNix
@@ -359,6 +409,35 @@ pub(crate) mod hex {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn a_nar_hash_with_no_algorithm_is_refused() {
+        let hex = "ab".repeat(32);
+        assert_eq!(NarHash::parse(&hex), Err(NarHashError::NoAlgorithm(hex.clone())));
+        assert_eq!(NarHash::parse(""), Err(NarHashError::NoAlgorithm(String::new())));
+        let nix32 = NixHash::new(HashAlgorithm::Sha256, vec![0xab; 32]).to_nix32();
+        assert_eq!(NarHash::parse(&nix32), Err(NarHashError::NoAlgorithm(nix32.clone())));
+        assert!(matches!(NarHash::parse("sha256:deadbeef"), Err(NarHashError::InvalidDigest(_))));
+        assert!(matches!(NarHash::parse(&format!("blake9:{hex}")), Err(NarHashError::UnsupportedAlgorithm(_))));
+    }
+
+    #[test]
+    fn every_prefixed_form_of_a_nar_hash_renders_as_cppnix_registers_it() {
+        let hash = NixHash::new(HashAlgorithm::Sha256, vec![0xab; 32]);
+        let want = format!("sha256:{}", "ab".repeat(32));
+        for form in [want.clone(), format!("sha256:{}", hash.to_nix32()), hash.to_sri()] {
+            assert_eq!(NarHash::parse(&form).unwrap().to_string(), want, "{form}");
+        }
+    }
+
+    #[test]
+    fn a_wire_nar_hash_is_bare_and_becomes_prefixed() {
+        let want = format!("sha256:{}", "ab".repeat(32));
+        assert_eq!(NarHash::from_wire(&"ab".repeat(32)).unwrap().to_string(), want);
+        assert_eq!(NarHash::from_wire(&want).unwrap().to_string(), want);
+        assert!(matches!(NarHash::from_wire("deadbeef"), Err(NarHashError::InvalidDigest(_))));
+        assert_eq!(NarHash::of(b"x").to_string(), format!("sha256:{}", NixHash::of(HashAlgorithm::Sha256, b"x").to_hex()));
+    }
 
     #[test]
     fn parse_any_accepts_64_char_hex_sha256() {

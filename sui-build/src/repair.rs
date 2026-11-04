@@ -240,7 +240,7 @@ mod tests {
     fn info(path: &str, refs: &[&str], sigs: &[&str], deriver: Option<&str>) -> PathInfo {
         PathInfo {
             path: path.to_string(),
-            nar_hash: "sha256:aaa".to_string(),
+            nar_hash: format!("sha256:{}", "a".repeat(64)),
             nar_size: 1,
             references: refs.iter().map(|r| (*r).to_string()).collect(),
             deriver: deriver.map(String::from),

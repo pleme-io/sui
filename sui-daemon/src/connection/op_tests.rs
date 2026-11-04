@@ -447,6 +447,84 @@ fn add_to_store_nar(path: &str, nar: &[u8], sigs: &[&str], ca: &str, dont_check_
     input
 }
 
+fn add_multiple_to_store(entries: &[(&str, String, &[u8])]) -> Vec<u8> {
+    let mut stream = Vec::new();
+    n(&mut stream, entries.len() as u64);
+    for (path, hash, nar) in entries {
+        s(&mut stream, path);
+        s(&mut stream, "");
+        s(&mut stream, hash);
+        list(&mut stream, &[]);
+        n(&mut stream, 0);
+        n(&mut stream, nar.len() as u64);
+        n(&mut stream, 0);
+        list(&mut stream, &[]);
+        s(&mut stream, "");
+        stream.extend_from_slice(nar);
+    }
+    let mut input = op(WorkerOp::AddMultipleToStore);
+    n(&mut input, 0);
+    n(&mut input, 1);
+    framed(&mut input, &stream);
+    input
+}
+
+async fn run_on_a_real_store(dir: &std::path::Path, state: &std::path::Path, input: Vec<u8>) -> (Arc<sui_store::LocalStore>, Reply) {
+    let store = Arc::new(sui_store::LocalStore::open_in_memory_with_dir(dir.to_str().unwrap()).await.unwrap());
+    let mut conn = Connection::new(store.clone(), Cursor::new(input), Vec::<u8>::new(), TrustLevel::Trusted).with_dirs(dir, state);
+    conn.client_version = PROTOCOL_VERSION;
+    conn.run().await.unwrap();
+    (store, Reply(Cursor::new(conn.writer)))
+}
+
+fn recorded_form(nar: &[u8]) -> String {
+    format!("sha256:{}", NixHash::of(HashAlgorithm::Sha256, nar).to_hex())
+}
+
+#[tokio::test]
+async fn the_bare_hex_add_to_store_nar_carries_lands_as_sha256_hex() {
+    let (dir, state) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let nar = file_nar(b"n");
+    let path = "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-source";
+    let (store, mut reply) = run_on_a_real_store(dir.path(), state.path(), add_to_store_nar(path, &nar, &[], "", true)).await;
+    reply.last().end();
+    let sp = StorePath::from_absolute_path(path).unwrap();
+    assert_eq!(store.query_path_info(&sp).await.unwrap().unwrap().nar_hash, recorded_form(&nar));
+}
+
+#[tokio::test]
+async fn the_bare_hex_add_multiple_to_store_carries_lands_as_sha256_hex() {
+    let (dir, state) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let nar = file_nar(b"n");
+    let path = "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-source";
+    let hex = NixHash::of(HashAlgorithm::Sha256, &nar).to_hex();
+    let (store, mut reply) = run_on_a_real_store(dir.path(), state.path(), add_multiple_to_store(&[(path, hex, &nar)])).await;
+    reply.last().end();
+    let sp = StorePath::from_absolute_path(path).unwrap();
+    assert_eq!(store.query_path_info(&sp).await.unwrap().unwrap().nar_hash, recorded_form(&nar));
+}
+
+#[tokio::test]
+async fn a_refused_wire_hash_names_its_path_and_every_sibling_still_lands() {
+    let (dir, state) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let nar = file_nar(b"n");
+    let hex = NixHash::of(HashAlgorithm::Sha256, &nar).to_hex();
+    let first = "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-first";
+    let bad = "/nix/store/1123456789abcdfghijklmnpqrsvwxyz-bad";
+    let last = "/nix/store/2123456789abcdfghijklmnpqrsvwxyz-last";
+    let input = add_multiple_to_store(&[(first, hex.clone(), &nar), (bad, "deadbeef".to_string(), &nar), (last, hex, &nar)]);
+    let (store, mut reply) = run_on_a_real_store(dir.path(), state.path(), input).await;
+    let error = reply.error();
+    assert!(error.contains(bad) && error.contains("refused 1 of 3"), "{error}");
+    let valid = |p: &str| {
+        let store = store.clone();
+        let sp = StorePath::from_absolute_path(p).unwrap();
+        async move { store.is_valid_path(&sp).await.unwrap() }
+    };
+    assert!(valid(first).await && valid(last).await);
+    assert!(!valid(bad).await);
+}
+
 #[tokio::test]
 async fn add_to_store_nar_checks_signatures_unless_a_trusted_client_waives_them() {
     let nar = file_nar(b"n");

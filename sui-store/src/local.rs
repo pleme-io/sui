@@ -454,6 +454,8 @@ impl Store for LocalStore {
     }
 
     async fn register_path(&self, info: &PathInfo) -> StoreResult<()> {
+        let nar_hash = info.typed_nar_hash()?;
+
         // Build the sigs string (space-separated signatures).
         let sigs = if info.signatures.is_empty() {
             None
@@ -488,7 +490,7 @@ impl Store for LocalStore {
         let new_path = valid_path::ActiveModel {
             id: sea_orm::ActiveValue::NotSet,
             path: Set(info.path.clone()),
-            hash: Set(info.nar_hash.clone()),
+            hash: Set(nar_hash.to_string()),
             registration_time: Set(info.registration_time),
             deriver: Set(info.deriver.clone()),
             nar_size: Set(Some(info.nar_size)),
@@ -542,6 +544,7 @@ impl Store for LocalStore {
     }
 
     async fn add_nar_at_with(&self, info: &PathInfo, nar_data: &[u8], repair: bool) -> StoreResult<()> {
+        info.typed_nar_hash()?;
         let _lock = self.lock_store_path(&info.path).await?;
         if self.find_by_path(&info.path).await?.is_some() {
             if repair {
@@ -1505,6 +1508,10 @@ fn hex_encode(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    fn nar_hash(tag: &str) -> String {
+        sui_compat::hash::NarHash::of(tag.as_bytes()).to_string()
+    }
+
     // Integration tests require a real Nix store database.
     // These are run in Phase 3 integration tests against /nix/var/nix/db/db.sqlite.
     // Unit tests use in-memory SQLite — see tests/integration/.
@@ -2180,7 +2187,7 @@ mod tests {
 
         let info = PathInfo {
             path: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-hello".to_string(),
-            nar_hash: "sha256:deadbeef".to_string(),
+            nar_hash: nar_hash("deadbeef"),
             nar_size: 1024,
             references: vec![],
             deriver: None,
@@ -2207,7 +2214,7 @@ mod tests {
         let store = LocalStore::open_in_memory().await.unwrap();
         let info = |path: &str, refs: Vec<String>| PathInfo {
             path: path.to_string(),
-            nar_hash: "sha256:aaa".to_string(),
+            nar_hash: nar_hash("aaa"),
             nar_size: 1,
             references: refs,
             deriver: None,
@@ -2227,8 +2234,8 @@ mod tests {
         assert_eq!(
             read().await,
             vec![
-                (dep.to_string(), "sha256:aaa".to_string(), vec![]),
-                (tool.to_string(), "sha256:aaa".to_string(), vec![]),
+                (dep.to_string(), nar_hash("aaa"), vec![]),
+                (tool.to_string(), nar_hash("aaa"), vec![]),
             ]
         );
         store.add_missing_references(tool, &[dep.to_string()], false).await.unwrap();
@@ -2247,7 +2254,7 @@ mod tests {
         // Register the referenced paths first.
         let ref1 = PathInfo {
             path: "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-dep1".to_string(),
-            nar_hash: "sha256:aaa".to_string(),
+            nar_hash: nar_hash("aaa"),
             nar_size: 100,
             references: vec![],
             deriver: None,
@@ -2257,7 +2264,7 @@ mod tests {
         };
         let ref2 = PathInfo {
             path: "/nix/store/cccccccccccccccccccccccccccccccc-dep2".to_string(),
-            nar_hash: "sha256:bbb".to_string(),
+            nar_hash: nar_hash("bbb"),
             nar_size: 200,
             references: vec![],
             deriver: None,
@@ -2271,7 +2278,7 @@ mod tests {
         // Register the main path with references.
         let main_info = PathInfo {
             path: "/nix/store/dddddddddddddddddddddddddddddddd-main".to_string(),
-            nar_hash: "sha256:ccc".to_string(),
+            nar_hash: nar_hash("ccc"),
             nar_size: 500,
             references: vec![ref1.path.clone(), ref2.path.clone()],
             deriver: None,
@@ -2296,7 +2303,7 @@ mod tests {
         // Use valid Nix base32 chars (no 'e', 'o', 't', 'u').
         let info = PathInfo {
             path: "/nix/store/11111111111111111111111111111111-pkg".to_string(),
-            nar_hash: "sha256:123456".to_string(),
+            nar_hash: nar_hash("123456"),
             nar_size: 2048,
             references: vec![],
             deriver: None,
@@ -2323,7 +2330,7 @@ mod tests {
 
         let info = PathInfo {
             path: "/nix/store/ffffffffffffffffffffffffffffffff-duplicate".to_string(),
-            nar_hash: "sha256:dup".to_string(),
+            nar_hash: nar_hash("dup"),
             nar_size: 100,
             references: vec![],
             deriver: None,
@@ -2355,7 +2362,7 @@ mod tests {
 
         let drv_info = PathInfo {
             path: format!("/nix/store/{drv_name}"),
-            nar_hash: "sha256:drv".to_string(),
+            nar_hash: nar_hash("drv"),
             nar_size: 500,
             references: vec![],
             deriver: None,
@@ -2367,7 +2374,7 @@ mod tests {
 
         let out_info = PathInfo {
             path: out.to_string(),
-            nar_hash: "sha256:out".to_string(),
+            nar_hash: nar_hash("out"),
             nar_size: 1000,
             references: vec![],
             deriver: Some(drv_info.path.clone()),
@@ -2409,7 +2416,7 @@ mod tests {
         valid_path::ActiveModel {
             id: sea_orm::ActiveValue::NotSet,
             path: Set(drv_path.clone()),
-            hash: Set("sha256:drv".into()),
+            hash: Set(nar_hash("drv")),
             registration_time: Set(1),
             deriver: Set(None),
             nar_size: Set(Some(1)),
@@ -2475,8 +2482,8 @@ mod tests {
         )
         .unwrap();
         let drv_path = format!("/nix/store/{drv_name}");
-        store.register_path(&PathInfo::new(&drv_path, "sha256:00")).await.unwrap();
-        store.register_path(&PathInfo::new(out, "sha256:00")).await.unwrap();
+        store.register_path(&PathInfo::new(&drv_path, nar_hash("00"))).await.unwrap();
+        store.register_path(&PathInfo::new(out, nar_hash("00"))).await.unwrap();
         let drv = StorePath::from_absolute_path(&drv_path).unwrap();
         assert_eq!(
             store.query_derivation_output_map(&drv).await.unwrap(),
@@ -2487,7 +2494,7 @@ mod tests {
         let out_sp = StorePath::from_absolute_path(out).unwrap();
         assert_eq!(store.query_valid_derivers(&out_sp).await.unwrap(), vec![drv_path.clone()]);
         let lib = "/nix/store/jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjj-lib";
-        store.register_path(&PathInfo { references: vec![out.to_string(), lib.to_string()], ..PathInfo::new(lib, "sha256:00") }).await.unwrap();
+        store.register_path(&PathInfo { references: vec![out.to_string(), lib.to_string()], ..PathInfo::new(lib, nar_hash("00")) }).await.unwrap();
         let referrers: Vec<String> = store.query_referrers(&out_sp).await.unwrap().iter().map(StorePath::to_absolute_path).collect();
         assert_eq!(referrers, vec![lib.to_string()]);
         assert_eq!(
@@ -2499,6 +2506,50 @@ mod tests {
         store.add_signatures(&out_sp, &["k:a".into()]).await.unwrap();
         assert_eq!(store.query_path_info(&out_sp).await.unwrap().unwrap().signatures, vec!["k:a", "k:b"]);
         assert!(store.add_signatures(&absent, &["k:a".into()]).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn register_path_refuses_a_nar_hash_cppnix_could_not_read_and_its_sibling_registers() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalStore::open_in_memory_with_dir(dir.path().to_str().unwrap()).await.unwrap();
+        let bare = "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-bare";
+        let short = "/nix/store/1123456789abcdfghijklmnpqrsvwxyz-short";
+        let good = "/nix/store/2123456789abcdfghijklmnpqrsvwxyz-good";
+        for (path, hash) in [(bare, "ab".repeat(32)), (short, "sha256:deadbeef".to_string())] {
+            let refused = store.register_path(&PathInfo::new(path, hash.clone())).await;
+            assert!(matches!(&refused, Err(StoreError::InvalidNarHash { path: p, .. }) if p == path), "{hash}: {refused:?}");
+            let sp = StorePath::from_absolute_path(path).unwrap();
+            assert!(!store.is_valid_path(&sp).await.unwrap(), "{path} left a row behind");
+        }
+        let canonical = format!("sha256:{}", "ab".repeat(32));
+        store.register_path(&PathInfo::new(good, canonical.clone())).await.unwrap();
+        let sp = StorePath::from_absolute_path(good).unwrap();
+        assert_eq!(store.query_path_info(&sp).await.unwrap().unwrap().nar_hash, canonical);
+    }
+
+    #[tokio::test]
+    async fn a_refused_nar_hash_unpacks_nothing_into_the_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalStore::open_in_memory_with_dir(dir.path().to_str().unwrap()).await.unwrap();
+        let mut nar = Vec::new();
+        sui_compat::nar::NarWriter::write(&mut nar, &sui_compat::nar::NarNode::Regular { executable: false, contents: b"z".to_vec() })
+            .unwrap();
+        let name = "0123456789abcdfghijklmnpqrsvwxyz-z";
+        let info = PathInfo { nar_size: nar.len() as i64, ..PathInfo::new(format!("/nix/store/{name}"), "ab".repeat(32)) };
+        assert!(matches!(store.add_nar_at(&info, &nar).await, Err(StoreError::InvalidNarHash { .. })));
+        assert!(!dir.path().join(name).exists());
+    }
+
+    #[tokio::test]
+    async fn every_prefixed_nar_hash_is_written_in_the_form_cppnix_writes() {
+        use sui_compat::hash::{HashAlgorithm, NixHash};
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalStore::open_in_memory_with_dir(dir.path().to_str().unwrap()).await.unwrap();
+        let path = "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-z";
+        let hash = NixHash::of(HashAlgorithm::Sha256, b"z");
+        store.register_path(&PathInfo::new(path, format!("sha256:{}", hash.to_nix32()))).await.unwrap();
+        let sp = StorePath::from_absolute_path(path).unwrap();
+        assert_eq!(store.query_path_info(&sp).await.unwrap().unwrap().nar_hash, format!("sha256:{}", hash.to_hex()));
     }
 
     #[tokio::test]
@@ -2548,7 +2599,7 @@ mod tests {
     async fn a_path_with_an_unknown_reference_leaves_no_row() {
         let store = LocalStore::open_in_memory().await.unwrap();
         let path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1-curl-dev";
-        let mut info = PathInfo::new(path, "sha256:c");
+        let mut info = PathInfo::new(path, nar_hash("c"));
         info.references = vec![path.to_string(), "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa2-nghttp2-lib".to_string()];
         assert!(store.register_path(&info).await.is_err());
         assert!(store.find_by_path(path).await.unwrap().is_none());
@@ -2565,7 +2616,7 @@ mod tests {
         let store = LocalStore::open_in_memory_with_dir(dir.path().to_str().unwrap()).await.unwrap();
         let info = PathInfo {
             path: "/nix/store/gggggggggggggggggggggggggggggggg-absent.drv".to_string(),
-            nar_hash: "sha256:drv".to_string(),
+            nar_hash: nar_hash("drv"),
             nar_size: 1,
             references: vec![],
             deriver: None,
@@ -2583,7 +2634,7 @@ mod tests {
 
         let info1 = PathInfo {
             path: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-alpha".to_string(),
-            nar_hash: "sha256:a".to_string(),
+            nar_hash: nar_hash("a"),
             nar_size: 10,
             references: vec![],
             deriver: None,
@@ -2593,7 +2644,7 @@ mod tests {
         };
         let info2 = PathInfo {
             path: "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-beta".to_string(),
-            nar_hash: "sha256:b".to_string(),
+            nar_hash: nar_hash("b"),
             nar_size: 20,
             references: vec![],
             deriver: None,
@@ -2660,7 +2711,7 @@ mod tests {
         let wanted = format!("{store_dir}/6ri3h0vsjx535glqdjiskjbb1kvmnbrw-bash-5.3p3-dev");
         std::fs::write(&wanted, b"stale").unwrap();
 
-        let info = PathInfo::new(&wanted, "sha256:00");
+        let info = PathInfo::new(&wanted, nar_hash("00"));
         store.add_nar_at(&info, &nar_data).await.unwrap();
 
         assert_eq!(std::fs::read(&wanted).unwrap(), b"dev");
@@ -2859,7 +2910,7 @@ mod tests {
         // Register a path with the real hash format.
         let fake_info = PathInfo {
             path: "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-verify-test".to_string(),
-            nar_hash: "sha256:1234".to_string(),
+            nar_hash: nar_hash("1234"),
             nar_size: 50,
             ..PathInfo::default()
         };
@@ -2881,7 +2932,7 @@ mod tests {
         // Register a valid-looking store path that doesn't exist on disk.
         let fake_info = PathInfo {
             path: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-ghost-pkg".to_string(),
-            nar_hash: "sha256:0000".to_string(),
+            nar_hash: nar_hash("0000"),
             nar_size: 100,
             ..PathInfo::default()
         };
@@ -2906,7 +2957,7 @@ mod tests {
         // Register a fake path in the DB.
         let fake_info = PathInfo {
             path: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-delete-test".to_string(),
-            nar_hash: "sha256:deadbeef".to_string(),
+            nar_hash: nar_hash("deadbeef"),
             nar_size: 42,
             ..PathInfo::default()
         };
@@ -2935,7 +2986,7 @@ mod tests {
         for (p, refs) in [(&dead, vec![]), (&referrer, vec![dead.clone()]), (&live, vec![])] {
             std::fs::create_dir_all(p).unwrap();
             std::fs::write(Path::new(p).join("payload"), vec![0u8; 1000]).unwrap();
-            let info = PathInfo { path: p.clone(), nar_hash: "sha256:00".into(), references: refs, ..PathInfo::default() };
+            let info = PathInfo { path: p.clone(), nar_hash: nar_hash("00"), references: refs, ..PathInfo::default() };
             store.register_path(&info).await.unwrap();
         }
         std::os::unix::fs::symlink(&live, roots.join("keep")).unwrap();

@@ -3,7 +3,7 @@ use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use sui_compat::content_address::{
     make_fixed_output_path_from_ca, parse_content_address, ContentAddressMethod,
 };
-use sui_compat::hash::{HashAlgorithm, NixHash};
+use sui_compat::hash::{HashAlgorithm, NarHash, NixHash};
 use sui_compat::store_path::StorePath;
 use sui_store::traits::{PathInfo, Store};
 
@@ -129,6 +129,7 @@ where
         } else {
             read_nar(&mut Direct(&mut self.reader)).await?
         };
+        let nar_hash = NarHash::from_wire(&nar_hash).map_err(op_err)?.to_string();
         let info = PathInfo {
             path,
             nar_hash,
@@ -149,6 +150,7 @@ where
         let data = read_framed_source(&mut self.reader).await?;
         let mut cursor = std::io::Cursor::new(data.as_slice());
         let count = sui_compat::wire::read_u64(&mut cursor).map_err(op_err)?;
+        let mut refused = Vec::new();
         for _ in 0..count {
             let path = sui_compat::wire::read_string(&mut cursor).map_err(op_err)?;
             self.parse_path(&path).map_err(|e| op_err(e.to_string()))?;
@@ -163,6 +165,13 @@ where
             let start = usize::try_from(cursor.position()).map_err(op_err)?;
             sui_compat::nar::NarReader::read_complete(&mut cursor).map_err(op_err)?;
             let end = usize::try_from(cursor.position()).map_err(op_err)?;
+            let nar_hash = match NarHash::from_wire(&nar_hash) {
+                Ok(hash) => hash.to_string(),
+                Err(e) => {
+                    refused.push(format!("'{path}': {e}"));
+                    continue;
+                }
+            };
             let info = PathInfo {
                 path,
                 nar_hash,
@@ -174,6 +183,9 @@ where
                 content_address: (!ca.is_empty()).then_some(ca),
             };
             self.import_path(&info, &data[start..end], repair, !dont_check_sigs).await?;
+        }
+        if !refused.is_empty() {
+            return Err(op_err(format!("refused {} of {count} paths: {}", refused.len(), refused.join("; "))));
         }
         self.finish().await
     }
@@ -291,7 +303,7 @@ where
             self.parse_path(&path).map_err(|e| op_err(e.to_string()))?;
             let info = PathInfo {
                 path: path.clone(),
-                nar_hash: format!("sha256:{}", NixHash::of(HashAlgorithm::Sha256, &nar).to_hex()),
+                nar_hash: NarHash::of(&nar).to_string(),
                 nar_size: i64::try_from(nar.len()).unwrap_or(i64::MAX),
                 references,
                 deriver: (!deriver.is_empty()).then(|| absolute(&deriver)),

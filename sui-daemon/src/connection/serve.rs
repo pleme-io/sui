@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 
 use sui_compat::derivation::{Derivation, DerivationOutput};
-use sui_compat::hash::{HashAlgorithm, NixHash};
+use sui_compat::hash::{HashAlgorithm, NarHash, NixHash};
 use sui_compat::store_path::StorePath;
 use sui_compat::wire::{ServeCommand, SERVE_MAGIC_1, SERVE_MAGIC_2, SERVE_PROTOCOL_VERSION};
 use sui_store::traits::{PathInfo, Store};
@@ -151,7 +151,7 @@ where
                 tokio::io::AsyncReadExt::read_exact(&mut self.reader, &mut nar).await?;
                 let info = PathInfo {
                     path,
-                    nar_hash: format!("sha256:{}", NixHash::parse_any(HashAlgorithm::Sha256, &nar_hash).map_err(op_err)?.to_hex()),
+                    nar_hash: NarHash::from_wire(&nar_hash).map_err(op_err)?.to_string(),
                     nar_size: i64::try_from(nar_size).unwrap_or(i64::MAX),
                     references: references.iter().map(StorePath::to_absolute_path).collect(),
                     deriver: (!deriver.is_empty()).then(|| absolute(&deriver)),

@@ -144,7 +144,7 @@ impl Fixture {
             .expect("open in-memory store with temp dir");
         for path in registered {
             store
-                .register_path(&sui_store::traits::PathInfo::new(*path, "sha256:00"))
+                .register_path(&sui_store::traits::PathInfo::new(*path, format!("sha256:{}", "0".repeat(64))))
                 .await
                 .expect("register fixture path");
         }

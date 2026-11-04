@@ -33,6 +33,12 @@ pub enum StoreError {
     /// An internal invariant was violated.
     #[error("internal error: {0}")]
     Internal(String),
+    #[error("cannot record '{path}': {source}")]
+    InvalidNarHash {
+        path: String,
+        #[source]
+        source: sui_compat::hash::NarHashError,
+    },
     /// A substituted path's narinfo carried no valid signature from a
     /// trusted key (and was not a self-verifying content-addressed path,
     /// and the store requires signatures). Nix REFUSES such a path — it
@@ -113,6 +119,11 @@ impl PathInfo {
             nar_hash: nar_hash.into(),
             ..Self::default()
         }
+    }
+
+    pub fn typed_nar_hash(&self) -> StoreResult<sui_compat::hash::NarHash> {
+        sui_compat::hash::NarHash::parse(&self.nar_hash)
+            .map_err(|source| StoreError::InvalidNarHash { path: self.path.clone(), source })
     }
 }
 
@@ -410,10 +421,10 @@ pub trait Store: Send + Sync {
             return Ok(());
         }
         let algo = sui_compat::hash::HashAlgorithm::Sha256;
-        let declared = sui_compat::hash::NixHash::parse_any(algo, &info.nar_hash)
-            .map_err(|e| StoreError::Internal(format!("narHash '{}' of '{}': {e}", info.nar_hash, info.path)))?;
+        let declared = info.typed_nar_hash()?;
+        let declared = declared.hash();
         let got = sui_compat::hash::NixHash::of(algo, nar);
-        if got != declared {
+        if got != *declared {
             return Err(StoreError::NarHashMismatch {
                 path: info.path.clone(),
                 expected: format!("sha256:{}", declared.to_nix32()),
