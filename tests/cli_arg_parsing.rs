@@ -710,12 +710,16 @@ fn log_requires_installable() {
 }
 
 #[test]
-fn fmt_help_shows_check() {
+fn fmt_help_hands_every_argument_to_the_formatter() {
     sui()
         .args(["fmt", "--help"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("--check"));
+        .stdout(
+            predicate::str::contains("formatter")
+                .and(predicate::str::contains("[ARGS]..."))
+                .and(predicate::str::contains("--check").not()),
+        );
 }
 
 #[test]

@@ -20,18 +20,6 @@
 
 use std::process::Command;
 
-fn workspace_root() -> std::path::PathBuf {
-    let here = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into());
-    std::path::Path::new(&here)
-        .parent()
-        .unwrap_or(std::path::Path::new("."))
-        .to_path_buf()
-}
-
-fn nix_wrap_bin() -> std::path::PathBuf {
-    workspace_root().join("target/debug/nix-wrap")
-}
-
 /// Build a tiny "fake binary" script that exits with the given
 /// code + emits its name as stdout.
 fn make_fake_bin(dir: &std::path::Path, name: &str, exit_code: i32) -> std::path::PathBuf {
@@ -48,7 +36,7 @@ fn make_fake_bin(dir: &std::path::Path, name: &str, exit_code: i32) -> std::path
 }
 
 fn run_wrap(sui: &std::path::Path, argv: &[&str]) -> std::process::Output {
-    let mut cmd = Command::new(nix_wrap_bin());
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_nix-wrap"));
     cmd.env("NIX_WRAP_SUI_BIN", sui);
     cmd.env("HOME", "/tmp"); // log into /tmp, never real home
     cmd.args(argv);
