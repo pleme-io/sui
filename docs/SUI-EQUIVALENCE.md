@@ -60,8 +60,8 @@ Three claims, as one statement:
   today.
 
 The load-bearing product is the **rebuild ribbon** (working label **`fita`** —
-Brazilian-Portuguese *ribbon/tape*, a Tier-2 flow-family name, **unratified per
-`NAMING.md`**): the one styled, progress-bearing, span-erroring, parity-showing
+Brazilian-Portuguese *ribbon/tape*, a Tier-2 flow-family name, **unratified under
+the naming rules**): the one styled, progress-bearing, span-erroring, parity-showing
 surface that streams back on every run. `fita` owns **no new algebra** — it
 composes **kazari + egaku-term + mado's OSC channel + a live parity stamp**. (Its
 palette projection through `pente` is **DESIGN, not a current input** — `pente` is
@@ -753,14 +753,14 @@ the M9 flip.
 **Composition.** Extends `SUI-SUPREMACY-ROADMAP.md` + `CLAUDE.md:22-84` (the
 inherited parity destination + numbering authority for the parity spine),
 `DARWIN-PARITY-CAMPAIGN.md` (the live executor), `CONVERGENCE.md` (runtime
-companion), `BYTE-PARITY-TYPESCAPE.md` (gate typescape), `BUILD.md` §II/§II.1
-(sui as the stage-3 keystone + the Parity Method), `EVAL-CORE-DOMINANCE.md` (the
-perf non-goal this doc reconciles), `PENTE.md` (the CLI-palette projection through
-PENTE's existing `kazari` face — or a surface *proposed* to PENTE's `(defface)`
-vocabulary; §V F6 — `pente` has no crate today), `SUPER-CACHE-CI.md` (the
-Pg/Redis/Tiered substrate — binary-cache only), and `UNREPRESENTABILITY.md`
-(determinism as a proof, not a convention). Grounds in CSE ("re-derive from the
-typed source").
+companion), `BYTE-PARITY-TYPESCAPE.md` (gate typescape) and
+`EVAL-CORE-DOMINANCE.md` (the perf non-goal this doc reconciles). It also leans
+on sui as the stage-3 keystone and the Parity Method; on the CLI-palette
+projection through pente's existing `kazari` face, or a surface *proposed* to
+pente's `(defface)` vocabulary (`pente` has no crate today); on the
+Pg/Redis/Tiered super-cache-ci substrate (binary-cache only); and on determinism
+as a proof, not a convention. Grounds in CSE ("re-derive from the typed
+source").
 
 ---
 

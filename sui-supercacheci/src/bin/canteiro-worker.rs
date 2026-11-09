@@ -1,4 +1,4 @@
-//! `canteiro-worker` — the per-pod cross-process CI worker (CANTEIRO §7.1-A).
+//! `canteiro-worker` — the per-pod cross-process CI worker.
 //!
 //! This is what ONE in-cluster ARC pod runs. It connects to the shared
 //! Postgres transport, then loops: **claim** a [`WorkItem`] from the

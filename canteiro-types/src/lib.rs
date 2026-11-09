@@ -1,4 +1,4 @@
-//! canteiro's shared CI-run types + DAG algebra (CANTEIRO §7.1-C).
+//! canteiro's shared CI-run types + DAG algebra.
 //!
 //! Extracted from `sui-supercacheci::canteiro` so a consumer — the caixa
 //! `:kind Acao` renderer being the first — gets a genuinely SHARED,
@@ -25,7 +25,7 @@ pub const NODE_KIND: &str = "canteiro.node";
 /// action. At M0 it is the raw keying material (name + command + args,
 /// unit-separated); it becomes `gen_pdc::ContentAddr` (BLAKE3 over the node's
 /// real build inputs, the dedup key = cache key = incremental boundary) when
-/// the L1/L2/L8 legs wire in (CANTEIRO §1, §7 — the M2 leg). Kept a newtype so
+/// the L1/L2/L8 legs wire in (the M2 leg). Kept a newtype so
 /// that promotion is a type change at one site, not a fleet-wide edit.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ContentAddr(pub String);
@@ -53,7 +53,7 @@ pub enum EnvClass {
     /// No environment — pure build/lint/test that needs nothing live.
     None,
     /// A local vendor service stack brought up on the runner (M1 — needs cofre
-    /// cross-org secrets, CANTEIRO §5).
+    /// cross-org secrets).
     LocalStack,
     /// A warm live tenant claimed from the viveiro pool (DESIGN, §7). The
     /// `String` is the `EnvSpec` reference; a typed ref lands with the pool.
@@ -61,7 +61,7 @@ pub enum EnvClass {
 }
 
 /// The runnable step a node executes. M0 = a command + args; the caixa
-/// `:kind Acao` authoring vocabulary (CANTEIRO §4) is M1.
+/// `:kind Acao` authoring vocabulary is M1.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActionRef {
     pub name: String,
@@ -69,7 +69,7 @@ pub struct ActionRef {
     pub args: Vec<String>,
 }
 
-/// One typed CI node — the SOLE unifying type (CANTEIRO §1). A CI run is a set
+/// One typed CI node — the SOLE unifying type. A CI run is a set
 /// of these; [`decompose`] turns them into a shigoto DAG.
 ///
 /// `PartialEq`/`Eq` derive because every field here already does (`String`,
@@ -93,7 +93,7 @@ pub struct CiNode {
     /// [`affected_set`] to decide whether a diff touches this node. The
     /// **CONSERVATIVE default is empty** (`CiNode::new`), and an empty-inputs
     /// node is treated as ALWAYS affected (an unknown-input node is never
-    /// silently skipped — CANTEIRO §6). Declare the real prefixes with
+    /// silently skipped). Declare the real prefixes with
     /// [`CiNode::with_inputs`] to opt into diff-scoped skipping.
     pub inputs: Vec<String>,
     /// The content-address of this node's realized OUTPUT store-path — the key
@@ -205,8 +205,8 @@ impl CiRun {
 }
 
 /// The decompose target: the shipped shigoto [`Dag`] (monomorphic over
-/// [`JobId`]) PLUS the consumer-owned `JobId → CiNode` map. CANTEIRO §1:
-/// "`Dag<CiNode>` is shorthand for exactly this pair."
+/// [`JobId`]) PLUS the consumer-owned `JobId → CiNode` map. `Dag<CiNode>` is
+/// shorthand for exactly this pair.
 /// `Debug` is derived deliberately. Without it a consumer cannot call
 /// `unwrap_err()`/`expect_err()` on any `Result` carrying one — the `T: Debug`
 /// bound is what makes a *test* compile — and the failure lands two repos
@@ -243,7 +243,7 @@ pub enum DecomposeError {
     Cycle,
 }
 
-/// **dandori** — the decompose morphism (CANTEIRO §1). A total function from a
+/// **dandori** — the decompose morphism. A total function from a
 /// [`CiRun`] to a shigoto [`Dag`] over [`JobId`] plus the `JobId → CiNode` map.
 ///
 /// # Errors
@@ -290,7 +290,7 @@ pub fn decompose(run: &CiRun) -> Result<CanteiroDag, DecomposeError> {
 }
 
 /// Whether a diff touches this node's declared inputs — the **directly-affected**
-/// predicate (CANTEIRO §6). CONSERVATIVE by construction: a node with NO
+/// predicate. CONSERVATIVE by construction: a node with NO
 /// declared inputs is ALWAYS directly affected, so an unknown-input node is
 /// never silently skipped. Otherwise a node is directly affected iff one of its
 /// input prefixes is a prefix of some changed file.
@@ -338,7 +338,7 @@ fn affected_set_on(
     Ok(affected)
 }
 
-/// **The affected-set intelligence** (CANTEIRO §6 M2, "build only what the diff
+/// **The affected-set intelligence** (M2, "build only what the diff
 /// touched"). Decompose `run`, then return the [`JobId`]s that a diff of
 /// `changed_files` forces to re-run: the DIRECTLY-affected nodes (those whose
 /// declared input prefixes cover a changed file — plus, CONSERVATIVELY, every
@@ -364,7 +364,7 @@ pub fn affected_set(
 /// [`affected_set`] for `changed_files`, and feed that subset to the SHIPPED
 /// [`Dag::waves`] restriction — the topological waves containing ONLY the
 /// affected nodes, in dependency order. Wave partitioning is not re-implemented;
-/// this composes the shipped `waves(Some(&affected))` (see CANTEIRO §6 — this is
+/// this composes the shipped `waves(Some(&affected))` (this is
 /// what feeds the multi-worker dispatch so unaffected nodes never schedule).
 ///
 /// # Errors

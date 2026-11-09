@@ -12,22 +12,22 @@
 //! It is a lib-level driver; the in-pod `canteiro run` binary is the one
 //! remaining wiring step (the runner packaging, not new logic).
 //!
-//! Deliberately NOT here, each named as its own later increment (tier-honest
-//! per CANTEIRO §7, never rounded up):
+//! Deliberately NOT here, each named as its own later increment (tier-honest,
+//! never rounded up):
 //! - the in-pod `canteiro run` **binary** + its ARC-runner packaging — the
 //!   entrypoint logic ships as [`run_in_process`]; a `[[bin]]` (or a
 //!   `sui`-subcommand) over it, and a real live ARC run, are the operator-gated
 //!   next step. This module proves the execution in-process, off any cluster.
 //! - a **fail-fast gate** — the shipped runtime's `AllUpstreamsTerminal` gate
-//!   *releases* a deadlettered node's descendants (SHIGOTO §VII.4), so a failed
+//!   *releases* a deadlettered node's descendants, so a failed
 //!   `build` does not skip a dependent `test`. Making a failed ancestor SKIP
 //!   its descendants is a registered `Gate`, a named follow-up, not M1.
-//! - the caixa `:kind Acao` authoring vocabulary (CANTEIRO §4).
-//! - `gen_pdc::ContentAddr` as the real dedup/cache identity — **M2** (§7);
+//! - the caixa `:kind Acao` authoring vocabulary.
+//! - `gen_pdc::ContentAddr` as the real dedup/cache identity — **M2**;
 //!   [`ContentAddr`] here is an M0 placeholder over the node's action.
 //! - `EnvClass` beyond `None`: `LocalStack` needs cofre cross-org secrets into
-//!   the CI runners (§5); `WarmPoolClaim` is the viveiro pool
-//!   (**DESIGN**, §7). Both are typed so the axis exists from M0; neither is wired.
+//!   the CI runners; `WarmPoolClaim` is the viveiro pool
+//!   (**DESIGN**). Both are typed so the axis exists from M0; neither is wired.
 
 use std::sync::Arc;
 
@@ -37,8 +37,8 @@ use shigoto_types::{
     ErasedJob, JobPhase, JobScope, JobSubject, OutputSink, RecordingJob, SkipReason,
 };
 
-// The pure CI-run types + DAG algebra live in the lean `canteiro-types` crate
-// (CANTEIRO §7.1-C), re-exported here so `crate::canteiro::CiNode` etc. and every
+// The pure CI-run types + DAG algebra live in the lean `canteiro-types` crate,
+// re-exported here so `crate::canteiro::CiNode` etc. and every
 // existing consumer (canteiro_dist / canteiro_skip / canteiro_gha / canteiro_spec,
 // the bins, and the tests below) resolve unchanged. This module keeps the
 // EXECUTION half below — `CiNodeJob` + `run_in_process` — which needs
@@ -49,7 +49,7 @@ pub use canteiro_types::{
 };
 
 /// A [`CiNode`] made runnable as a real shigoto [`RecordingJob`] — the
-/// executable half of "CiNode introduced as a shigoto Job" (CANTEIRO §1).
+/// executable half of "CiNode introduced as a shigoto Job".
 ///
 /// It carries the run's `workspace` + `repo` alongside the node because those
 /// live on the [`CiRun`], not on a bare [`CiNode`]; carrying them is what lets
@@ -249,7 +249,7 @@ fn verdict_for(name: &str, phase: Option<&JobPhase>) -> Result<NodeVerdict, RunE
     }
 }
 
-/// **The M1 wave-execution driver** (CANTEIRO §5) — decompose a [`CiRun`] into
+/// **The M1 wave-execution driver** — decompose a [`CiRun`] into
 /// its typed DAG, register every node as a shigoto [`RecordingJob`] in an
 /// [`InProcessScheduler`], and tick the DAG to an all-terminal state in
 /// dependency order, returning a typed [`RunReport`]. This IS the "shigoto
@@ -493,8 +493,8 @@ mod tests {
     ///
     /// Tier-honest note (never rounded up): the shipped default runtime uses
     /// shigoto's `AllUpstreamsTerminal` gate, which by design *releases* a
-    /// deadlettered node's descendants (SHIGOTO §VII.4 — "we never Skip from
-    /// this gate: a Deadlettered ancestor is terminal, so it unblocks"). So
+    /// deadlettered node's descendants (that gate never Skips: a Deadlettered
+    /// ancestor is terminal, so it unblocks). So
     /// `test` still RUNS after `build` deadletters — dependency *ordering* is
     /// honored (build reaches a terminal phase before test is released), but
     /// there is no fail-fast *skip*. Making a failed ancestor SKIP its

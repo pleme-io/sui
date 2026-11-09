@@ -9390,7 +9390,7 @@ async fn main() -> Result<(), CliError> {
             // Gate on the derived verdict, not on a bool that cannot
             // tell "23 probes all matched" from "0 probes ran".  A
             // vacuous sweep exits 2 and says so; silently exiting 0 was
-            // the defect (sui-spec parity.rs, UNREPRESENTABILITY §II.4).
+            // the defect (sui-spec parity.rs).
             // The catch-all is FAIL-CLOSED — a future `SweepVerdict` arm
             // must never become a silent pass in a gate.
             match report.verdict() {

@@ -98,7 +98,7 @@ members = [
     # wiring are named LiveTODOs in the crate docs.
     # canteiro's shared, wire-serializable CI-run types + DAG algebra, extracted
     # from sui-supercacheci so a caixa `:kind Acao` renderer consumes a typed
-    # CiRun without the execution tree (CANTEIRO §7.1-C).
+    # CiRun without the execution tree.
     "canteiro-types",
     "sui-supercacheci",
     # supa-charge-ci Phase 2 — the intercept/resolve/fall-through
@@ -267,15 +267,15 @@ sha2 = "0.10"
 sha3 = "0.10"
 blake3 = "1"
 
-# Typed work-graph primitive — the fleet-standard shigoto Dag of Jobs
-# (SHIGOTO.md). The layers-stay-warm Viggy loop expresses its warm STEP
+# Typed work-graph primitive — the fleet-standard shigoto Dag of Jobs.
+# The layers-stay-warm Viggy loop expresses its warm STEP
 # as a shigoto::Dag of typed re-warm Jobs rather than a bare loop, so the
 # ordering/topology is a typed value, not ad-hoc control flow. Published
 # on crates.io; pulled by digest via the workspace lock.
 shigoto-dag = "0.1.12"
 shigoto-types = "0.1.12"
 # The in-process runtime — `InProcessScheduler` drives a `Dag` of typed Jobs to
-# terminal, one wave per tick. canteiro M1 (CANTEIRO.md §5) registers each
+# terminal, one wave per tick. canteiro M1 registers each
 # `CiNode` as a Job and ticks its decomposed DAG in-process; this is the
 # node→worker execution half M0 deliberately deferred.
 shigoto-scheduler = "0.1.12"

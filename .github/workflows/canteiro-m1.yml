@@ -13,7 +13,7 @@
 # HONEST SCOPE: this proves the canteiro MACHINERY runs green on a live worker
 # (decompose → wave execution → both Succeeded), NOT "a real build+test with
 # real compilation work" — the node actions are deliberately trivial for this
-# first proof (CANTEIRO §7).
+# first proof.
 #
 # TRIGGER: workflow_dispatch ONLY. There is deliberately NO `on: push` — the
 # live ARC run must be a DELIBERATE operator trigger, never an automatic one.

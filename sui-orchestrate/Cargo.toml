@@ -22,7 +22,7 @@ sui-build.workspace = true
 # loop) — the three-site threshold that justifies the named destination:
 # extracting the trait to a shared leaf crate both engenho and sui implement.
 sui-supercacheci.workspace = true
-# The reconcile STEP is a typed `shigoto::Dag` of re-derive Jobs (SHIGOTO.md),
+# The reconcile STEP is a typed `shigoto::Dag` of re-derive Jobs,
 # not a bare loop — a work-graph value, ready for the day activation gains
 # ordered sub-steps.
 shigoto-dag.workspace = true

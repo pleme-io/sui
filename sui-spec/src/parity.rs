@@ -358,7 +358,7 @@ pub struct ShadowReport {
 /// The value-witness of a [`SweepVerdict`] — the record set the verdict
 /// was derived from, plus the worst [`Verdict`] in it.
 ///
-/// UNREPRESENTABILITY §II.4 clause 2: the pass arm must be
+/// The pass arm must be
 /// non-constructible without a non-empty subject-set witness.  That is
 /// structural here — this type has **no public constructor and no public
 /// fields**, so the only code that can build one is
@@ -398,7 +398,7 @@ impl Examined {
 /// The verdict of one shadow sweep — derived from the sweep's records,
 /// never asserted.
 ///
-/// UNREPRESENTABILITY §II.4.  `AllPassed` cannot be named without an
+/// `AllPassed` cannot be named without an
 /// [`Examined`] witness, and "we compared nothing" is [`Self::Vacuous`]
 /// — a **distinct arm**, not a pass.
 ///
@@ -546,7 +546,7 @@ impl SweepVerdict {
     /// [`ShadowReport::verdict`] is now one of its two callers rather
     /// than its home.
     ///
-    /// **The UNREPRESENTABILITY §II.4 clause-2 property survives the
+    /// **The no-pass-without-a-witness property survives the
     /// move.** [`Examined`] still has no public constructor; the only way
     /// to reach the pass arm is to hand this function one `Verdict` per
     /// subject examined, so a caller still cannot name a pass over
@@ -901,7 +901,7 @@ mod tests {
     /// The inverted red-run.  Against unfixed code (85ddfec) this
     /// assertion's opposite held: `all_pass()` returned `true` over zero
     /// records, so a parity sweep that compared nothing certified
-    /// parity.  UNREPRESENTABILITY §II.4.
+    /// parity.
     #[test]
     fn vacuous_sweep_is_not_a_pass() {
         let report = empty_report();

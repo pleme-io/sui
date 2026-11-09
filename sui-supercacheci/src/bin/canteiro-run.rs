@@ -14,7 +14,7 @@
 //! proves the **orchestration substrate on a live worker**, NOT "a real build +
 //! test with real compilation work". Replacing `true` with a real `cargo build`
 //! / `cargo test` action is a later increment (the L1/L2/L8 legs + the caixa
-//! `:kind Acao` authoring vocabulary, CANTEIRO §7); this binary is honest that
+//! `:kind Acao` authoring vocabulary); this binary is honest that
 //! today it exercises the plumbing, not the payload.
 //!
 //! Run locally with `cargo run -p sui-supercacheci --bin canteiro-run`; the GHA

@@ -23,7 +23,7 @@
 //! - The **Observe** (`build_toplevel`) and **Act** (`activate`) primitives are
 //!   the shipped [`crate::system::SystemOrchestrator`] pipeline, behind the
 //!   [`env::ReconcileEnvironment`] seam.
-//! - The **converge STEP** is a typed [`shigoto_dag::Dag`] (SHIGOTO.md), ready
+//! - The **converge STEP** is a typed [`shigoto_dag::Dag`], ready
 //!   for the day activation gains ordered sub-steps (`/etc` farm → launchd →
 //!   `/run/current-system`, per `LINK-GRAPH.md` L4).
 //! - The **attestation** is a BLAKE3 [`attest::OutcomeChain`] (tier-honest: a

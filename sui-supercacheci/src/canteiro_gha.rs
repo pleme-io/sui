@@ -10,7 +10,7 @@
 //!
 //! ## HONEST SCOPE — plane (a), stated on the record (never rounded up)
 //!
-//! This is **plane (a)** of CANTEIRO §5. canteiro's `decompose` *derives* the
+//! This is **plane (a)**. canteiro's `decompose` *derives* the
 //! job graph; **GitHub Actions does the cross-worker scheduling**; canteiro is
 //! the DAG **source + emitter**, NOT the cross-worker runtime scheduler. The
 //! value canteiro adds here is the *derivation* — one `CiRun` mechanically

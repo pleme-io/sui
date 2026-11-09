@@ -222,7 +222,7 @@ fn empty_tally_is_well_formed() {
     // This assertion used to read `assert!(report.all_pass()); // vacuously
     // true` — the defect stated as intent, in the crate whose product is a
     // byte-parity proof.  A sweep that examined zero records now reports
-    // `Vacuous`, a distinct arm that is not a pass (UNREPRESENTABILITY §II.4).
+    // `Vacuous`, a distinct arm that is not a pass.
     assert_eq!(report.verdict(), SweepVerdict::Vacuous);
     assert!(!report.all_pass());
     assert!(report.verdict().examined().is_none());
