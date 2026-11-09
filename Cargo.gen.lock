@@ -2,7 +2,7 @@
   "schema_version": 2,
   "cargo_lock_sha256": "317ec79ef32cb7a8bbeb6692c35e42edc856bdf58fe743002961b4870734f2f0",
   "manifest_sha256": {
-    "Cargo.toml": "7049d5525ab1e8f93b03882e62e1549e68cace835d6e7dad3e1eb3196a246787",
+    "Cargo.toml": "1b8e677bc66c96788af6e0547e73b817a9a75cc26cc7301df5f3c48800b37712",
     "canteiro-types/Cargo.toml": "140edf011d225b89a3a8b8cc15d5212e84c056493e7c8a5b488d1c7e88847388",
     "sui-bigorna/Cargo.toml": "271fc14c6a889aa1386124ef2ed91bee58f437241fd91d1f2da549c496112270",
     "sui-build/Cargo.toml": "201469821dceb1d6a1d813f7fe91d6cd1cdfc3afd4291920743d080fb1b35d23",
@@ -33,7 +33,7 @@
     "sui-resolve/Cargo.toml": "4c0e6027421517fe0f767296a0f468f7bd20fd8f396ea129aca19304cc2c6b50",
     "sui-spec/Cargo.toml": "399b422687d3f829655470bcf19217eb4028aac56751573d37911e4de0c538b1",
     "sui-store/Cargo.toml": "a430140175cf9e0177f3910448c0d963e319b774885bf7cb47c26379c22d8ca4",
-    "sui-supercacheci/Cargo.toml": "87a985275575ac75557dfb1e71f06ca32390e4aea5a1921409f9165361f7e272"
+    "sui-supercacheci/Cargo.toml": "8da316858003e3ded50d5ecb0e313e69125c0ab8b55a2c6a8def6662cc65be03"
   },
   "target_resolves": {
     "base": {
