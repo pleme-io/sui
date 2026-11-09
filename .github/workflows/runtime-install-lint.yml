@@ -1,5 +1,5 @@
-# runtime-install-lint — CI-gate per-job Nix installation in sui's OWN workflows
-# (theory/NIX-HARDENING.md §VI, §VI.1). The `pleme-io/actions/runtime-install-lint`
+# runtime-install-lint — CI-gate per-job Nix installation in sui's OWN workflows.
+# The `pleme-io/actions/runtime-install-lint`
 # tool scans `.github/workflows/*.yml` for a per-job nix-installer
 # (DeterminateSystems/nix-installer-action or `nix shell nixpkgs#…`) — the CI
 # build env belongs BAKED into the runner image, not installed on every job.

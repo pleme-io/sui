@@ -2,7 +2,7 @@
 //!
 //! CLOSED-LOOP MASS-SYNTHESIS applied to sui↔nix eval parity: instead of
 //! hand-writing escaped Nix strings, we build eval-surface shapes from the
-//! canonical typed Nix AST (`gen_nix::NixValue`, `theory/NIX-AST.md`) and
+//! canonical typed Nix AST (`gen_nix::NixValue`) and
 //! render each to canonical Nix source, then byte-check every generated row
 //! against the nix oracle. A new eval-surface variant becomes a generated
 //! row, not a hand-authored probe — and every Match row can never silently

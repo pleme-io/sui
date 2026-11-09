@@ -147,7 +147,7 @@ Same input → same output → same key → reusable across evaluations
 The tree-walker, `eval_ir` and the bytecode VM all build a derivation through one function,
 `sui_spec::derivation::apply(algo, Derivation, outputs, name)` (`sui-spec/src/derivation.rs`),
 which runs `sui-spec/specs/derivation.lisp` over a `sui_compat::derivation::Derivation`. Blue is
-the fourth caller (design: `pleme-io/theory` `BLUE-ON-SUI.md`). Blue's `hasei` bidama builds the
+the fourth caller. Blue's `hasei` bidama builds the
 same record in pure blue and gives nix's `.drv` and output paths; blue never lowers into
 `sui-ir`, which is rnix's syntax tree.
 

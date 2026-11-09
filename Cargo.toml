@@ -170,7 +170,7 @@ repository = "https://github.com/pleme-io/sui"
 pedantic = "warn"
 
 [workspace.dependencies]
-# pleme-io gen — the canonical typed Nix-expression AST (theory/NIX-AST.md).
+# pleme-io gen — the canonical typed Nix-expression AST.
 # Used by the parity corpus to build eval-surface shapes typed + render them to
 # canonical Nix source (no format!() of Nix syntax), replacing the interim local
 # mirror. Published on crates.io.

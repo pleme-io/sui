@@ -130,19 +130,18 @@ pub mod backend;
 /// second controller.
 pub mod preheat;
 
-/// canteiro M0 — a CI run decomposed into one typed content-addressed DAG
-/// (`theory/CANTEIRO.md` §5). The decompose morphism + `CiNode` as a shigoto
+/// canteiro M0 — a CI run decomposed into one typed content-addressed DAG.
+/// The decompose morphism + `CiNode` as a shigoto
 /// `Job`; in-process wave execution + the in-pod runner entrypoint are M1.
 pub mod canteiro;
 
-/// canteiro plane (a) — the multi-worker dispatch crux (`theory/CANTEIRO.md`
-/// §5). `emit_gha` projects a decomposed `CiRun` onto a GitHub Actions job
+/// canteiro plane (a) — the multi-worker dispatch crux. `emit_gha` projects a decomposed `CiRun` onto a GitHub Actions job
 /// graph (one job per node, `needs:` = the DAG edges) that GitHub schedules
 /// across separate ARC workers.
 pub mod canteiro_gha;
 
 /// canteiro plane (b) — CANTEIRO itself as the cross-worker RUNTIME scheduler
-/// (`theory/CANTEIRO.md` §7.1-A, the named crux). `run_distributed` owns the DAG
+/// (the named crux). `run_distributed` owns the DAG
 /// ordering and dispatches each node as a serializable `WorkItem` to a
 /// `WorkQueue` that N independent workers claim/run/report — ordering is
 /// canteiro's, not GitHub's. M0 proves the protocol in-process; the Postgres
@@ -150,8 +149,8 @@ pub mod canteiro_gha;
 /// swap).
 pub mod canteiro_dist;
 
-/// canteiro plane (b) CROSS-PROCESS transport (`theory/CANTEIRO.md` §7.1-A: "a
-/// PgStore FOR UPDATE SKIP LOCKED queue, one worker per ARC pod"). A
+/// canteiro plane (b) CROSS-PROCESS transport ("a PgStore FOR UPDATE SKIP
+/// LOCKED queue, one worker per ARC pod"). A
 /// Postgres-backed `WorkQueue` (`canteiro_work_items`, atomic SKIP-LOCKED claim)
 /// + `ResultTransport` (`canteiro_results`, the result path the in-process
 /// `mpsc` cannot cross) behind the `PgQueueConn` seam — mock-proven here, real
@@ -159,14 +158,14 @@ pub mod canteiro_dist;
 /// one worker per pod; the live ≥2-pod run against a real PG is the named gate.
 pub mod canteiro_pg;
 
-/// canteiro sound affected-skip (`theory/CANTEIRO.md` §7.1-B, the cascade root).
+/// canteiro sound affected-skip (the cascade root).
 /// The SOUND skip predicate (skip iff unaffected AND output-cached) + the
 /// `CacheProbe` seam. Sound by construction: the M0 `UnrealizedProbe` skips
 /// NOTHING (no `CiNode` is a realized derivation yet), so an unsound skip is
 /// unrepresentable until B-Root2's derivation-realize + a real cache probe land.
 pub mod canteiro_skip;
 
-/// canteiro `(defci)` authoring surface (`theory/CANTEIRO.md` §4, leg 2) — the
+/// canteiro `(defci)` authoring surface — the
 /// TYPED-SPEC + INTERPRETER TRIPLET for declaring a `CiRun` as typed Lisp data:
 /// the `CiSpec` `#[tatara(keyword = "defci")]` border + the `to_ci_run`
 /// interpreter. The authoring half of "pleme-io/actions built out of reusable

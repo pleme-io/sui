@@ -19,7 +19,7 @@
 //!     multi-output producer's `out` survives into the consumer's drv
 //!     input set.  (sui root a67c244 — `concatStringsSep`.)
 //!
-//! Doctrine: `theory/BUILD.md` §II (the eval-model TYPED-SPEC triplet).
+//! Doctrine: the eval-model TYPED-SPEC triplet.
 //!
 //! ## Authoring surface
 //!

@@ -378,7 +378,7 @@
   :maturity Working
   :platforms ("macos")
   :substrate ("activation_script" "module_system" "derivation")
-  :notes "DARWIN ONLY, and the qualification is load-bearing: activate_system execs ${system_path}/activate, which is nix-darwin's entry point. NixOS activation is ${toplevel}/bin/switch-to-configuration (exports INSTALL_BOOTLOADER/PRE_SWITCH_CHECK/SYSTEMD, then reconciles units) and that string appears nowhere in sui-orchestrate; Platform is consulted in non-test code at exactly two sites and neither is an activation arm. Chain on darwin: parse flake-ref → sui_eval::evaluate_flake → resolve toplevel drvPath → BuildClosure::compute → LocalBuilder::build_closure(+substitutor) → activate_system. Un-qualifying this row routes NixOS operators into an activation path that cannot activate — see theory/BALIZA.md §III")
+  :notes "DARWIN ONLY, and the qualification is load-bearing: activate_system execs ${system_path}/activate, which is nix-darwin's entry point. NixOS activation is ${toplevel}/bin/switch-to-configuration (exports INSTALL_BOOTLOADER/PRE_SWITCH_CHECK/SYSTEMD, then reconciles units) and that string appears nowhere in sui-orchestrate; Platform is consulted in non-test code at exactly two sites and neither is an activation arm. Chain on darwin: parse flake-ref → sui_eval::evaluate_flake → resolve toplevel drvPath → BuildClosure::compute → LocalBuilder::build_closure(+substitutor) → activate_system. Un-qualifying this row routes NixOS operators into an activation path that cannot activate")
 
 (defsui-command
   :name "system status"

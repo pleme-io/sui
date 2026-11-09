@@ -1,7 +1,7 @@
 //! canteiro — a CI run decomposed into ONE typed content-addressed DAG, then
 //! **executed in-process, wave by wave** (M0 + M1).
 //!
-//! `theory/CANTEIRO.md` §5. **M0** lands the `CiNode` type (the sole unifying
+//! **M0** lands the `CiNode` type (the sole unifying
 //! type, §1), the [`decompose`] morphism (`CiRun → (shigoto Dag over JobId  +
 //! JobId→CiNode map)`, the "dandori" decompose), and `CiNode` as a runnable job
 //! ([`CiNodeJob`]). **M1** (this increment) wires that job onto the shipped

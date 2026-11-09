@@ -608,7 +608,7 @@ measured ground.
 
 Every lever this strategy lands terminates in a **steerable surface**, not a
 compiled-in constant. The fleet mechanism is **afinar** (the live-tunable
-doctrine; see the `afinar` skill and `theory/AFINAR.md`): knobs declared as
+doctrine; see the `afinar` skill): knobs declared as
 typed panels, driven over `afinar_knob_*` MCP tools, shadow-gated
 (`dry_run` + `write_enabled`), reject-at-border.
 

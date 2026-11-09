@@ -37,7 +37,7 @@
 //! named M2 addition).  A technique *mislabeled* by the author (a
 //! force-order change called `ReprSwap`) passes `is_honest` while being
 //! byte-unsound — the type gates the technique CLASS, not the label's
-//! truth.  `theory/BUILD.md` §II is the surrounding doctrine.
+//! truth.
 //!
 //! ## Authoring surface
 //!

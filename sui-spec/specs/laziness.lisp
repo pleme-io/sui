@@ -1,7 +1,7 @@
 ;; sui-spec/specs/laziness.lisp — the canonical evaluation model both
 ;; sui engines (tree-walker + bytecode VM) MUST drive.  Authored once
 ;; here so the two interpreters cannot diverge (the ★★ TYPED-SPEC +
-;; INTERPRETER TRIPLET guarantee).  Doctrine: theory/BUILD.md §II.
+;; INTERPRETER TRIPLET guarantee).
 ;;
 ;; The force hot-path stays in sui-eval for byte-parity + performance;
 ;; this spec is the authoring surface + the decision discipline that

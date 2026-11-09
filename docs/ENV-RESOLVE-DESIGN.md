@@ -237,7 +237,7 @@ experiment proves a net-positive.**
 
 ## 9. Verify loop (every pass)
 
-Per the sui Parity Method (theory/BUILD.md §II.1): land behind the `--resolve`
+Per the sui Parity Method: land behind the `--resolve`
 flag, flip on ONLY after byte-verify. Each pass: `cargo test -p sui-eval` (the 12
 with-scope tests + recursive-let + infinite-recursion) + `tests/lang_corpus.rs`
 golden JSON + `SUI_TEST_ONLINE=1 drv_path_parity.rs` + the sealed parity_corpus +

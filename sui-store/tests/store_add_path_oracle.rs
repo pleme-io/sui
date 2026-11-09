@@ -1,6 +1,6 @@
 //! Oracle differential: `sui` store-add-path vs the real `nix store add-path`.
 //!
-//! Parity Method (theory/BUILD.md §II.1): behavior-compatible against the real
+//! Parity Method: behavior-compatible against the real
 //! `nix` oracle, sealed with a differential test. The **store-path computation**
 //! and the **NAR serialization** are the byte-load-bearing surfaces on the
 //! marquee critical path (roadmap §2 #8); both are proven here to match nix

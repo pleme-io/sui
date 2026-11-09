@@ -9,7 +9,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
-# canteiro M1 live-proof entrypoint (theory/CANTEIRO.md §5). The in-pod binary
+# canteiro M1 live-proof entrypoint. The in-pod binary
 # that constructs a 2-node CiRun and drives it through `run_in_process` on a
 # real self-hosted ARC worker. The library stays a plain `async fn`; only this bin
 # needs a runtime, hence the real (non-dev) tokio dep below.
@@ -17,7 +17,7 @@ repository.workspace = true
 name = "canteiro-run"
 path = "src/bin/canteiro-run.rs"
 
-# canteiro plane-(a) emitter (theory/CANTEIRO.md §5 crux). Builds the real
+# canteiro plane-(a) emitter (the crux). Builds the real
 # 2-node sui CiRun (cargo build -> cargo test) and writes its DAG-derived GitHub
 # Actions job graph to .github/workflows/canteiro-crux.yml (persisted-spec
 # discipline: the committed workflow IS this binary's output).
@@ -25,7 +25,7 @@ path = "src/bin/canteiro-run.rs"
 name = "canteiro-emit-gha"
 path = "src/bin/canteiro-emit-gha.rs"
 
-# canteiro plane-(b) CROSS-PROCESS worker (theory/CANTEIRO.md §7.1-A). The in-pod
+# canteiro plane-(b) CROSS-PROCESS worker. The in-pod
 # binary ONE in-cluster ARC pod runs: claim a WorkItem from the Postgres
 # `PgWorkQueue` -> run it via SubprocessRunner -> report the NodeResult back
 # through PG -> repeat until close. Needs the `postgres` feature for the real
@@ -47,7 +47,7 @@ serde.workspace = true
 # re-exports this crate from `canteiro` so every existing consumer is unchanged.
 canteiro-types.workspace = true
 
-# canteiro M0 (theory/CANTEIRO.md §5): a CI run decomposes into ONE typed
+# canteiro M0: a CI run decomposes into ONE typed
 # content-addressed DAG. The shipped, pure shigoto primitives are the decompose
 # target -- `Dag` (monomorphic over `JobId`) + the `Job` trait a `CiNode`
 # implements. Same workspace deps sui-orchestrate / sui-dockerfile-prewarmer
@@ -78,7 +78,7 @@ serde_norway.workspace = true
 # thiserror.
 sui-cache.workspace = true
 sui-store.workspace = true
-# canteiro B-Root2 (theory/CANTEIRO.md §7.1-B): the sound affected-skip's CACHE
+# canteiro B-Root2: the sound affected-skip's CACHE
 # axis. `StoreBackedProbe` queries a sui_castore `StorageBackend` (get_narinfo +
 # the NAR its `URL:` line references) to answer whether a node's realized OUTPUT
 # is genuinely SERVABLE to its descendants -- the soundness gate for a skip.

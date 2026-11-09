@@ -246,8 +246,7 @@ fn evaluate_flake_inner(
                     //
                     // The sentinel is now self-describing and deliberately NOT
                     // store-shaped, so the two guards below skip it and any use
-                    // names the input it came from. See `theory/BALIZA-PLAN.md`
-                    // §2.5 (measured on rio, 2026-08-08).
+                    // names the input it came from (measured on rio, 2026-08-08).
                     format!("<unresolved-flake-input:{input_name}>")
                 };
 
@@ -266,7 +265,7 @@ fn evaluate_flake_inner(
                 // repo-ROOT `flake.nix` for every subflake input. The field
                 // existed, its test passed, the behaviour was absent.
                 //
-                // Measured on rio 2026-08-08 (`theory/BALIZA-PLAN.md` §2.5):
+                // Measured on rio 2026-08-08:
                 // `blue-bidamas` is `github:pleme-io/blue?dir=bidamas`, whose own
                 // `bidamas/flake.nix` declares ONLY `nixpkgs` (outputs are
                 // `{ self, nixpkgs }`), while blue's ROOT flake.nix also declares
@@ -472,7 +471,7 @@ fn evaluate_flake_inner(
                     // fields and NONE of its outputs. Nothing said so; the
                     // failure surfaced later and elsewhere as
                     // `AttrNotFound('nixosModules' | 'darwinModules')` — the
-                    // shape `theory/BALIZA-PLAN.md` records for blackmatter-vpn
+                    // shape measured for blackmatter-vpn
                     // and …-tailscale.
                     //
                     // cppnix refuses this outright ("path ... does not contain a
@@ -520,8 +519,7 @@ fn evaluate_flake_inner(
                         // exist and never will, so the failure surfaced
                         // thousands of eval-steps later as a bare ENOENT on
                         // `import`, naming neither the flake nor the input —
-                        // measured on rio 2026-08-08 (`theory/BALIZA-PLAN.md`
-                        // §2.5). Worse, the fake path STARTS WITH `/nix/store/`,
+                        // measured on rio 2026-08-08. Worse, the fake path STARTS WITH `/nix/store/`,
                         // so it also picked up copy-to-store string context and
                         // an input-source registration, i.e. it masqueraded as a
                         // real store reference all the way down.
@@ -682,8 +680,7 @@ fn evaluate_flake_inner(
     // out. `Thunk::force` MEMOISES (`value.rs`, the OnceCell fast path), so a
     // single early force caches that skeleton for the life of the thunk and
     // every later `self.<attr>` resolves against it. This flag is what lets
-    // step 9 notice and re-run with a `self` that resolves. See
-    // `theory/BALIZA-PLAN.md` §2.5.2.
+    // step 9 notice and re-run with a `self` that resolves.
     let self_forced_early: Rc<std::cell::Cell<bool>> = Rc::new(std::cell::Cell::new(false));
     let self_thunk = {
         let self_promise = self_promise.clone();
@@ -817,7 +814,7 @@ fn evaluate_flake_inner(
     // whose pass-2 result depends on a pass-1 value that was ITSELF poisoned
     // would need a third pass. Two passes cover the flake-parts shape that
     // motivated this; a deeper case would need convergence-to-stable, which is
-    // not implemented and is not claimed. See `theory/BALIZA-PLAN.md` §2.5.2.
+    // not implemented and is not claimed.
     if self_forced_early.get() {
         let fresh_self = {
             let self_promise = self_promise.clone();

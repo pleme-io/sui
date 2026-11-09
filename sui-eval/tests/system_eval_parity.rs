@@ -27,8 +27,8 @@
 //! fleet's system configs" from "sui now can". It is a characterization
 //! tripwire now; see its own doc comment for why that direction is right.
 //!
-//! Context: `theory/BALIZA.md` phase 0a — truth the instruments before
-//! believing anything downstream of them.
+//! Context: truth the instruments before believing anything downstream of
+//! them.
 
 mod common;
 
@@ -44,11 +44,11 @@ fn nix_repo() -> PathBuf {
 /// **This test used to assert nothing.** Both arms of the match printed and
 /// returned green — `SUCCESS` on Ok, `EXPECTED FAILURE (for now)` with the
 /// literal comment `// Don't assert -- this is informational` on Err. So it
-/// reported the same verdict whether sui had just gained the single most
-/// load-bearing capability in `theory/BALIZA.md` or lost it.
+/// reported the same verdict whether sui had just gained its single most
+/// load-bearing capability or lost it.
 ///
 /// It is a tripwire now, and it deliberately fires on **success**, which is
-/// worth explaining because it looks backwards. Per `BALIZA.md` §III,
+/// worth explaining because it looks backwards. On the record,
 /// "sui has completed a system-toplevel eval" is **ABSENT — zero recorded
 /// instances, ever** (`sui/docs/SUI-EQUIVALENCE.md:325,626`: cid eval OOMs,
 /// killed at 4264 s against nix's 107 s). Asserting `Ok` would pin a
@@ -83,10 +83,10 @@ fn nix_repo_eval_no_crash() {
             }
             panic!(
                 "TRIPWIRE: sui evaluated the pleme-io/nix flake. This is GOOD NEWS \
-                 and the test is red on purpose — theory/BALIZA.md §III records \
+                 and the test is red on purpose — the record holds \
                  system-toplevel eval as ABSENT (zero recorded instances, ever), \
                  and phases 8/9/10 are written on that premise. Re-measure, update \
-                 BALIZA.md §III, then replace this tripwire with the positive \
+                 the record, then replace this tripwire with the positive \
                  assertion in the same commit."
             );
         }

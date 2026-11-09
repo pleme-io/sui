@@ -1868,8 +1868,7 @@ mod tests {
 
         /// ── THE TWO-WRITER QUESTION, MEASURED ──────────────────────────────────
     ///
-    /// `theory/BALIZA.md` surviving objection 1 and `theory/INSTRUMENTS.md`
-    /// §III both record this as **UNKNOWN and blocking**: sui writes
+    /// This was recorded as **UNKNOWN and blocking**: sui writes
     /// `ValidPaths` / `Refs` / `DerivationOutputs` directly with zero `flock`
     /// anywhere in the workspace (verified 2026-08-07 — the only `flock`-ish
     /// hits are tatara keywords about nix lock FILES), and sui shares
@@ -2042,7 +2041,7 @@ mod tests {
     ///
     /// `two_writers_on_one_file_backed_store_do_not_corrupt_it` (above)
     /// measured two handles inside ONE process and found 50/50, 0 errors. That
-    /// narrowed the blocker in `theory/BALIZA.md` objection 1 but could not
+    /// narrowed the blocker but could not
     /// close it, and the reason is precise: two connections in one process
     /// share a SQLite library instance and its own mutexes. Cross-PROCESS
     /// contention is a different mechanism — POSIX advisory locks on the

@@ -1,8 +1,7 @@
 //! L2 GC-survival: decide which store paths the warm cache must capture.
 //!
 //! ── WHAT THIS CLOSES ──────────────────────────────────────────────────────
-//! `theory/ATATAME.md` calls L2 *"the single highest-value gap in this
-//! doctrine"*. `attic watch-store` used to provide it; attic was retired
+//! L2 is the single highest-value gap in atatame. `attic watch-store` used to provide it; attic was retired
 //! 2026-07-31, and until something captures a newly-realized store path
 //! before `nix-collect-garbage` reaches it, the warm store is a
 //! within-session memo rather than a durable win.

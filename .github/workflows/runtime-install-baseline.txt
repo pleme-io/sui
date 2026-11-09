@@ -1,4 +1,4 @@
-# Tracked per-job-nix-install debt (theory/NIX-HARDENING.md §VI.1), consumed by
+# Tracked per-job-nix-install debt, consumed by
 # .github/workflows/runtime-install-lint.yml via the runtime-install-lint action's
 # `baseline-path` input. These workflows install Nix per-job (nix-installer-action
 # / `nix shell nixpkgs#…`) because their runners carry no baked Nix toolchain.

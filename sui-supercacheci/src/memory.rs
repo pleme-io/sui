@@ -1,7 +1,7 @@
 //! `memory` — the **memory-first core behavior** of `/super-cache-ci`.
 //!
 //! super-cache-ci does not touch disk: every workload is RAMDISK / in-memory
-//! (the [★★ MAGMA-NATIVE never-touch-disk law] applied to the Nix store
+//! (the ★★ MAGMA-NATIVE never-touch-disk law applied to the Nix store
 //! itself), so **memory is THE resource** and every decision below optimizes
 //! memory + the in-memory cache. This module is the **typed, pure, deterministic
 //! decision core** for the seven memory-first elements — the per-tick
@@ -39,7 +39,6 @@
 //!   derive off [`SuperCacheCiConfig`](crate::SuperCacheCiConfig) — naming the
 //!   keyword without a working derive is the honest tier, not a rounded-up one.
 //!
-//! [★★ MAGMA-NATIVE never-touch-disk law]: https://github.com/pleme-io/theory/blob/main/MAGMA-OPERATOR-BACKEND.md
 //! [`autorevivy`]: https://github.com/pleme-io/autorevivy
 
 use serde::{Deserialize, Serialize};

@@ -389,7 +389,7 @@ fn default_cache_path() -> Option<PathBuf> {
 /// Platform cache directory (`$XDG_CACHE_HOME` or `~/.cache`).
 fn dirs_next() -> Option<PathBuf> {
     // The non-empty check was here already; the ABSOLUTE check was not — the
-    // partial-guard shape from theory/MASKED-BRANCH.md, where considering the
+    // partial-guard shape, where considering the
     // degenerate case makes the arm read as finished. XDG_CACHE_HOME="rel/x"
     // passed and gave a cwd-relative cache, so every working directory got its
     // own cache and none of them hit.

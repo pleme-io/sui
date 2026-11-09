@@ -2,8 +2,8 @@
 ;; sui's eval hot path.  Every optimization applied to the tree-walker /
 ;; bytecode VM is authored here as a typed, honesty-gated claim
 ;; (technique → the proof-tier its CLASS earns; status → its measured
-;; delta; a sealed strictly-positive Delta).  Doctrine: theory/BUILD.md
-;; §II + sui/docs/PERF-CLAIM-LEDGER.md.
+;; delta; a sealed strictly-positive Delta).  Doctrine:
+;; sui/docs/PERF-CLAIM-LEDGER.md.
 ;;
 ;; This types the claim SHAPE.  It does NOT generate optimizations and
 ;; does NOT verify parity soundness — whether an edit is force-order-

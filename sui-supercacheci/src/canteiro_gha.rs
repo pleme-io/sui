@@ -1,5 +1,5 @@
 //! canteiro plane (a) — multi-worker dispatch via a DAG-derived GitHub Actions
-//! job graph (theory/CANTEIRO.md §5, "the crux").
+//! job graph ("the crux").
 //!
 //! [`emit_gha`] projects a decomposed [`CiRun`] onto a GitHub Actions workflow:
 //! **one job per [`CiNode`]**, each job's `needs:` = that node's DAG edges, each
@@ -64,7 +64,7 @@ const HEADER: &str = "\
 # The committed file IS the emitter's output (persisted-spec discipline); a\n\
 # drift is a CI failure. Regenerate: `cargo run -p sui-supercacheci --bin canteiro-emit-gha`.\n\
 #\n\
-# canteiro plane (a), the multi-worker dispatch crux (theory/CANTEIRO.md §5):\n\
+# canteiro plane (a), the multi-worker dispatch crux:\n\
 # `emit_gha` projects a decomposed CiRun onto this job graph — one job per\n\
 # CiNode, `needs:` = the DAG edges — and GitHub Actions schedules the jobs onto\n\
 # SEPARATE self-hosted ARC workers. HONEST SCOPE: canteiro DERIVES the graph;\n\

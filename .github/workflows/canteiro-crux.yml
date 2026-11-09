@@ -2,7 +2,7 @@
 # The committed file IS the emitter's output (persisted-spec discipline); a
 # drift is a CI failure. Regenerate: `cargo run -p sui-supercacheci --bin canteiro-emit-gha`.
 #
-# canteiro plane (a), the multi-worker dispatch crux (theory/CANTEIRO.md §5):
+# canteiro plane (a), the multi-worker dispatch crux:
 # `emit_gha` projects a decomposed CiRun onto this job graph — one job per
 # CiNode, `needs:` = the DAG edges — and GitHub Actions schedules the jobs onto
 # SEPARATE self-hosted ARC workers. HONEST SCOPE: canteiro DERIVES the graph;

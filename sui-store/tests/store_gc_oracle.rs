@@ -1,7 +1,7 @@
 //! Oracle differential: `sui` store-gc dead-set vs the real `nix-store --gc
 //! --print-dead`.
 //!
-//! Parity Method (theory/BUILD.md §II.1). GC's load-bearing logic is the
+//! Parity Method. GC's load-bearing logic is the
 //! **reachability partition**: given a set of registered paths and a set of GC
 //! roots, which paths are dead. This differential proves sui's partition equals
 //! nix's on the same logical scenarios, run against a temp store so no root is

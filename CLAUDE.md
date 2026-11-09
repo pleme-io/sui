@@ -3,8 +3,7 @@
 `pending-platform-mediated: PUBLISH_APP_ID, PUBLISH_APP_KEY` (hand-set 2026-10-27; no sops path in `org.yaml`)
 
 > **★★★ CSE / Knowable Construction.** This repo operates under
-> [`theory/CONSTRUCTIVE-SUBSTRATE-ENGINEERING.md`](https://github.com/pleme-io/theory/blob/main/CONSTRUCTIVE-SUBSTRATE-ENGINEERING.md)
-> and the org CLAUDE.md ★★★ Compounding Directive; read both before
+> Constructive Substrate Engineering and the org CLAUDE.md ★★★ Compounding Directive; read both before
 > non-trivial changes. Pure-Rust Nix replacement; an in-progress Layer-1
 > normalization platform replacing CppNix with construction guarantees.
 
@@ -99,8 +98,7 @@ a typed reason (exit 2), never accepts-and-ignores it.
 Compatibility is the floor, not the ceiling: once the parity gates hold it, sui
 grows past nix (parallel eval, cross-run eval cache, live build face, typed
 activation, a blue front-end to the same `.drv` core), each gain behind the gates
-and off by default when it changes bytes. Doctrine: [`theory/SUI-FLIP.md`](https://github.com/pleme-io/theory/blob/main/SUI-FLIP.md)
-§"The whole stack". Receipts of the gaps closed so far:
+and off by default when it changes bytes. Receipts of the gaps closed so far:
 `pleme-io/nix/docs/knowledge/nix/reference_sui_as_nix_on_cid_receipts.md`.
 
 ## Core Philosophy: Construction Guarantees
@@ -359,8 +357,7 @@ change), run, then force-restore. Always leave `~/.cache/sui` pristine.
 (get-task-allow), run under `lldb -k` (run-on-crash), on a
 `CARGO_PROFILE_RELEASE_STRIP=false DEBUG=1` build for symbols.
 
-**★★ The Parity Method — typescape the class, don't just fix the instance
-(canonical: [`theory/BUILD.md` §II.1](https://github.com/pleme-io/theory/blob/main/BUILD.md)).**
+**★★ The Parity Method — typescape the class, don't just fix the instance.**
 The fix loop above (repro → root-fix → test → commit) is the *detect* half. A
 parity fix is not *done* until its whole **class** is sealed: (1) reduce to a
 smallest pure-builtins repro proving the root is **general**, not

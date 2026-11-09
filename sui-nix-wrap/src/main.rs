@@ -285,7 +285,7 @@ mod tests {
         // This test used to read `let _ = route_for(&argv);` with the
         // comment "just don't panic" — it asserted NOTHING and would have
         // passed against any routing decision whatsoever, including the
-        // wrong one. Truthing the instruments (theory/BALIZA.md phase 0a)
+        // wrong one. Truthing the instruments
         // means a test that cannot fail is worse than no test, because it
         // reports coverage it does not have.
         let argv = ["store", "dump-path", "/nix/store/x"];
@@ -316,7 +316,7 @@ mod tests {
             }
             Route::Sui => panic!(
                 "`system rebuild` routed to sui on linux — sui's activation arm \
-                 cannot activate a NixOS system (see theory/BALIZA.md §III)"
+                 cannot activate a NixOS system"
             ),
         }
     }

@@ -1,7 +1,7 @@
 //! Oracle differential: `sui` store-optimise vs the real `nix-store
 //! --optimise`.
 //!
-//! Parity Method (theory/BUILD.md §II.1). `nix-store --optimise` deduplicates
+//! Parity Method. `nix-store --optimise` deduplicates
 //! identical-content files across the store by replacing them with hard links
 //! to a single inode. This differential proves sui's `optimise_store` produces
 //! the *same* inode-sharing outcome nix does — identical-content files share an

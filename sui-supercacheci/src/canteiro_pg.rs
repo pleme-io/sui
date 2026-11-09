@@ -4,7 +4,7 @@
 //! in-memory M0 (`canteiro_dist::InMemoryQueue` + its in-process `mpsc`) cannot
 //! cross.
 //!
-//! `theory/CANTEIRO.md` §7.1-A: *"a `PgStore FOR UPDATE SKIP LOCKED` queue, one
+//! The design calls for *"a `PgStore FOR UPDATE SKIP LOCKED` queue, one
 //! worker per ARC pod."* This module realizes exactly that: the dispatch side is
 //! `canteiro_work_items` with an atomic `SELECT … FOR UPDATE SKIP LOCKED` claim
 //! (each ready node to exactly one pod — the faithful cross-process analog of

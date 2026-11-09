@@ -1,8 +1,7 @@
 ;; sui-spec/specs/coercion.lisp — value→string coercion at the eval→drv
 ;; boundary.  The complement of laziness.lisp: how a forced value
 ;; renders + what store-context it carries.  Each rule below captures a
-;; sui root byte-verified against the live nix oracle.  Doctrine:
-;; theory/BUILD.md §II.
+;; sui root byte-verified against the live nix oracle.
 
 ;; ── copy-to-store path coercion (root ec238d7) ──────────────────────
 ;; A path in interpolation / a derivation attribute copies to the store

@@ -227,8 +227,8 @@ pub fn load_system_registry() -> Registry {
 
 fn user_registry_path() -> Option<PathBuf> {
     // Both arms used to take their variable verbatim behind a non-empty check
-    // only, so XDG_CONFIG_HOME="rel" read a registry out of the cwd — see
-    // theory/MASKED-BRANCH.md on the partial-guard shape.
+    // only, so XDG_CONFIG_HOME="rel" read a registry out of the cwd — the
+    // partial-guard shape.
     //
     // This one maps onto okiba exactly, unlike its three siblings in this
     // crate: $XDG_CONFIG_HOME then ~/.config with no platform divergence, and

@@ -1,6 +1,6 @@
 //! canteiro plane (b) — CANTEIRO itself as the cross-worker RUNTIME scheduler.
 //!
-//! `theory/CANTEIRO.md` §7.1-A / §8-risk-1 (the named crux). Where
+//! The named crux. Where
 //! [`run_in_process`](crate::canteiro::run_in_process) drives the shipped
 //! `InProcessScheduler` on ONE worker, and
 //! [`emit_gha`](crate::canteiro_gha::emit_gha) projects the DAG onto a GitHub

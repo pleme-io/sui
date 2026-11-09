@@ -1,5 +1,5 @@
 //! canteiro sound affected-skip — the SOUND skip predicate + the cache-probe
-//! seam (`theory/CANTEIRO.md` §7.1-B, the cascade root B-Root2).
+//! seam (the cascade root B-Root2).
 //!
 //! `affected_set` (in [`crate::canteiro`]) is computed + tested, but its SOUND
 //! consumption — actually SKIPPING an unaffected node — was NOT wired, because

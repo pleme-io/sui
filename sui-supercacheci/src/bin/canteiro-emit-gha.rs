@@ -1,5 +1,5 @@
 //! `canteiro-emit-gha` — generate the canteiro plane-(a) multi-worker crux
-//! workflow (theory/CANTEIRO.md §5).
+//! workflow.
 //!
 //! Builds the REAL 2-node sui `CiRun` — `build` (`cargo build -p
 //! sui-supercacheci`) then `test` (`cargo test -p sui-supercacheci canteiro`,

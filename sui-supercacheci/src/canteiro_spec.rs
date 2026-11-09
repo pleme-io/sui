@@ -1,6 +1,6 @@
 //! canteiro_spec — the **`(defci)` AUTHORING SURFACE**: a CI run declared as
-//! typed Lisp data (theory/CANTEIRO.md §4, leg 2 — "pleme-io/actions built out
-//! of reusable Rust and caixa"). This is the TYPED-SPEC + INTERPRETER TRIPLET
+//! typed Lisp data ("pleme-io/actions built out of reusable Rust and
+//! caixa"). This is the TYPED-SPEC + INTERPRETER TRIPLET
 //! for authoring a [`crate::canteiro::CiRun`] as a `(defci …)` form:
 //!
 //! 1. **Typed border** — [`CiSpec`] (+ the per-node [`CiNodeSpec`]) with

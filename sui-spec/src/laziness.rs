@@ -13,7 +13,7 @@
 //! one algorithm becomes unrepresentable.  The *force hot-path* stays
 //! in sui-eval (byte-parity + performance); this domain is the
 //! authoring surface + the decision interpreter that the real engine
-//! must satisfy.  `theory/BUILD.md` §II is the doctrine.
+//! must satisfy.
 //!
 //! ## Authoring surface
 //!

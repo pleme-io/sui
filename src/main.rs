@@ -973,8 +973,7 @@ enum CacheCommands {
     /// Captures newly-realized store paths into the cache so a GC cannot take
     /// a path the cache advertises. This is the surface `attic watch-store`
     /// used to provide; attic was retired 2026-07-31 and nothing has covered
-    /// it since — `theory/ATATAME.md` calls it the single highest-value gap
-    /// in that doctrine.
+    /// it since — the single highest-value gap in atatame.
     ///
     /// It RECONCILES rather than following events, so it converges after a
     /// restart and — unlike a post-build hook — also captures paths that
