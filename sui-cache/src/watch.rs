@@ -102,6 +102,25 @@ impl Published {
     }
 }
 
+/// Paths admission refused, each with the local record it refused.
+#[derive(Debug, Default)]
+pub struct Refused {
+    held: HashMap<String, PathDigest>,
+}
+
+impl Refused {
+    /// Record that `hash`, with this local record, was refused.
+    pub fn record(&mut self, hash: &str, digest: PathDigest) {
+        self.held.insert(hash.to_string(), digest);
+    }
+
+    /// The hashes to skip this pass; a refusal whose record changed is forgotten.
+    pub fn current(&mut self, local: &HashMap<String, PathDigest>) -> HashSet<String> {
+        self.held.retain(|h, d| local.get(h).is_none_or(|l| l == d));
+        self.held.keys().cloned().collect()
+    }
+}
+
 /// Cached hashes whose published entry no longer agrees with the local
 /// store's record of the path.
 ///
@@ -139,10 +158,11 @@ pub struct CapturePlan {
 ///
 /// `valid` are the hashes currently valid in the nix store, `cached` the
 /// hashes the cache already holds, `baseline` the hashes that existed when
-/// the watcher started (empty for a full backfill).
+/// the watcher started (empty for a full backfill), `held` the hashes
+/// [`Refused`] says admission will refuse again.
 ///
-/// A candidate is a path that is valid, not cached, and not in the baseline,
-/// or a cached path in `stale` (see [`stale_cached`]): a stale entry is
+/// A candidate is a path not in `held` that is valid, not cached, and not in
+/// the baseline, or a cached path in `stale` (see [`stale_cached`]): a stale entry is
 /// re-captured whatever the baseline says, because the cache already serves
 /// it and serves it wrong. Order is deterministic (sorted) so a bounded pass is reproducible rather
 /// than dependent on hash-map iteration order — an operator re-running a pass
@@ -153,10 +173,12 @@ pub fn plan_capture(
     cached: &HashSet<String>,
     stale: &HashSet<String>,
     baseline: &HashSet<String>,
+    held: &HashSet<String>,
     max_per_pass: usize,
 ) -> CapturePlan {
     let mut candidates: Vec<String> = valid
         .iter()
+        .filter(|h| !held.contains(*h))
         .filter(|h| stale.contains(*h) || (!cached.contains(*h) && !baseline.contains(*h)))
         .cloned()
         .collect();
@@ -194,6 +216,8 @@ pub struct WatchReport {
     /// stop the watcher, or one unreadable path disables GC-survival for the
     /// whole machine.
     pub failed: usize,
+    /// Paths skipped because admission refused their unchanged record.
+    pub held: usize,
     /// Candidates that did not fit this pass.
     pub deferred: usize,
 }
@@ -214,7 +238,7 @@ mod tests {
         let result = enforce_bound(&storage, std::num::NonZeroU64::MIN, &mut baseline).await.unwrap();
 
         assert_eq!(result.evicted, ["gone"]);
-        let plan = plan_capture(&v(&["gone"]), &HashSet::new(), &HashSet::new(), &baseline, 10);
+        let plan = plan_capture(&v(&["gone"]), &HashSet::new(), &HashSet::new(), &baseline, &HashSet::new(), 10);
         assert!(plan.to_capture.is_empty(), "{plan:?}");
     }
 
@@ -240,7 +264,7 @@ mod tests {
             [(tool.clone(), PathDigest::new(H, [std_path.as_str()]))].into_iter().collect();
         let stale = stale_cached(&published, &local);
         assert_eq!(stale, set(&[&tool]));
-        let plan = plan_capture(&v(&[&tool]), &set(&[&tool]), &stale, &set(&[&tool]), 100);
+        let plan = plan_capture(&v(&[&tool]), &set(&[&tool]), &stale, &set(&[&tool]), &set(&[]), 100);
         assert_eq!(plan.to_capture, v(&[&tool]));
 
         let agreed: HashMap<String, PathDigest> =
@@ -289,7 +313,7 @@ mod tests {
     /// 53,000 paths.
     #[test]
     fn baseline_paths_are_not_captured() {
-        let plan = plan_capture(&v(&["a", "b"]), &set(&[]), &set(&[]), &set(&["a", "b"]), 100);
+        let plan = plan_capture(&v(&["a", "b"]), &set(&[]), &set(&[]), &set(&["a", "b"]), &set(&[]), 100);
         assert!(plan.to_capture.is_empty());
         assert_eq!(plan.deferred, 0);
     }
@@ -297,7 +321,7 @@ mod tests {
     /// The whole point: something realized after startup gets captured.
     #[test]
     fn a_newly_realized_path_is_captured() {
-        let plan = plan_capture(&v(&["a", "b", "new"]), &set(&[]), &set(&[]), &set(&["a", "b"]), 100);
+        let plan = plan_capture(&v(&["a", "b", "new"]), &set(&[]), &set(&[]), &set(&["a", "b"]), &set(&[]), 100);
         assert_eq!(plan.to_capture, v(&["new"]));
     }
 
@@ -305,7 +329,7 @@ mod tests {
     /// watcher cheap to run on a short interval.
     #[test]
     fn cached_paths_are_skipped() {
-        let plan = plan_capture(&v(&["a", "new"]), &set(&["new"]), &set(&[]), &set(&["a"]), 100);
+        let plan = plan_capture(&v(&["a", "new"]), &set(&["new"]), &set(&[]), &set(&["a"]), &set(&[]), 100);
         assert!(plan.to_capture.is_empty());
     }
 
@@ -315,10 +339,10 @@ mod tests {
     #[test]
     fn a_failed_capture_is_retried_next_pass() {
         let baseline = set(&["a"]);
-        let first = plan_capture(&v(&["a", "new"]), &set(&[]), &set(&[]), &baseline, 100);
+        let first = plan_capture(&v(&["a", "new"]), &set(&[]), &set(&[]), &baseline, &set(&[]), 100);
         assert_eq!(first.to_capture, v(&["new"]));
         // push failed => cache still empty
-        let second = plan_capture(&v(&["a", "new"]), &set(&[]), &set(&[]), &baseline, 100);
+        let second = plan_capture(&v(&["a", "new"]), &set(&[]), &set(&[]), &baseline, &set(&[]), 100);
         assert_eq!(second.to_capture, v(&["new"]), "must retry, not drop");
     }
 
@@ -326,7 +350,7 @@ mod tests {
     /// overflow must be REPORTED rather than silently dropped.
     #[test]
     fn max_per_pass_bounds_the_work_and_reports_the_remainder() {
-        let plan = plan_capture(&v(&["a", "b", "c", "d", "e"]), &set(&[]), &set(&[]), &set(&[]), 2);
+        let plan = plan_capture(&v(&["a", "b", "c", "d", "e"]), &set(&[]), &set(&[]), &set(&[]), &set(&[]), 2);
         assert_eq!(plan.to_capture.len(), 2);
         assert_eq!(plan.deferred, 3);
     }
@@ -335,7 +359,7 @@ mod tests {
     /// missing becomes a candidate.
     #[test]
     fn empty_baseline_backfills() {
-        let plan = plan_capture(&v(&["a", "b"]), &set(&["a"]), &set(&[]), &set(&[]), 100);
+        let plan = plan_capture(&v(&["a", "b"]), &set(&["a"]), &set(&[]), &set(&[]), &set(&[]), 100);
         assert_eq!(plan.to_capture, v(&["b"]));
     }
 
@@ -344,9 +368,30 @@ mod tests {
     #[test]
     fn selection_is_deterministic() {
         let valid = v(&["z", "m", "a", "q"]);
-        let a = plan_capture(&valid, &set(&[]), &set(&[]), &set(&[]), 2);
-        let b = plan_capture(&valid, &set(&[]), &set(&[]), &set(&[]), 2);
+        let a = plan_capture(&valid, &set(&[]), &set(&[]), &set(&[]), &set(&[]), 2);
+        let b = plan_capture(&valid, &set(&[]), &set(&[]), &set(&[]), &set(&[]), 2);
         assert_eq!(a, b);
         assert_eq!(a.to_capture, v(&["a", "m"]));
+    }
+
+    #[test]
+    fn a_refused_path_yields_its_slot_until_its_record_changes() {
+        let refused_record = PathDigest::new(H, []);
+        let mut refused = Refused::default();
+        refused.record("a", refused_record.clone());
+        let local: HashMap<String, PathDigest> = [("a".to_string(), refused_record)].into_iter().collect();
+        let held = refused.current(&local);
+        let plan = plan_capture(&v(&["a", "b", "c"]), &set(&[]), &set(&[]), &set(&[]), &held, 1);
+        assert_eq!(plan.to_capture, v(&["b"]));
+        assert_eq!(plan.deferred, 1);
+        assert_eq!(refused.current(&HashMap::new()), set(&["a"]), "an unread record keeps the refusal");
+
+        let std_path = format!("/nix/store/{STD}-rust-std");
+        let repaired: HashMap<String, PathDigest> =
+            [("a".to_string(), PathDigest::new(H, [std_path.as_str()]))].into_iter().collect();
+        let held = refused.current(&repaired);
+        assert!(held.is_empty(), "a changed record is tried again");
+        let plan = plan_capture(&v(&["a", "b", "c"]), &set(&[]), &set(&[]), &set(&[]), &held, 1);
+        assert_eq!(plan.to_capture, v(&["a"]));
     }
 }

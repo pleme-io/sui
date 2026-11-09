@@ -8874,6 +8874,7 @@ async fn main() -> Result<(), CliError> {
                 }
 
                 let mut published = sui_cache::watch::Published::default();
+                let mut refused = sui_cache::watch::Refused::default();
                 loop {
                     let valid = match local.query_all_valid_paths().await {
                         Ok(v) => v,
@@ -8917,15 +8918,18 @@ async fn main() -> Result<(), CliError> {
                             }
                         };
                     let stale = sui_cache::watch::stale_cached(published.digests(), &local_digests);
+                    let held = refused.current(&local_digests);
                     let plan = sui_cache::watch::plan_capture(
                         &valid_hashes,
                         &cached,
                         &stale,
                         &baseline,
+                        &held,
                         max_per_pass,
                     );
                     let mut report = sui_cache::watch::WatchReport {
                         scanned: valid_hashes.len(),
+                        held: held.len(),
                         deferred: plan.deferred,
                         ..Default::default()
                     };
@@ -8968,6 +8972,12 @@ async fn main() -> Result<(), CliError> {
                             Err(e) => {
                                 eprintln!("watch: capture {path} failed: {e}");
                                 report.failed += 1;
+                                if matches!(e, sui_cache::CacheError::Refused(_)) {
+                                    refused.record(
+                                        h,
+                                        sui_cache::watch::PathDigest::new(&info.nar_hash, info.references.iter().map(String::as_str)),
+                                    );
+                                }
                             }
                         }
                     }
@@ -8975,13 +8985,13 @@ async fn main() -> Result<(), CliError> {
                     tracing::info!(
                         target: "sui::cache_watch",
                         scanned = report.scanned, captured = report.captured, recaptured = report.recaptured,
-                        stale = stale.len(), failed = report.failed, deferred = report.deferred,
+                        stale = stale.len(), failed = report.failed, held = report.held, deferred = report.deferred,
                         "cache watch pass",
                     );
                     if report.captured > 0 || report.recaptured > 0 || report.failed > 0 || report.deferred > 0 {
                         println!(
-                            "watch: {} scanned, {} captured, {} re-captured, {} failed, {} deferred",
-                            report.scanned, report.captured, report.recaptured, report.failed, report.deferred
+                            "watch: {} scanned, {} captured, {} re-captured, {} failed, {} held, {} deferred",
+                            report.scanned, report.captured, report.recaptured, report.failed, report.held, report.deferred
                         );
                     }
                     if let Some(max) = max_size_bytes {
