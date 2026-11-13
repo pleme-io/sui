@@ -12,8 +12,8 @@ categories = ["database-implementations", "filesystem"]
 [dependencies]
 sui-compat.workspace = true
 sui-graph-store.workspace = true
-sea-orm.workspace = true
-sea-orm-migration.workspace = true
+sea-orm = { workspace = true, optional = true }
+sea-orm-migration = { workspace = true, optional = true }
 tokio.workspace = true
 reqwest.workspace = true
 serde.workspace = true
@@ -37,7 +37,8 @@ sqlx = { version = "0.8", default-features = false, features = [
 ], optional = true }
 
 [features]
-default = []
+default = ["sqlite"]
+sqlite = ["dep:sea-orm", "dep:sea-orm-migration"]
 # Enable the live `SqlxPgBackend` Postgres adapter for `PgStore`.
 postgres = ["dep:sqlx"]
 

@@ -47,6 +47,13 @@ pub enum GcRootError {
     NoStore(PathBuf, String),
 }
 
+pub(crate) fn state_dir_for_store(store_dir: &str) -> String {
+    match store_dir.strip_suffix("/store") {
+        Some(prefix) => format!("{prefix}/var/nix"),
+        None => "/nix/var/nix".to_string(),
+    }
+}
+
 /// The `gcroots/auto` entry name CppNix uses for an indirect root at `link`.
 #[must_use]
 pub fn auto_root_name(link: &str) -> String {
@@ -92,7 +99,7 @@ pub fn add_perm_root(store_path: &str, gc_root: &Path) -> Result<PathBuf, GcRoot
         DrvDestination::Daemon(socket) => crate::daemon_session::add_indirect_root(socket, &link_str)
             .map_err(|cause| GcRootError::Daemon { link: link.clone(), cause })?,
         DrvDestination::Dir(d) | DrvDestination::DirectStore(d) => {
-            let state = crate::local::state_dir_for_store(&d.to_string_lossy());
+            let state = state_dir_for_store(&d.to_string_lossy());
             let auto = Path::new(&state).join("gcroots/auto");
             std::fs::create_dir_all(&auto)
                 .map_err(|cause| GcRootError::Io { link: auto.clone(), cause })?;

@@ -11,7 +11,7 @@ categories = ["development-tools::build-utils"]
 
 [dependencies]
 sui-compat.workspace = true
-sui-store.workspace = true
+sui-store = { workspace = true, features = ["sqlite"] }
 aho-corasick.workspace = true
 async-trait.workspace = true
 sha2.workspace = true

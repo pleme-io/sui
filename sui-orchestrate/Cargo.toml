@@ -12,7 +12,7 @@ categories = ["development-tools::build-utils"]
 [dependencies]
 sui-compat.workspace = true
 sui-eval.workspace = true
-sui-store.workspace = true
+sui-store = { workspace = true, features = ["sqlite"] }
 sui-build.workspace = true
 # REUSE — the fleet-standard seven-beat Controller contract
 # (`Controller` / `ReconcileOutcome` / `ReconcileResult` / `ReconcileReport` /

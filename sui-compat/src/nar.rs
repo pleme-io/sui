@@ -742,6 +742,25 @@ mod tests {
         assert_eq!(restored, b"hello world");
     }
 
+    #[test]
+    fn unpack_nar_refuses_an_entry_that_climbs_out_of_dest() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("dest");
+        for name in ["../escaped", "a/../../escaped", "/escaped", ".", ".."] {
+            let node = NarNode::Directory {
+                entries: vec![NarEntry {
+                    name: name.to_string(),
+                    node: NarNode::Regular { executable: false, contents: b"x".to_vec() },
+                }],
+            };
+            let mut nar_data = Vec::new();
+            NarWriter::write(&mut nar_data, &node).unwrap();
+            assert!(unpack_nar(&nar_data, &dest).is_err(), "{name} unpacked");
+            assert!(!dir.path().join("escaped").exists(), "{name} wrote outside dest");
+            let _ = std::fs::remove_dir_all(&dest);
+        }
+    }
+
     // ── write_path on a single file (not directory) ─────
 
     #[test]

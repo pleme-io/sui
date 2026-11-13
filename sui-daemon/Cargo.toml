@@ -11,7 +11,7 @@ categories = ["os::unix-apis", "asynchronous"]
 
 [dependencies]
 sui-compat.workspace = true
-sui-store.workspace = true
+sui-store = { workspace = true, features = ["sqlite"] }
 sui-build.workspace = true
 sui-eval.workspace = true
 sui-orchestrate.workspace = true

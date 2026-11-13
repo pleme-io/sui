@@ -1,11 +1,11 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "516809b9fa5eb3d19792e13ee890ec2cd1427e5cd0878cdc312346470f3d9909",
+  "cargo_lock_sha256": "4fe63a97fbeb412759e1ff3c47cc8fad097f4c32eedf5d0c7a5b5423af24d577",
   "manifest_sha256": {
-    "Cargo.toml": "86daf7dfdf868b993044fe2147ed5fc3c097d9cec7d197e84916197401b9172d",
+    "Cargo.toml": "cabb21268e8a53d9984fe29e53b58e6a31ed219f43ffe11a8bdc30f4773e7e92",
     "canteiro-types/Cargo.toml": "3f31c292168dfe7740c65e6d85578eee824486c16cba92499b2587df50e58f83",
     "sui-bigorna/Cargo.toml": "271fc14c6a889aa1386124ef2ed91bee58f437241fd91d1f2da549c496112270",
-    "sui-build/Cargo.toml": "201469821dceb1d6a1d813f7fe91d6cd1cdfc3afd4291920743d080fb1b35d23",
+    "sui-build/Cargo.toml": "63f98a711a30860a5da80e706134dce35665306602ab8511ab538889c0db4123",
     "sui-bytecode/Cargo.toml": "fea40d7d2b922a8987a8dcb3d35bb4072641f0d1fe95f6c6b6b9449c6659ee4b",
     "sui-cache-eval/Cargo.toml": "f16c2a3764aebcbc7d0583a9618dfadd596883dd4842c32b65843999034e5589",
     "sui-cache/Cargo.toml": "7358ff05d58115c06f9063987189e6ac798a588def010f41b76bb7b936533c55",
@@ -14,7 +14,7 @@
     "sui-daemon-client/Cargo.toml": "d8acc61441eadccaf9bb426aa83dfdb71bc628ac13eb23bd2e73ac5fdfb0e477",
     "sui-daemon-frame/Cargo.toml": "391a8e59253c00d6886605ef104794d330d935cab6f7f13d335804258d4144e6",
     "sui-daemon-graph/Cargo.toml": "206356f44f08a819630a8057714643b7f13dfa63b8270759aec804cbcf28e6b6",
-    "sui-daemon/Cargo.toml": "3c781f043044fbba2e2b362aed2506004b77bf26e9d2133a26cfd273cb70fad8",
+    "sui-daemon/Cargo.toml": "72be54003ed90a21f8b85e4c6fcf29910a6e2259c5f0b79894fe8576cdb7c6d5",
     "sui-dockerfile-node-cache-daemon/Cargo.toml": "450da5660aa69749a8b4eeddac5a7bfaaa38ae36adcde0e969d356e970c1d9ea",
     "sui-dockerfile-prewarmer/Cargo.toml": "2d2a26d3af7a0d767b10ead316b1e96770f3a5b658a44e0ffddb9e54f4286c2f",
     "sui-dockerfile-verify/Cargo.toml": "1b4114c0abb7761a054f8c20cc59885ef75bbbad021df12341177bf87f2f55f0",
@@ -27,13 +27,13 @@
     "sui-lsp/Cargo.toml": "0f855980721f0d727edfb01e559daf3c46690c3dffea0e4542ab03ccacc79b8d",
     "sui-nix-wrap/Cargo.toml": "49b662142a60fdcde71413be49d2aa38b3eb705e3567e2fa2cded887873d26df",
     "sui-normalize/Cargo.toml": "66f4852a80efeca3bd1b7f84e746823c2419cae5696222d98a177b519d821a79",
-    "sui-orchestrate/Cargo.toml": "ec0422b65ea5d354a32f683f3d3994d14edf8baca3c4743ffa9d133467201ae0",
+    "sui-orchestrate/Cargo.toml": "53802e05edeff2cb531431cf40691e723d8ce4320b8efd796c1c45cffc81af28",
     "sui-protocol/Cargo.toml": "1a7982ade5ce90d483969a23704b8f8858427ec7b575c766484175bb1632f6bd",
     "sui-registry/Cargo.toml": "ccc4b72ef2e615726d1d271e25171107d5c2cd467db300e8483e7864146402e2",
     "sui-resolve/Cargo.toml": "4c0e6027421517fe0f767296a0f468f7bd20fd8f396ea129aca19304cc2c6b50",
     "sui-spec/Cargo.toml": "399b422687d3f829655470bcf19217eb4028aac56751573d37911e4de0c538b1",
-    "sui-store/Cargo.toml": "a430140175cf9e0177f3910448c0d963e319b774885bf7cb47c26379c22d8ca4",
-    "sui-supercacheci/Cargo.toml": "e4bfe948bc5fdd1954453a3141c968411fbde64cc60965e49a9b693930867d6f"
+    "sui-store/Cargo.toml": "52a6a8727ac29da171565a5234f333aecdbb93499499d36d7349b5dfac728358",
+    "sui-supercacheci/Cargo.toml": "f30bc21392e69224f508674ca200b8654a61043d1abb199897ae2208648c37ef"
   },
   "target_resolves": {
     "base": {
@@ -13164,11 +13164,6 @@
         "build_dependencies": [],
         "features": []
       },
-      "is_executable-1.0.6": {
-        "runtime_dependencies": [],
-        "build_dependencies": [],
-        "features": []
-      },
       "is_terminal_polyfill-1.70.2": {
         "runtime_dependencies": [],
         "build_dependencies": [],
@@ -14080,21 +14075,11 @@
           "socket"
         ]
       },
-      "nix-nar-0.3.1": {
+      "nix-nar-0.6.0": {
         "runtime_dependencies": [
           {
             "name": "camino",
             "package_key": "camino-1.2.4",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "is_executable",
-            "package_key": "is_executable-1.0.6",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -14114,7 +14099,7 @@
           },
           {
             "name": "thiserror",
-            "package_key": "thiserror-1.0.69",
+            "package_key": "thiserror-2.0.18",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -15863,8 +15848,10 @@
             "name": "sui_store",
             "package_key": "sui-store-0.1.242",
             "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
+            "features": [
+              "sqlite"
+            ],
+            "uses_default_features": false,
             "optional": false,
             "target": null,
             "tree": "target"
@@ -24274,8 +24261,10 @@
             "name": "sui_store",
             "package_key": "sui-store-0.1.242",
             "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
+            "features": [
+              "sqlite"
+            ],
+            "uses_default_features": false,
             "optional": false,
             "target": null,
             "tree": "target"
@@ -24403,7 +24392,7 @@
             "package_key": "sui-store-0.1.242",
             "kind": "normal",
             "features": [],
-            "uses_default_features": true,
+            "uses_default_features": false,
             "optional": false,
             "target": null,
             "tree": "target"
@@ -24922,7 +24911,7 @@
           },
           {
             "name": "nix_nar",
-            "package_key": "nix-nar-0.3.1",
+            "package_key": "nix-nar-0.6.0",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -25186,8 +25175,10 @@
             "name": "sui_store",
             "package_key": "sui-store-0.1.242",
             "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
+            "features": [
+              "sqlite"
+            ],
+            "uses_default_features": false,
             "optional": false,
             "target": null,
             "tree": "target"
@@ -26304,7 +26295,7 @@
             "package_key": "sui-store-0.1.242",
             "kind": "normal",
             "features": [],
-            "uses_default_features": true,
+            "uses_default_features": false,
             "optional": false,
             "target": null,
             "tree": "target"
@@ -26984,8 +26975,10 @@
             "name": "sui_store",
             "package_key": "sui-store-0.1.242",
             "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
+            "features": [
+              "sqlite"
+            ],
+            "uses_default_features": false,
             "optional": false,
             "target": null,
             "tree": "target"
@@ -27619,7 +27612,7 @@
               "sqlx-sqlite"
             ],
             "uses_default_features": true,
-            "optional": false,
+            "optional": true,
             "target": null,
             "tree": "target"
           },
@@ -27629,7 +27622,7 @@
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
-            "optional": false,
+            "optional": true,
             "target": null,
             "tree": "target"
           },
@@ -27764,7 +27757,8 @@
         "build_dependencies": [],
         "features": [
           "default",
-          "postgres"
+          "postgres",
+          "sqlite"
         ]
       },
       "sui-supercacheci-0.1.242": {
@@ -27885,8 +27879,10 @@
             "name": "sui_store",
             "package_key": "sui-store-0.1.242",
             "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
+            "features": [
+              "sqlite"
+            ],
+            "uses_default_features": false,
             "optional": false,
             "target": null,
             "tree": "target"
@@ -28490,22 +28486,6 @@
         "build_dependencies": [],
         "features": []
       },
-      "thiserror-1.0.69": {
-        "runtime_dependencies": [
-          {
-            "name": "thiserror_impl",
-            "package_key": "thiserror-impl-1.0.69",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "host"
-          }
-        ],
-        "build_dependencies": [],
-        "features": []
-      },
       "thiserror-2.0.18": {
         "runtime_dependencies": [
           {
@@ -28524,42 +28504,6 @@
           "default",
           "std"
         ]
-      },
-      "thiserror-impl-1.0.69": {
-        "runtime_dependencies": [
-          {
-            "name": "proc_macro2",
-            "package_key": "proc-macro2-1.0.107",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "quote",
-            "package_key": "quote-1.0.47",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "syn",
-            "package_key": "syn-2.0.119",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          }
-        ],
-        "build_dependencies": [],
-        "features": []
       },
       "thiserror-impl-2.0.18": {
         "runtime_dependencies": [
@@ -39054,9 +38998,6 @@
     "is-terminal-0.4.17": {
       "edition": "2018"
     },
-    "is_executable-1.0.6": {
-      "edition": "2021"
-    },
     "is_terminal_polyfill-1.70.2": {
       "edition": "2021"
     },
@@ -39198,7 +39139,7 @@
       "edition": "2021",
       "build_script": "build.rs"
     },
-    "nix-nar-0.3.1": {
+    "nix-nar-0.6.0": {
       "edition": "2021"
     },
     "nkeys-0.4.5": {
@@ -40235,17 +40176,9 @@
     "text-size-1.1.1": {
       "edition": "2018"
     },
-    "thiserror-1.0.69": {
-      "edition": "2021",
-      "build_script": "build.rs"
-    },
     "thiserror-2.0.18": {
       "edition": "2021",
       "build_script": "build.rs"
-    },
-    "thiserror-impl-1.0.69": {
-      "edition": "2021",
-      "proc_macro": true
     },
     "thiserror-impl-2.0.18": {
       "edition": "2021",

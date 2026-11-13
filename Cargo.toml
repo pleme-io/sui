@@ -183,7 +183,7 @@ sui-normalize = { path = "sui-normalize", version = "0.1.242" }
 sui-bytecode = { path = "sui-bytecode", version = "0.1.242" }
 sui-cache = { path = "sui-cache", version = "0.1.242" }
 sui-compat = { path = "sui-compat", version = "0.1.242" }
-sui-store = { path = "sui-store", version = "0.1.242" }
+sui-store = { path = "sui-store", version = "0.1.242", default-features = false }
 sui-eval = { path = "sui-eval", version = "0.1.242" }
 sui-ir = { path = "sui-ir", version = "0.1.242" }
 sui-build = { path = "sui-build", version = "0.1.242" }
@@ -346,7 +346,7 @@ futures-core = "0.3"
 # Nix parsing (battle-tested MIT libraries)
 rnix = "0.14"
 rowan = "0.16"
-nix-nar = "0.3"
+nix-nar = "0.6"
 
 # Stack growth (prevents stack overflow on deep nixpkgs fixpoints)
 stacker = "0.1"
@@ -436,7 +436,7 @@ rowan.workspace = true
 sui-bytecode.workspace = true
 sui-cache.workspace = true
 sui-compat.workspace = true
-sui-store.workspace = true
+sui-store = { workspace = true, features = ["sqlite"] }
 sui-eval.workspace = true
 sui-ir.workspace = true
 sui-build.workspace = true
@@ -494,8 +494,8 @@ dhat = { version = "0.3", optional = true }
 # Redis + Postgres arms into the shipped binary + the dockerTools image (which is
 # gen/lockfile-builder-built from cargo's DEFAULT feature resolution — there is no
 # `--features` hook on that path, so the tiered arms MUST be default to reach the
-# image). Scoped to the root binary only: sui-cache/sui-store keep `default = []`
-# so library consumers stay lean and pull zero redis/sqlx surface.
+# image). Scoped to the root binary only: sui-cache/sui-store keep redis and
+# postgres off by default so library consumers stay lean.
 default = ["tiered"]
 # Enable the Postgres L2 durable transport (cache backend + durable Store).
 postgres = ["sui-cache/postgres", "sui-store/postgres"]

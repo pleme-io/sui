@@ -77,7 +77,7 @@ serde_norway.workspace = true
 # async CacheMaintenance environment seam uses async-trait; errors are typed via
 # thiserror.
 sui-cache.workspace = true
-sui-store.workspace = true
+sui-store = { workspace = true, features = ["sqlite"] }
 # canteiro B-Root2: the sound affected-skip's CACHE
 # axis. `StoreBackedProbe` queries a sui_castore `StorageBackend` (get_narinfo +
 # the NAR its `URL:` line references) to answer whether a node's realized OUTPUT

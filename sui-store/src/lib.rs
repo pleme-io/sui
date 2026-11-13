@@ -22,14 +22,17 @@ pub mod convergence;
 pub mod daemon_realize;
 pub mod daemon_session;
 pub mod drv_write;
+#[cfg(feature = "sqlite")]
 pub mod entity;
 pub mod gc_roots;
 pub mod http;
+#[cfg(feature = "sqlite")]
 pub mod local;
 pub mod nar;
 pub mod path_lock;
 pub mod pg;
 pub mod profile;
+#[cfg(feature = "sqlite")]
 pub mod query;
 pub mod serve_client;
 pub mod ssh_store;
@@ -44,6 +47,7 @@ pub use daemon_realize::{
     DaemonStore, Realized, StoreAccess, WritableStore, DEFAULT_DAEMON_SOCKET,
 };
 pub use http::{HttpClient, HttpError, HttpResponse, ReqwestHttpClient};
+#[cfg(feature = "sqlite")]
 pub use local::{LocalStore, LocalStoreMode};
 pub use nar::decompress_nar;
 pub use pg::{
@@ -51,6 +55,7 @@ pub use pg::{
 };
 pub use profile::{Generation, ProfileError, ProfileManager};
 pub use substitute::{Availability, SubstituteResult, Substitutor};
+#[cfg(feature = "sqlite")]
 pub use local::{find_gc_roots, find_root_links, find_runtime_roots, find_temp_roots, optimise_link_over};
 pub use convergence::{ConvergenceStore, DefaultConvergenceStore, GenerationalPath, ImpactReport};
 pub use traits::{CorruptPath, GcOptions, GcResult, OptimiseResult, PathInfo, Store, StoreError, StoreResult, VerifyResult};
